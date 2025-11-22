@@ -34,7 +34,6 @@ show_banner() {
 EOF
     echo -e "${NC}\n"
 }
-
 check_requirements() {
     echo -e "${BOLD}Checking requirements...${NC}"
     
@@ -48,12 +47,21 @@ check_requirements() {
         exit 1
     fi
     
+    echo -e "${GREEN}✓ Docker installed${NC}"
+    
     if ! docker info &> /dev/null 2>&1; then
-        echo -e "${RED}✗ Docker not running${NC}"
+        echo -e "${RED}✗ Docker is installed but not running${NC}"
+        echo ""
+        echo "Please start Docker:"
+        echo "  Linux: sudo systemctl start docker"
+        echo "  Mac: Open Docker Desktop application"
+        echo ""
+        echo "Then run this installer again:"
+        echo "  curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash"
         exit 1
     fi
     
-    echo -e "${GREEN}✓ Docker available${NC}"
+    echo -e "${GREEN}✓ Docker is running${NC}"
     
     # Check Node.js (for worker)
     if ! command -v node &> /dev/null; then
