@@ -334,7 +334,7 @@ class WorkerNode {
     try {
       if (process.platform === 'win32') {
         try {
-          const wmic = execSync('wmic logicaldisk where "DeviceID=\\'C:\\'" get FreeSpace', { 
+          const wmic = execSync('wmic logicaldisk where "DeviceID=C:" get FreeSpace', { 
             encoding: 'utf8', timeout: 3000 
           });
           const lines = wmic.trim().split('\n');
@@ -347,10 +347,12 @@ class WorkerNode {
         }
       } else {
         try {
-          const output = execSync('df -h / | tail -1 | awk \\'{print $4}\\'', { 
+          const output = execSync('df -h / | tail -1', { 
             encoding: 'utf8', timeout: 3000 
           }).trim();
-          const match = output.match(/(\d+\.?\d*)([KMGT])/);
+          const parts = output.split(/\s+/);
+          const availStr = parts[3] || '50G';
+          const match = availStr.match(/(\d+\.?\d*)([KMGT])/);
           if (match) {
             const [, size, unit] = match;
             const multipliers = { K: 0.001, M: 0.001, G: 1, T: 1024 };
