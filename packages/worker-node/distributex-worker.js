@@ -1,491 +1,480 @@
 #!/usr/bin/env node
-/**
- * DistributeX Worker Node - FIXED AUTH VERSION
- * Connects to coordinator and executes distributed computing jobs
- */
+// packages/worker-node/distributex-worker.js
+// FIXED: Proper authentication and connection handling
 
 const WebSocket = require('ws');
 const Docker = require('dockerode');
-const fs = require('fs');
-const path = require('path');
 const os = require('os');
+const fs = require('fs').promises;
+const path = require('path');
 
-// Configuration
-const INSTALL_DIR = path.join(os.homedir(), '.distributex');
-const CONFIG_FILE = path.join(INSTALL_DIR, 'config', 'auth.json');
-const LOG_FILE = path.join(INSTALL_DIR, 'logs', 'worker.log');
-const COORDINATOR_URL = process.env.DISTRIBUTEX_COORDINATOR_URL || 'wss://distributex-coordinator.distributex.workers.dev/ws';
+const CONFIG_PATH = path.join(os.homedir(), '.distributex', 'config.json');
+const LOGS_PATH = path.join(os.homedir(), '.distributex', 'logs');
 
-// State
-let config = {};
-let ws = null;
-let docker = new Docker();
-let reconnectAttempts = 0;
-let currentJob = null;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-let heartbeatTimer = null;
+class WorkerNode {
+  constructor(config) {
+    this.config = config;
+    this.docker = new Docker();
+    this.ws = null;
+    this.activeJobs = new Map();
+    this.isShuttingDown = false;
+    this.heartbeatInterval = null;
+    this.reconnectTimeout = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+  }
 
-// Logging
-function log(message, level = 'INFO') {
-    const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] [${level}] ${message}`;
-    
-    console.log(logMessage);
+  async start() {
+    console.log('🚀 Starting DistributeX Worker...\n');
     
     try {
-        fs.appendFileSync(LOG_FILE, logMessage + '\n');
-    } catch (err) {
-        // Silent fail for logging errors
+      await fs.mkdir(LOGS_PATH, { recursive: true });
+      await this.testDocker();
+      await this.connect();
+      await this.sendCapabilities();
+      this.startHeartbeat();
+      this.setupSignalHandlers();
+      
+      console.log('✅ Worker started successfully\n');
+      console.log(`Worker ID: ${this.config.workerId}`);
+      console.log(`API URL: ${this.config.apiUrl}`);
+      console.log(`Auth Token: ${this.config.authToken?.substring(0, 20)}...`);
+      console.log(`Status: Online and ready to accept jobs\n`);
+      
+      this.log('Worker started successfully');
+    } catch (error) {
+      console.error('❌ Failed to start worker:', error.message);
+      this.log('ERROR', error.message);
+      process.exit(1);
     }
-}
+  }
 
-// Load configuration
-function loadConfig() {
+  async testDocker() {
+    console.log('🐳 Testing Docker connection...');
     try {
-        if (!fs.existsSync(CONFIG_FILE)) {
-            log('Config file not found. Please run: dxcloud login', 'ERROR');
-            return false;
-        }
-        
-        const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-        config = JSON.parse(data);
-        
-        if (!config.token || !config.user_id) {
-            log('Invalid config: missing token or user_id', 'ERROR');
-            return false;
-        }
-        
-        return true;
-    } catch (err) {
-        log(`Failed to load config: ${err.message}`, 'ERROR');
-        return false;
+      await this.docker.ping();
+      const info = await this.docker.info();
+      console.log(`✓ Docker connected (${info.Containers} containers)\n`);
+    } catch (error) {
+      throw new Error('Docker not available. Please ensure Docker is installed and running.');
     }
-}
+  }
 
-// Get system capabilities
-function getCapabilities() {
-    const cpus = os.cpus();
-    const totalMemGB = Math.floor(os.totalmem() / (1024 * 1024 * 1024));
-    const freeMemGB = Math.floor(os.freemem() / (1024 * 1024 * 1024));
-    
-    return {
-        cpu_cores: cpus.length,
-        cpu_model: cpus[0]?.model || 'Unknown',
-        memory_total_gb: totalMemGB,
-        memory_free_gb: freeMemGB,
-        platform: os.platform(),
-        arch: os.arch(),
-        docker: true,
-        worker_version: '1.0.0'
-    };
-}
-
-// Send heartbeat
-function sendHeartbeat() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'heartbeat',
-            workerId: config.user_id,
-            timestamp: Date.now(),
-            capabilities: getCapabilities(),
-            currentJob: currentJob ? currentJob.jobId : null
-        }));
-    }
-}
-
-// Start heartbeat
-function startHeartbeat() {
-    if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-    }
-    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
-}
-
-// Stop heartbeat
-function stopHeartbeat() {
-    if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-    }
-}
-
-// Connect to coordinator
-function connect() {
-    if (!loadConfig()) {
-        log('Cannot connect: Configuration error', 'ERROR');
-        process.exit(1);
-    }
-
-    log(`Connecting to coordinator: ${COORDINATOR_URL}`);
-    log(`Using token: ${config.token.substring(0, 20)}...`);
-    
-    try {
-        // Build WebSocket URL with auth params
-        const wsUrl = new URL(COORDINATOR_URL);
-        wsUrl.searchParams.set('token', config.token);
-        wsUrl.searchParams.set('workerId', config.user_id);
-        
-        log(`Full WS URL: ${wsUrl.toString().replace(config.token, 'TOKEN_HIDDEN')}`);
-        
-        ws = new WebSocket(wsUrl.toString(), {
-            headers: {
-                'Authorization': `Bearer ${config.token}`,
-                'User-Agent': 'DistributeX-Worker/1.0.0',
-                'X-Worker-Id': config.user_id,
-                'X-Worker-Email': config.email || 'unknown'
-            },
-            handshakeTimeout: 15000,
-            perMessageDeflate: false
-        });
-
-        ws.on('open', () => {
-            log('✓ Connected to coordinator', 'SUCCESS');
-            reconnectAttempts = 0;
-            
-            // Register worker
-            const capabilities = getCapabilities();
-            log(`Registering worker with ${capabilities.cpu_cores} CPU cores, ${capabilities.memory_total_gb}GB RAM`);
-            
-            ws.send(JSON.stringify({
-                type: 'register',
-                workerId: config.user_id,
-                email: config.email || 'unknown',
-                capabilities: capabilities,
-                timestamp: Date.now()
-            }));
-            
-            // Start heartbeat
-            startHeartbeat();
-        });
-
-        ws.on('message', async (data) => {
-            try {
-                const message = JSON.parse(data.toString());
-                log(`Received: ${message.type}`, 'DEBUG');
-                
-                switch (message.type) {
-                    case 'registered':
-                        log(`Worker registered successfully`, 'SUCCESS');
-                        break;
-                    
-                    case 'job_assigned':
-                        await handleJobAssignment(message.job);
-                        break;
-                    
-                    case 'job_cancelled':
-                        await handleJobCancellation(message.jobId);
-                        break;
-                    
-                    case 'ping':
-                        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
-                        break;
-                    
-                    case 'error':
-                        log(`Coordinator error: ${message.message}`, 'ERROR');
-                        if (message.message && message.message.includes('auth')) {
-                            log('Authentication error - please re-login: dxcloud login', 'ERROR');
-                            process.exit(1);
-                        }
-                        break;
-                    
-                    default:
-                        log(`Unknown message type: ${message.type}`, 'WARN');
-                }
-            } catch (err) {
-                log(`Error handling message: ${err.message}`, 'ERROR');
-            }
-        });
-
-        ws.on('error', (err) => {
-            log(`WebSocket error: ${err.message}`, 'ERROR');
-            
-            // Check for auth errors
-            if (err.message.includes('401') || err.message.includes('Unauthorized')) {
-                log('', 'ERROR');
-                log('═══════════════════════════════════════════', 'ERROR');
-                log('AUTHENTICATION FAILED', 'ERROR');
-                log('═══════════════════════════════════════════', 'ERROR');
-                log('', 'ERROR');
-                log('Your authentication token may be expired or invalid.', 'ERROR');
-                log('', 'ERROR');
-                log('Please try the following:', 'ERROR');
-                log('  1. Login again: dxcloud login', 'ERROR');
-                log('  2. Or create new account: dxcloud signup', 'ERROR');
-                log('', 'ERROR');
-                log('Config location: ' + CONFIG_FILE, 'ERROR');
-                log('', 'ERROR');
-                
-                // Stop trying to reconnect on auth errors
-                reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
-            }
-        });
-
-        ws.on('close', (code, reason) => {
-            const reasonStr = reason ? reason.toString() : 'none';
-            log(`Disconnected (code: ${code}, reason: ${reasonStr})`, 'WARN');
-            stopHeartbeat();
-            
-            // Don't retry on auth failures (401)
-            if (code === 401 || code === 403) {
-                log('Authentication error - stopping reconnection attempts', 'ERROR');
-                log('Please run: dxcloud login', 'ERROR');
-                process.exit(1);
-            }
-            
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts++;
-                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-                log(`Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-                setTimeout(connect, delay);
-            } else {
-                log('Max reconnection attempts reached. Exiting.', 'ERROR');
-                process.exit(1);
-            }
-        });
-    } catch (err) {
-        log(`Failed to create WebSocket: ${err.message}`, 'ERROR');
-        process.exit(1);
-    }
-}
-
-// Handle job assignment
-async function handleJobAssignment(job) {
-    if (currentJob) {
-        log(`Rejected job ${job.jobId}: Already executing ${currentJob.jobId}`, 'WARN');
-        reportJobStatus(job.jobId, 'rejected', 'Worker busy with another job');
-        return;
-    }
-    
-    currentJob = job;
-    log(`\n${'='.repeat(60)}`);
-    log(`Executing Job: ${job.jobId}`);
-    log(`Image: ${job.containerImage}`);
-    log(`Command: ${job.command?.join(' ') || 'default'}`);
-    log(`CPU: ${job.requiredCpuCores || 1} cores, Memory: ${job.requiredMemoryGb || 2}GB`);
-    log(`${'='.repeat(60)}`);
-    
-    try {
-        reportJobStatus(job.jobId, 'running', 'Job started');
-        
-        // Execute the job
-        const result = await executeJob(job);
-        
-        // Report success
-        reportJobStatus(job.jobId, 'completed', 'Job completed successfully', result);
-        log(`✓ Job ${job.jobId} completed successfully`, 'SUCCESS');
-        
-    } catch (err) {
-        log(`✗ Job ${job.jobId} failed: ${err.message}`, 'ERROR');
-        reportJobStatus(job.jobId, 'failed', err.message);
-    } finally {
-        currentJob = null;
-    }
-}
-
-// Handle job cancellation
-async function handleJobCancellation(jobId) {
-    if (currentJob && currentJob.jobId === jobId) {
-        log(`Cancelling job ${jobId}`, 'WARN');
-        // TODO: Implement container stopping logic
-        currentJob = null;
-    }
-}
-
-// Execute job in Docker container
-async function executeJob(job) {
-    const startTime = Date.now();
-    
-    try {
-        // Pull image
-        log('Pulling Docker image...');
-        await pullImage(job.containerImage);
-        log('✓ Image pulled');
-        
-        // Create container
-        log('Creating container...');
-        const container = await docker.createContainer({
-            Image: job.containerImage,
-            Cmd: job.command || null,
-            HostConfig: {
-                Memory: (job.requiredMemoryGb || 2) * 1024 * 1024 * 1024,
-                NanoCpus: (job.requiredCpuCores || 1) * 1000000000,
-                AutoRemove: false, // Keep container for log retrieval
-                NetworkMode: 'bridge'
-            },
-            Env: job.env || [],
-            WorkingDir: job.workingDir || '/app'
-        });
-        
-        log(`✓ Container created: ${container.id.substring(0, 12)}`);
-        
-        // Start container
-        log('Starting container...');
-        await container.start();
-        log('✓ Container started');
-        
-        // Wait for completion
-        const waitResult = await container.wait();
-        const exitCode = waitResult.StatusCode;
-        
-        // Get logs
-        const stdout = await container.logs({
-            stdout: true,
-            stderr: false
-        });
-        
-        const stderr = await container.logs({
-            stdout: false,
-            stderr: true
-        });
-        
-        // Remove container
-        try {
-            await container.remove();
-        } catch (err) {
-            log(`Warning: Failed to remove container: ${err.message}`, 'WARN');
-        }
-        
-        const duration = Date.now() - startTime;
-        log(`Container exited with code ${exitCode} (duration: ${(duration/1000).toFixed(2)}s)`);
-        
-        return {
-            exitCode: exitCode,
-            stdout: stdout.toString('utf8'),
-            stderr: stderr.toString('utf8'),
-            duration: duration,
-            success: exitCode === 0
-        };
-        
-    } catch (err) {
-        throw new Error(`Job execution failed: ${err.message}`);
-    }
-}
-
-// Pull Docker image
-function pullImage(imageName) {
+  async connect() {
     return new Promise((resolve, reject) => {
-        docker.pull(imageName, (err, stream) => {
-            if (err) return reject(err);
-            
-            let lastProgress = {};
-            
-            docker.modem.followProgress(
-                stream,
-                (err, output) => {
-                    if (err) return reject(err);
-                    resolve(output);
-                },
-                (event) => {
-                    // Log progress for large downloads
-                    if (event.id && event.progress) {
-                        lastProgress[event.id] = event.progress;
-                        
-                        // Log every 10 layers
-                        const completed = Object.keys(lastProgress).length;
-                        if (completed % 10 === 0) {
-                            log(`Pulling: ${completed} layers downloaded...`, 'DEBUG');
-                        }
-                    }
-                }
-            );
-        });
-    });
-}
+      console.log('🔌 Connecting to coordinator...');
+      
+      // FIX: Build proper WebSocket URL
+      let wsUrl = this.config.coordinatorUrl;
+      
+      // If coordinatorUrl not set, derive from apiUrl
+      if (!wsUrl) {
+        wsUrl = this.config.apiUrl
+          .replace('https://distributex-api', 'wss://distributex-coordinator')
+          .replace('http://localhost:8787', 'ws://localhost:8788');
+        wsUrl += '/ws';
+      }
+      
+      console.log(`   URL: ${wsUrl}`);
+      console.log(`   Worker ID: ${this.config.workerId}`);
+      console.log(`   Auth Token: ${this.config.authToken?.substring(0, 20)}...`);
+      
+      // FIX: Proper authentication headers
+      this.ws = new WebSocket(wsUrl, {
+        headers: {
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId,
+          'Upgrade': 'websocket',
+          'Connection': 'Upgrade'
+        }
+      });
 
-// Report job status to coordinator
-function reportJobStatus(jobId, status, message, result = null) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        log(`Cannot report status: WebSocket not connected`, 'WARN');
-        return;
+      this.ws.on('open', () => {
+        console.log('✓ Connected to coordinator\n');
+        this.reconnectAttempts = 0;
+        this.log('Connected to coordinator');
+        resolve();
+      });
+
+      this.ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          this.handleMessage(message);
+        } catch (error) {
+          console.error('Error parsing message:', error);
+        }
+      });
+
+      this.ws.on('close', (code, reason) => {
+        console.log(`⚠️  Disconnected from coordinator (${code}: ${reason})`);
+        this.log(`Disconnected: ${code} ${reason}`);
+        if (!this.isShuttingDown) {
+          this.scheduleReconnect();
+        }
+      });
+
+      this.ws.on('error', (error) => {
+        console.error('WebSocket error:', error.message);
+        this.log('ERROR', error.message);
+        
+        // Don't reject immediately - let close handler trigger reconnect
+        if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+          console.error('\n❌ Authentication failed!');
+          console.error('Your auth token or worker ID may be invalid.');
+          console.error('Please re-register your worker:\n');
+          console.error('  curl -fsSL https://get.distributex.cloud | bash\n');
+          reject(new Error('Authentication failed'));
+        }
+      });
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+          this.ws.close();
+          reject(new Error('Connection timeout'));
+        }
+      }, 30000);
+    });
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
     }
     
-    const payload = {
-        type: 'job_status',
-        jobId: jobId,
-        workerId: config.user_id,
-        status: status,
-        message: message,
-        timestamp: Date.now()
+    this.reconnectAttempts++;
+    
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      console.error('❌ Max reconnection attempts reached. Exiting...');
+      console.error('Please check your configuration and try again.\n');
+      process.exit(1);
+    }
+    
+    // Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
+    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+    
+    console.log(`⏳ Reconnecting in ${delay/1000}s... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})\n`);
+    
+    this.reconnectTimeout = setTimeout(async () => {
+      try {
+        await this.connect();
+        this.startHeartbeat();
+      } catch (error) {
+        console.error('Reconnection failed:', error.message);
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  async sendCapabilities() {
+    const cpus = os.cpus();
+    const totalMem = os.totalmem() / (1024 ** 3);
+    
+    const capabilities = {
+      cpuCores: this.config.maxCpuCores || cpus.length,
+      memoryGb: this.config.maxMemoryGb || Math.round(totalMem * 0.7),
+      storageGb: this.config.maxStorageGb || 50,
+      gpuAvailable: this.config.enableGpu || false,
+      nodeName: this.config.nodeName || os.hostname(),
+      platform: os.platform(),
+      arch: os.arch()
+    };
+
+    this.send({
+      type: 'capabilities',
+      capabilities
+    });
+    
+    this.log('Sent capabilities', JSON.stringify(capabilities));
+  }
+
+  startHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    
+    this.heartbeatInterval = setInterval(() => {
+      // Pong responses handled in handleMessage
+    }, 30000);
+  }
+
+  handleMessage(message) {
+    switch (message.type) {
+      case 'connected':
+        console.log(`✓ Connection confirmed: ${message.workerId}\n`);
+        break;
+      
+      case 'ping':
+        this.send({ 
+          type: 'pong', 
+          timestamp: Date.now(), 
+          healthScore: this.calculateHealthScore(),
+          activeJobs: Array.from(this.activeJobs.keys())
+        });
+        break;
+      
+      case 'job_assigned':
+        this.executeJob(message.job);
+        break;
+      
+      case 'disconnect':
+        console.log('⚠️  Coordinator requested disconnect:', message.reason);
+        this.stop();
+        break;
+      
+      default:
+        console.log('Unknown message type:', message.type);
+    }
+  }
+
+  calculateHealthScore() {
+    const cpuLoad = os.loadavg()[0] / os.cpus().length;
+    const memUsed = (os.totalmem() - os.freemem()) / os.totalmem();
+    
+    let score = 100;
+    if (cpuLoad > 0.8) score -= 20;
+    else if (cpuLoad > 0.6) score -= 10;
+    if (memUsed > 0.9) score -= 20;
+    else if (memUsed > 0.75) score -= 10;
+    
+    return Math.max(0, score);
+  }
+
+  async executeJob(job) {
+    console.log('\n' + '='.repeat(60));
+    console.log(`📦 New Job Assigned: ${job.jobId}`);
+    console.log('='.repeat(60));
+    console.log(`Type: ${job.jobType}`);
+    console.log(`Image: ${job.containerImage}`);
+    console.log('='.repeat(60) + '\n');
+    
+    this.activeJobs.set(job.jobId, job);
+    this.log(`Starting job ${job.jobId}`);
+    
+    this.send({
+      type: 'job_update',
+      jobId: job.jobId,
+      status: 'running',
+      data: { startedAt: new Date().toISOString() }
+    });
+
+    const startTime = Date.now();
+    let container = null;
+
+    try {
+      console.log(`📥 Pulling image: ${job.containerImage}...`);
+      await this.pullImage(job.containerImage);
+      console.log('✓ Image ready\n');
+      
+      console.log('🏗️  Creating container...');
+      container = await this.docker.createContainer({
+        Image: job.containerImage,
+        Cmd: job.command || [],
+        Env: Object.entries(job.environmentVars || {}).map(([k, v]) => `${k}=${v}`),
+        HostConfig: {
+          CpuQuota: (job.resources?.cpu || 1) * 100000,
+          Memory: (job.resources?.memory || 2) * 1024 * 1024 * 1024,
+          NetworkMode: this.config.allowNetwork ? 'bridge' : 'none',
+          AutoRemove: false
+        }
+      });
+      console.log('✓ Container created\n');
+
+      console.log('▶️  Starting container...');
+      await container.start();
+      console.log('✓ Container started\n');
+      
+      console.log('📄 Container output:');
+      console.log('-'.repeat(60));
+
+      const logStream = await container.logs({
+        follow: true,
+        stdout: true,
+        stderr: true
+      });
+
+      logStream.on('data', (chunk) => {
+        const message = chunk.toString().replace(/[\x00-\x08]/g, '');
+        process.stdout.write(message);
+        
+        this.send({
+          type: 'log',
+          jobId: job.jobId,
+          log: {
+            level: 'info',
+            message,
+            timestamp: new Date().toISOString()
+          }
+        });
+      });
+
+      await Promise.race([
+        container.wait(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Job timeout')), (job.timeoutSeconds || 3600) * 1000)
+        )
+      ]);
+
+      console.log('-'.repeat(60) + '\n');
+
+      const inspection = await container.inspect();
+      const exitCode = inspection.State.ExitCode;
+      await container.remove();
+
+      const runtime = (Date.now() - startTime) / 1000;
+
+      console.log(`✅ Job completed successfully`);
+      console.log(`   Exit code: ${exitCode}`);
+      console.log(`   Runtime: ${runtime.toFixed(2)}s\n`);
+
+      this.send({
+        type: 'job_update',
+        jobId: job.jobId,
+        status: 'completed',
+        data: {
+          exitCode,
+          runtime,
+          completedAt: new Date().toISOString()
+        }
+      });
+      
+      this.log(`Job ${job.jobId} completed (exit ${exitCode})`);
+    } catch (error) {
+      console.error(`\n❌ Job failed: ${error.message}\n`);
+      
+      if (container) {
+        try {
+          await container.remove({ force: true });
+        } catch (e) {}
+      }
+      
+      this.send({
+        type: 'job_update',
+        jobId: job.jobId,
+        status: 'failed',
+        data: {
+          errorMessage: error.message,
+          failedAt: new Date().toISOString()
+        }
+      });
+      
+      this.log('ERROR', `Job ${job.jobId} failed: ${error.message}`);
+    } finally {
+      this.activeJobs.delete(job.jobId);
+    }
+  }
+
+  async pullImage(image) {
+    try {
+      await this.docker.getImage(image).inspect();
+    } catch {
+      await new Promise((resolve, reject) => {
+        this.docker.pull(image, (err, stream) => {
+          if (err) return reject(err);
+          
+          this.docker.modem.followProgress(stream, (err) => {
+            if (err) return reject(err);
+            resolve();
+          }, (event) => {
+            if (event.status) {
+              process.stdout.write(`\r   ${event.status}...`);
+            }
+          });
+        });
+      });
+      process.stdout.write('\n');
+    }
+  }
+
+  send(message) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
+  }
+
+  async log(level, message) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] ${typeof level === 'string' && level === 'ERROR' ? 'ERROR' : 'INFO'}: ${message || level}\n`;
+    
+    try {
+      await fs.appendFile(path.join(LOGS_PATH, 'worker.log'), logMessage);
+    } catch (e) {
+      // Ignore log errors
+    }
+  }
+
+  setupSignalHandlers() {
+    const shutdown = async () => {
+      if (this.isShuttingDown) return;
+      this.isShuttingDown = true;
+      
+      console.log('\n⚠️  Shutting down gracefully...');
+      
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+      }
+      
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+      }
+      
+      if (this.activeJobs.size > 0) {
+        console.log(`⏳ Waiting for ${this.activeJobs.size} job(s) to complete...`);
+        
+        const timeout = setTimeout(() => {
+          console.log('⚠️  Shutdown timeout, forcing exit');
+          process.exit(0);
+        }, 60000);
+        
+        while (this.activeJobs.size > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        clearTimeout(timeout);
+      }
+      
+      this.send({
+        type: 'status',
+        status: 'offline'
+      });
+      
+      if (this.ws) {
+        this.ws.close();
+      }
+      
+      console.log('✅ Shutdown complete\n');
+      process.exit(0);
     };
     
-    if (result) {
-        payload.result = {
-            exitCode: result.exitCode,
-            stdout: result.stdout?.substring(0, 10000), // Limit output size
-            stderr: result.stderr?.substring(0, 10000),
-            duration: result.duration
-        };
-    }
-    
-    ws.send(JSON.stringify(payload));
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  }
+
+  async stop() {
+    await this.setupSignalHandlers();
+  }
 }
 
-// Graceful shutdown
-function shutdown(signal) {
-    log(`\nReceived ${signal}, shutting down gracefully...`);
+// Main execution
+(async () => {
+  try {
+    const configData = await fs.readFile(CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(configData);
     
-    stopHeartbeat();
-    
-    if (currentJob) {
-        log(`Warning: Shutting down while job ${currentJob.jobId} is running`, 'WARN');
+    if (!config.authToken || !config.workerId) {
+      console.error('❌ Invalid configuration. Please run the setup again.');
+      process.exit(1);
     }
     
-    if (ws) {
-        ws.send(JSON.stringify({
-            type: 'unregister',
-            workerId: config.user_id
-        }));
-        ws.close();
+    const worker = new WorkerNode(config);
+    await worker.start();
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.error('❌ Configuration not found. Please run the setup:');
+      console.error('   curl -fsSL https://get.distributex.cloud | bash');
+    } else {
+      console.error('❌ Failed to start worker:', error.message);
     }
-    
-    log('Worker stopped');
-    process.exit(0);
-}
-
-// Signal handlers
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-
-// Unhandled errors
-process.on('uncaughtException', (err) => {
-    log(`Uncaught exception: ${err.message}`, 'ERROR');
-    log(err.stack, 'ERROR');
     process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    log(`Unhandled rejection: ${reason}`, 'ERROR');
-});
-
-// Startup banner
-console.log('\n' + '='.repeat(60));
-console.log('  DistributeX Worker v1.0.0');
-console.log('  Distributed Computing Network');
-console.log('='.repeat(60) + '\n');
-
-log('Worker starting...');
-log(`User: ${config.email || 'unknown'}`);
-log(`Install directory: ${INSTALL_DIR}`);
-log(`Log file: ${LOG_FILE}`);
-
-// Verify Docker is accessible
-docker.ping()
-    .then(() => {
-        log('✓ Docker daemon accessible');
-        
-        // Get Docker info
-        return docker.info();
-    })
-    .then((info) => {
-        log(`✓ Docker version: ${info.ServerVersion}`);
-        log(`✓ Containers: ${info.Containers} (${info.ContainersRunning} running)`);
-        
-        // Start worker
-        connect();
-    })
-    .catch((err) => {
-        log(`✗ Docker daemon not accessible: ${err.message}`, 'ERROR');
-        log('Please ensure Docker is running and you have permission to access it', 'ERROR');
-        process.exit(1);
-    });
+  }
+})();
