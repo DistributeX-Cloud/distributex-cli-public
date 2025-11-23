@@ -1,224 +1,230 @@
 #!/bin/bash
-# DistributeX Authentication Diagnostic Tool
-# Save as: ~/.distributex/bin/dxcloud-diagnose.sh
+# DistributeX Diagnostic and Fix Script
 
 set -e
 
-INSTALL_DIR="$HOME/.distributex"
-CONFIG_FILE="$INSTALL_DIR/config/auth.json"
-API_URL="${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}"
-COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev/ws}"
+echo "🔍 DistributeX System Diagnostics"
+echo "=================================="
+echo ""
 
 # Colors
-BOLD='\033[1m'
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${CYAN}${BOLD}"
-echo "════════════════════════════════════════"
-echo "  DistributeX Authentication Diagnostic"
-echo "════════════════════════════════════════"
-echo -e "${NC}\n"
+# Configuration
+CONFIG_FILE="$HOME/.distributex/config.json"
 
-# Check 1: Config file exists
-echo -e "${BOLD}1. Checking config file...${NC}"
-if [ -f "$CONFIG_FILE" ]; then
-    echo -e "${GREEN}✓ Config file exists${NC}"
-    echo "  Location: $CONFIG_FILE"
-    
-    # Extract info
-    TOKEN=$(grep '"token"' "$CONFIG_FILE" | cut -d'"' -f4)
-    USER_ID=$(grep '"user_id"' "$CONFIG_FILE" | cut -d'"' -f4)
-    EMAIL=$(grep '"email"' "$CONFIG_FILE" | cut -d'"' -f4)
-    
-    if [ -n "$TOKEN" ]; then
-        TOKEN_PREVIEW="${TOKEN:0:20}..."
-        echo -e "  Token: ${CYAN}$TOKEN_PREVIEW${NC}"
-    else
-        echo -e "${RED}✗ Token not found in config${NC}"
-    fi
-    
-    if [ -n "$USER_ID" ]; then
-        echo -e "  User ID: ${CYAN}$USER_ID${NC}"
-    else
-        echo -e "${RED}✗ User ID not found in config${NC}"
-    fi
-    
-    if [ -n "$EMAIL" ]; then
-        echo -e "  Email: ${CYAN}$EMAIL${NC}"
-    else
-        echo -e "${YELLOW}⚠ Email not found in config${NC}"
-    fi
+echo -e "${BLUE}1. Checking Configuration...${NC}"
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo -e "${RED}❌ Configuration file not found at $CONFIG_FILE${NC}"
+  echo "Please run setup first: curl -fsSL https://get.distributex.cloud | bash"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ Configuration file found${NC}"
+echo ""
+
+# Parse configuration
+API_URL=$(cat "$CONFIG_FILE" | grep -o '"apiUrl":"[^"]*"' | cut -d'"' -f4)
+AUTH_TOKEN=$(cat "$CONFIG_FILE" | grep -o '"authToken":"[^"]*"' | cut -d'"' -f4)
+WORKER_ID=$(cat "$CONFIG_FILE" | grep -o '"workerId":"[^"]*"' | cut -d'"' -f4)
+
+echo "Configuration:"
+echo "  API URL: $API_URL"
+echo "  Worker ID: $WORKER_ID"
+echo "  Auth Token: ${AUTH_TOKEN:0:20}..."
+echo ""
+
+# Determine coordinator URL
+if echo "$API_URL" | grep -q "localhost"; then
+  COORDINATOR_URL="ws://localhost:8788"
 else
-    echo -e "${RED}✗ Config file not found${NC}"
-    echo ""
-    echo "You need to login first:"
-    echo "  dxcloud login"
-    echo ""
-    echo "Or create an account:"
-    echo "  dxcloud signup"
+  COORDINATOR_URL=$(echo "$API_URL" | sed 's/https:\/\/distributex-api/wss:\/\/distributex-coordinator/')
+fi
+
+echo "Derived Coordinator URL: $COORDINATOR_URL"
+echo ""
+
+echo -e "${BLUE}2. Testing API Connectivity...${NC}"
+
+# Test API root
+echo "Testing: $API_URL"
+if curl -sf "$API_URL" > /dev/null; then
+  echo -e "${GREEN}✓ API root is accessible${NC}"
+else
+  echo -e "${RED}❌ API root is not accessible${NC}"
+  echo "This may indicate the API service is down or URL is incorrect."
+fi
+
+# Test API health
+echo "Testing: $API_URL/health"
+HEALTH_RESPONSE=$(curl -sf "$API_URL/health" 2>&1 || echo "failed")
+if echo "$HEALTH_RESPONSE" | grep -q "healthy"; then
+  echo -e "${GREEN}✓ API health endpoint is working${NC}"
+else
+  echo -e "${RED}❌ API health endpoint failed${NC}"
+  echo "Response: $HEALTH_RESPONSE"
+fi
+
+# Test pool status
+echo "Testing: $API_URL/api/pool/status"
+POOL_RESPONSE=$(curl -sf "$API_URL/api/pool/status" 2>&1 || echo "failed")
+if echo "$POOL_RESPONSE" | grep -q "workers"; then
+  echo -e "${GREEN}✓ Pool status endpoint is working${NC}"
+else
+  echo -e "${RED}❌ Pool status endpoint failed${NC}"
+  echo "Response: $POOL_RESPONSE"
+fi
+
+echo ""
+
+echo -e "${BLUE}3. Testing Worker Authentication...${NC}"
+
+# Try to register a test worker (should succeed if auth is valid)
+REGISTER_RESPONSE=$(curl -sf -X POST "$API_URL/api/workers/register" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"nodeName":"diagnostic-test","cpuCores":1,"memoryGb":1}' 2>&1 || echo "failed")
+
+if echo "$REGISTER_RESPONSE" | grep -q "workerId"; then
+  echo -e "${GREEN}✓ Worker authentication is working${NC}"
+  echo "Your auth token is valid."
+elif echo "$REGISTER_RESPONSE" | grep -q "401"; then
+  echo -e "${RED}❌ Authentication failed (401 Unauthorized)${NC}"
+  echo "Your auth token or worker ID may be invalid."
+  echo ""
+  echo "Fix: Re-register your worker:"
+  echo "  1. Stop the worker: Ctrl+C"
+  echo "  2. Re-run setup: curl -fsSL https://get.distributex.cloud | bash"
+  exit 1
+elif echo "$REGISTER_RESPONSE" | grep -q "409"; then
+  echo -e "${YELLOW}⚠ Worker already registered (this is normal)${NC}"
+else
+  echo -e "${RED}❌ Worker registration failed${NC}"
+  echo "Response: $REGISTER_RESPONSE"
+fi
+
+echo ""
+
+echo -e "${BLUE}4. Testing Coordinator WebSocket...${NC}"
+
+# Test if coordinator is accessible (HTTP first)
+COORDINATOR_HTTP=$(echo "$COORDINATOR_URL" | sed 's/wss:/https:/' | sed 's/ws:/http:/')
+echo "Testing: $COORDINATOR_HTTP"
+
+if curl -sf "$COORDINATOR_HTTP" > /dev/null; then
+  echo -e "${GREEN}✓ Coordinator HTTP endpoint is accessible${NC}"
+else
+  echo -e "${RED}❌ Coordinator is not accessible${NC}"
+  echo "The coordinator service may be down."
+fi
+
+# Test coordinator health
+echo "Testing: $COORDINATOR_HTTP/health"
+COORD_HEALTH=$(curl -sf "$COORDINATOR_HTTP/health" 2>&1 || echo "failed")
+if echo "$COORD_HEALTH" | grep -q "healthy"; then
+  echo -e "${GREEN}✓ Coordinator health endpoint is working${NC}"
+else
+  echo -e "${YELLOW}⚠ Coordinator health endpoint not found${NC}"
+  echo "Response: $COORD_HEALTH"
+fi
+
+echo ""
+
+echo -e "${BLUE}5. Checking Worker Logs...${NC}"
+LOG_FILE="$HOME/.distributex/logs/worker.log"
+
+if [ -f "$LOG_FILE" ]; then
+  echo "Last 10 log entries:"
+  tail -n 10 "$LOG_FILE"
+  echo ""
+  
+  # Check for common errors
+  if grep -q "401" "$LOG_FILE"; then
+    echo -e "${RED}Found 401 errors in logs - authentication is failing${NC}"
+  fi
+  
+  if grep -q "ECONNREFUSED" "$LOG_FILE"; then
+    echo -e "${RED}Found connection refused errors - coordinator may be down${NC}"
+  fi
+  
+  if grep -q "timeout" "$LOG_FILE"; then
+    echo -e "${YELLOW}Found timeout errors - network may be slow${NC}"
+  fi
+else
+  echo -e "${YELLOW}No log file found at $LOG_FILE${NC}"
+fi
+
+echo ""
+
+echo -e "${BLUE}6. Docker Status...${NC}"
+if command -v docker &> /dev/null; then
+  echo -e "${GREEN}✓ Docker is installed${NC}"
+  
+  if docker ps &> /dev/null; then
+    echo -e "${GREEN}✓ Docker daemon is running${NC}"
+    CONTAINER_COUNT=$(docker ps -q | wc -l)
+    echo "  Running containers: $CONTAINER_COUNT"
+  else
+    echo -e "${RED}❌ Docker daemon is not running${NC}"
+    echo "Start Docker and try again."
     exit 1
+  fi
+else
+  echo -e "${RED}❌ Docker is not installed${NC}"
+  exit 1
 fi
 
 echo ""
+echo "=================================="
+echo -e "${BLUE}Diagnostic Summary${NC}"
+echo "=================================="
+echo ""
 
-# Check 2: Validate token with API
-echo -e "${BOLD}2. Validating token with API...${NC}"
-if [ -n "$TOKEN" ]; then
-    response=$(curl -s -w "\n%{http_code}" \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "Content-Type: application/json" \
-        "$API_URL/api/auth/me")
-    
-    http_code=$(echo "$response" | tail -n1)
-    body=$(echo "$response" | sed '$d')
-    
-    if [ "$http_code" = "200" ]; then
-        echo -e "${GREEN}✓ Token is valid${NC}"
-        echo "  HTTP Status: $http_code"
-        
-        # Try to extract user info
-        user_email=$(echo "$body" | grep -o '"email":"[^"]*"' | cut -d'"' -f4)
-        user_role=$(echo "$body" | grep -o '"role":"[^"]*"' | cut -d'"' -f4)
-        
-        if [ -n "$user_email" ]; then
-            echo "  Authenticated as: $user_email"
-        fi
-        if [ -n "$user_role" ]; then
-            echo "  Role: $user_role"
-        fi
-    elif [ "$http_code" = "401" ]; then
-        echo -e "${RED}✗ Token is invalid or expired${NC}"
-        echo "  HTTP Status: $http_code"
-        echo ""
-        echo "Your token has expired. Please login again:"
-        echo "  ${CYAN}dxcloud login${NC}"
-    else
-        echo -e "${YELLOW}⚠ Unexpected response${NC}"
-        echo "  HTTP Status: $http_code"
-        echo "  Response: $body"
-    fi
+# Provide recommendations
+ISSUES=0
+
+if ! curl -sf "$API_URL/health" | grep -q "healthy"; then
+  echo -e "${RED}• API Service Issue: Cannot connect to API${NC}"
+  echo "  Fix: Check if API is deployed: cd packages/api && wrangler deploy"
+  ISSUES=$((ISSUES + 1))
+fi
+
+if ! echo "$REGISTER_RESPONSE" | grep -qE "workerId|409"; then
+  echo -e "${RED}• Authentication Issue: Worker cannot authenticate${NC}"
+  echo "  Fix: Re-register worker with valid credentials"
+  ISSUES=$((ISSUES + 1))
+fi
+
+if ! curl -sf "$COORDINATOR_HTTP" > /dev/null; then
+  echo -e "${RED}• Coordinator Issue: Cannot connect to coordinator${NC}"
+  echo "  Fix: Deploy coordinator: cd packages/coordinator && wrangler deploy"
+  ISSUES=$((ISSUES + 1))
+fi
+
+if [ $ISSUES -eq 0 ]; then
+  echo -e "${GREEN}✅ All systems operational!${NC}"
+  echo ""
+  echo "Your worker should be able to connect successfully."
+  echo ""
+  echo "Start/restart your worker:"
+  echo "  node ~/.distributex/distributex-worker.js"
 else
-    echo -e "${RED}✗ No token to validate${NC}"
+  echo ""
+  echo -e "${YELLOW}Found $ISSUES issue(s) that need attention.${NC}"
+  echo ""
+  echo "Common fixes:"
+  echo "  1. Re-deploy services:"
+  echo "     cd packages/api && wrangler deploy"
+  echo "     cd packages/coordinator && wrangler deploy"
+  echo ""
+  echo "  2. Re-register worker:"
+  echo "     curl -fsSL https://get.distributex.cloud | bash"
 fi
 
 echo ""
-
-# Check 3: Test WebSocket connection
-echo -e "${BOLD}3. Testing WebSocket connection...${NC}"
-echo "  Coordinator URL: $COORDINATOR_URL"
-
-# Note: This requires wscat or similar tool
-if command -v wscat >/dev/null 2>&1; then
-    echo "  Testing connection (5 second timeout)..."
-    
-    # Try to connect with auth
-    timeout 5 wscat -c "$COORDINATOR_URL" \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "X-Worker-Id: $USER_ID" \
-        2>&1 | head -n 5 &
-    
-    sleep 2
-    pkill -P $$ wscat 2>/dev/null || true
-    
-    echo -e "${YELLOW}⚠ Manual WebSocket test recommended${NC}"
-else
-    echo -e "${YELLOW}⚠ wscat not installed (npm install -g wscat)${NC}"
-    echo "  Cannot test WebSocket directly"
-fi
-
-echo ""
-
-# Check 4: Verify Docker access
-echo -e "${BOLD}4. Checking Docker access...${NC}"
-if command -v docker >/dev/null 2>&1; then
-    if docker ps >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ Docker daemon accessible${NC}"
-        
-        # Get Docker info
-        containers=$(docker ps -q | wc -l)
-        echo "  Running containers: $containers"
-        
-        version=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
-        echo "  Docker version: $version"
-    else
-        echo -e "${RED}✗ Cannot access Docker daemon${NC}"
-        echo ""
-        echo "Possible fixes:"
-        echo "  1. Start Docker:"
-        echo "     sudo systemctl start docker"
-        echo ""
-        echo "  2. Add user to docker group:"
-        echo "     sudo usermod -aG docker $USER"
-        echo "     newgrp docker"
-    fi
-else
-    echo -e "${RED}✗ Docker not installed${NC}"
-    echo "  Install: curl -fsSL https://get.docker.com | sh"
-fi
-
-echo ""
-
-# Check 5: Network connectivity
-echo -e "${BOLD}5. Checking network connectivity...${NC}"
-
-# Test API
-echo "  Testing API endpoint..."
-api_response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$API_URL/health" 2>/dev/null || echo "000")
-if [ "$api_response" = "200" ]; then
-    echo -e "  ${GREEN}✓ API reachable${NC} (HTTP $api_response)"
-elif [ "$api_response" = "000" ]; then
-    echo -e "  ${RED}✗ API unreachable${NC} (timeout or connection error)"
-else
-    echo -e "  ${YELLOW}⚠ API responded with HTTP $api_response${NC}"
-fi
-
-# Test Coordinator (HTTP check since WS is harder)
-coordinator_http=$(echo "$COORDINATOR_URL" | sed 's/wss:/https:/' | sed 's/\/ws$//')
-coord_response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$coordinator_http/health" 2>/dev/null || echo "000")
-if [ "$coord_response" = "200" ]; then
-    echo -e "  ${GREEN}✓ Coordinator reachable${NC} (HTTP $coord_response)"
-elif [ "$coord_response" = "000" ]; then
-    echo -e "  ${YELLOW}⚠ Coordinator HTTP unreachable${NC} (WS might still work)"
-else
-    echo -e "  ${YELLOW}⚠ Coordinator responded with HTTP $coord_response${NC}"
-fi
-
-echo ""
-
-# Summary and recommendations
-echo -e "${CYAN}${BOLD}════════════════════════════════════════${NC}"
-echo -e "${BOLD}Summary & Recommendations${NC}"
-echo -e "${CYAN}${BOLD}════════════════════════════════════════${NC}\n"
-
-if [ "$http_code" = "401" ] || [ -z "$TOKEN" ]; then
-    echo -e "${YELLOW}⚠ Authentication issue detected${NC}\n"
-    echo "Recommended actions:"
-    echo "  1. Login again:"
-    echo -e "     ${CYAN}dxcloud login${NC}\n"
-    echo "  2. If that fails, create new account:"
-    echo -e "     ${CYAN}dxcloud signup${NC}\n"
-    echo "  3. Then restart worker:"
-    echo -e "     ${CYAN}dxcloud worker start${NC}\n"
-elif [ "$http_code" = "200" ]; then
-    echo -e "${GREEN}✓ Authentication looks good!${NC}\n"
-    echo "If worker still fails to connect, check:"
-    echo "  1. Worker logs:"
-    echo -e "     ${CYAN}tail -f $INSTALL_DIR/logs/worker.log${NC}\n"
-    echo "  2. Try restarting worker:"
-    echo -e "     ${CYAN}dxcloud worker stop${NC}"
-    echo -e "     ${CYAN}dxcloud worker start${NC}\n"
-else
-    echo -e "${YELLOW}⚠ Could not verify authentication${NC}\n"
-    echo "Try logging in again:"
-    echo -e "  ${CYAN}dxcloud login${NC}\n"
-fi
-
-echo "For more help:"
-echo "  • View logs: tail -f $INSTALL_DIR/logs/worker.log"
-echo "  • Status page: https://distributex-status-page.distributex.workers.dev/"
-echo "  • Config location: $CONFIG_FILE"
+echo "For more help, visit: https://github.com/yourusername/distributex"
 echo ""
