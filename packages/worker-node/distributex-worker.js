@@ -50,172 +50,203 @@ class WorkerNode {
   }
 
   // ✅ ENHANCED: Accurate system capability detection with multiple methods
-  async detectCapabilities() {
-    console.log('🔍 Detecting system capabilities...');
-    
-    const cpus = os.cpus();
-    const totalMemGb = os.totalmem() / (1024 ** 3);
-    const freeMemGb = os.freemem() / (1024 ** 3);
-    
-    // CPU detection
-    const cpuCores = this.config.maxCpuCores 
-      ? Math.min(this.config.maxCpuCores, cpus.length) 
-      : cpus.length;
-    const cpuModel = cpus[0]?.model || 'Unknown CPU';
-    
-    // Memory detection with config limits
-    const memoryGb = this.config.maxMemoryGb 
-      ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
-      : Math.round(totalMemGb * 0.8 * 10) / 10;
-    
-    // ✅ ACCURATE STORAGE DETECTION
-    let storageGb = 50; // Default fallback
-    try {
-      if (process.platform === 'win32') {
-        // Windows: Check C: drive
-        try {
-          const wmic = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace', { 
-            encoding: 'utf8', 
-            timeout: 3000 
-          });
-          const lines = wmic.trim().split('\n');
-          if (lines[1]) {
-            const freeBytes = parseInt(lines[1].trim());
-            storageGb = Math.round(freeBytes / (1024 ** 3));
-          }
-        } catch (e) {
-          console.log('⚠️  Could not detect storage via wmic, using default');
-          storageGb = this.config.maxStorageGb || 50;
+async detectCapabilities() {
+  console.log('🔍 Detecting system capabilities...');
+  
+  const cpus = os.cpus();
+  const totalMemGb = os.totalmem() / (1024 ** 3);
+  const freeMemGb = os.freemem() / (1024 ** 3);
+  
+  // CPU detection
+  const cpuCores = this.config.maxCpuCores 
+    ? Math.min(this.config.maxCpuCores, cpus.length) 
+    : cpus.length;
+  const cpuModel = cpus[0]?.model || 'Unknown CPU';
+  
+  // Memory detection with config limits (80% of total to be safe)
+  const memoryGb = this.config.maxMemoryGb 
+    ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
+    : Math.round(totalMemGb * 0.8 * 10) / 10;
+  
+  // ✅ ENHANCED STORAGE DETECTION
+  let storageGb = 50; // Default fallback
+  try {
+    if (process.platform === 'win32') {
+      // Windows: Check C: drive
+      try {
+        const { execSync } = require('child_process');
+        const wmic = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace', { 
+          encoding: 'utf8', 
+          timeout: 3000 
+        });
+        const lines = wmic.trim().split('\n');
+        if (lines[1]) {
+          const freeBytes = parseInt(lines[1].trim());
+          storageGb = Math.round(freeBytes / (1024 ** 3));
         }
-      } else {
-        // Linux/Mac: Check available space
-        try {
-          const output = execSync('df -h / | tail -1 | awk \'{print $4}\'', { 
+      } catch (e) {
+        console.log('⚠️  Could not detect Windows storage, using config/default');
+        storageGb = this.config.maxStorageGb || 50;
+      }
+    } else {
+      // Linux/Mac: Check available space on root
+      try {
+        const { execSync } = require('child_process');
+        const output = execSync('df -BG / | tail -1 | awk \'{print $4}\'', { 
+          encoding: 'utf8', 
+          timeout: 3000 
+        }).trim();
+        
+        // Parse output like "123G"
+        const match = output.match(/(\d+)G/);
+        if (match) {
+          storageGb = parseInt(match[1]);
+        } else {
+          // Try alternate format
+          const altOutput = execSync('df -h / | tail -1 | awk \'{print $4}\'', { 
             encoding: 'utf8', 
             timeout: 3000 
           }).trim();
-          const match = output.match(/(\d+\.?\d*)([KMGT])/);
-          if (match) {
-            const [, size, unit] = match;
+          const altMatch = altOutput.match(/(\d+\.?\d*)([KMGT])/);
+          if (altMatch) {
+            const [, size, unit] = altMatch;
             const multipliers = { K: 0.001, M: 0.001, G: 1, T: 1024 };
             storageGb = Math.round(parseFloat(size) * (multipliers[unit] || 1));
           }
-        } catch (e) {
-          console.log('⚠️  Could not detect storage via df, using config or default');
-          storageGb = this.config.maxStorageGb || 50;
-        }
-      }
-    } catch (e) {
-      console.log('⚠️  Could not detect storage, using default');
-      storageGb = this.config.maxStorageGb || 50;
-    }
-    
-    // Apply config limits for storage
-    storageGb = this.config.maxStorageGb 
-      ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
-      : Math.round(storageGb * 0.5 * 10) / 10;
-    
-    // ✅ ENHANCED GPU DETECTION with multiple methods
-    let gpuAvailable = false;
-    let gpuModel = null;
-    let gpuMemoryGb = 0;
-    
-    if (this.config.enableGpu !== false) { // Allow GPU detection unless explicitly disabled
-      try {
-        // Try nvidia-smi first (NVIDIA GPUs)
-        try {
-          const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
-            encoding: 'utf8', 
-            timeout: 3000 
-          });
-          const lines = nvidiaSmi.trim().split('\n');
-          if (lines[0]) {
-            const [name, memory] = lines[0].split(',');
-            gpuModel = name.trim();
-            gpuMemoryGb = parseFloat(memory.trim()) / 1024;
-            gpuAvailable = true;
-            console.log(`✓ NVIDIA GPU detected: ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB)`);
-          }
-        } catch (nvidiaError) {
-          // Try lspci for other GPUs (Linux)
-          if (process.platform === 'linux') {
-            try {
-              const output = execSync('lspci | grep -i vga', { 
-                encoding: 'utf8', 
-                timeout: 3000 
-              });
-              if (output.includes('AMD') || output.includes('Radeon')) {
-                gpuAvailable = true;
-                gpuModel = 'AMD GPU (detected)';
-                gpuMemoryGb = 0; // Cannot determine memory without specific tools
-                console.log('✓ AMD GPU detected');
-              } else if (output.includes('Intel')) {
-                gpuAvailable = true;
-                gpuModel = 'Intel GPU (detected)';
-                gpuMemoryGb = 0;
-                console.log('✓ Intel GPU detected');
-              }
-            } catch (lspciError) {
-              // No GPU detected
-            }
-          }
         }
       } catch (e) {
-        console.log('⚠️  GPU detection failed, assuming no GPU');
+        console.log('⚠️  Could not detect storage via df, using config/default');
+        storageGb = this.config.maxStorageGb || 50;
       }
     }
-    
-    // Platform info
-    const platform = os.platform();
-    const arch = os.arch();
-    const hostname = os.hostname();
-    
-    this.capabilities = {
-      // Core capabilities
-      cpuCores,
-      cpuModel,
-      memoryGb,
-      storageGb,
-      gpuAvailable,
-      gpuModel,
-      gpuMemoryGb,
-      
-      // System info
-      platform,
-      arch,
-      hostname,
-      nodeName: this.config.nodeName || hostname,
-      
-      // Total system resources (for reference)
-      totalSystemCpu: cpus.length,
-      totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
-      freeMemoryGb: Math.round(freeMemGb * 10) / 10,
-      
-      // Current usage (will be updated continuously)
-      cpuUsagePercent: 0,
-      memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
-      memoryAvailableGb: freeMemGb.toFixed(2),
-      
-      // Docker info
-      dockerVersion: null,
-      dockerContainers: 0,
-    };
-    
-    // Get Docker info
-    try {
-      const dockerInfo = await this.docker.info();
-      this.capabilities.dockerVersion = dockerInfo.ServerVersion;
-      this.capabilities.dockerContainers = dockerInfo.Containers;
-    } catch (e) {
-      console.log('⚠️  Docker info not available');
-    }
-    
-    console.log('✓ Capabilities detected\n');
-    console.log(`   CPU: ${cpuCores}/${cpus.length} cores (${cpuModel})`);
-    console.log(`   RAM: ${memoryGb}/${Math.round(totalMemGb * 10) / 10} GB`);
-    console.log(`   Storage: ${storageGb} GB available`);
-    console.log(`   GPU: ${gpuAvailable ? `${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}` : 'None'}\n`);
+  } catch (e) {
+    console.log('⚠️  Storage detection failed, using default');
+    storageGb = this.config.maxStorageGb || 50;
   }
+  
+  // Apply config limits for storage (use 50% of available to be safe)
+  storageGb = this.config.maxStorageGb 
+    ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
+    : Math.round(storageGb * 0.5 * 10) / 10;
+  
+  // ✅ ENHANCED GPU DETECTION
+  let gpuAvailable = false;
+  let gpuModel = null;
+  let gpuMemoryGb = 0;
+  
+  if (this.config.enableGpu !== false) {
+    try {
+      const { execSync } = require('child_process');
+      
+      // Try nvidia-smi first (NVIDIA GPUs)
+      try {
+        const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
+          encoding: 'utf8', 
+          timeout: 3000 
+        });
+        const lines = nvidiaSmi.trim().split('\n');
+        if (lines[0]) {
+          const parts = lines[0].split(',');
+          gpuModel = parts[0].trim();
+          gpuMemoryGb = parseFloat(parts[1].trim()) / 1024;
+          gpuAvailable = true;
+          console.log(`✓ NVIDIA GPU detected: ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB)`);
+        }
+      } catch (nvidiaError) {
+        // Try lspci for other GPUs (Linux)
+        if (process.platform === 'linux') {
+          try {
+            const output = execSync('lspci | grep -i vga', { 
+              encoding: 'utf8', 
+              timeout: 3000 
+            });
+            if (output.includes('AMD') || output.includes('Radeon')) {
+              gpuAvailable = true;
+              gpuModel = 'AMD GPU (detected)';
+              console.log('✓ AMD GPU detected');
+            } else if (output.includes('Intel')) {
+              gpuAvailable = true;
+              gpuModel = 'Intel GPU (detected)';
+              console.log('✓ Intel GPU detected');
+            }
+          } catch (lspciError) {
+            // No GPU detected
+          }
+        }
+        
+        // Try for Mac Metal GPUs
+        if (process.platform === 'darwin') {
+          try {
+            const output = execSync('system_profiler SPDisplaysDataType | grep Chipset', { 
+              encoding: 'utf8', 
+              timeout: 3000 
+            });
+            if (output) {
+              gpuAvailable = true;
+              gpuModel = output.split(':')[1]?.trim() || 'Mac GPU';
+              console.log(`✓ Mac GPU detected: ${gpuModel}`);
+            }
+          } catch (macError) {
+            // No GPU detected
+          }
+        }
+      }
+    } catch (e) {
+      console.log('⚠️  GPU detection failed, assuming no GPU');
+    }
+  }
+  
+  // Platform info
+  const platform = os.platform();
+  const arch = os.arch();
+  const hostname = os.hostname();
+  
+  this.capabilities = {
+    // Core capabilities
+    cpuCores,
+    cpuModel,
+    memoryGb,
+    storageGb,
+    gpuAvailable,
+    gpuModel,
+    gpuMemoryGb,
+    
+    // System info
+    platform,
+    arch,
+    hostname,
+    nodeName: this.config.nodeName || hostname,
+    
+    // Total system resources (for reference)
+    totalSystemCpu: cpus.length,
+    totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
+    freeMemoryGb: Math.round(freeMemGb * 10) / 10,
+    
+    // Current usage (will be updated continuously)
+    cpuUsagePercent: 0,
+    memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
+    memoryAvailableGb: freeMemGb.toFixed(2),
+    
+    // Docker info
+    dockerVersion: null,
+    dockerContainers: 0,
+  };
+  
+  // Get Docker info
+  try {
+    const dockerInfo = await this.docker.info();
+    this.capabilities.dockerVersion = dockerInfo.ServerVersion;
+    this.capabilities.dockerContainers = dockerInfo.Containers;
+  } catch (e) {
+    console.log('⚠️  Docker info not available');
+  }
+  
+  console.log('✓ Capabilities detected\n');
+  console.log(`   CPU: ${cpuCores}/${cpus.length} cores (${cpuModel})`);
+  console.log(`   RAM: ${memoryGb}/${Math.round(totalMemGb * 10) / 10} GB`);
+  console.log(`   Storage: ${storageGb} GB available`);
+  console.log(`   GPU: ${gpuAvailable ? `${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}` : 'None'}\n`);
+}
 
   // ✅ NEW: Continuously monitor system capabilities
   startCapabilitiesMonitoring() {
