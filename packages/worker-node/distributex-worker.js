@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // packages/worker-node/distributex-worker.js
-// FIXED: Proper authentication and connection handling
+// ✅ ENHANCED: Detects and sends REAL system capabilities with accurate detection
 
 const WebSocket = require('ws');
 const Docker = require('dockerode');
 const os = require('os');
 const fs = require('fs').promises;
 const path = require('path');
+const { execSync } = require('child_process');
 
 const CONFIG_PATH = path.join(os.homedir(), '.distributex', 'config.json');
 const LOGS_PATH = path.join(os.homedir(), '.distributex', 'logs');
@@ -22,6 +23,8 @@ class WorkerNode {
     this.reconnectTimeout = null;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
+    this.capabilities = null;
+    this.capabilitiesInterval = null;
   }
 
   async start() {
@@ -30,23 +33,249 @@ class WorkerNode {
     try {
       await fs.mkdir(LOGS_PATH, { recursive: true });
       await this.testDocker();
+      await this.detectCapabilities();
       await this.connect();
       await this.sendCapabilities();
       this.startHeartbeat();
+      this.startCapabilitiesMonitoring();
       this.setupSignalHandlers();
       
       console.log('✅ Worker started successfully\n');
-      console.log(`Worker ID: ${this.config.workerId}`);
-      console.log(`API URL: ${this.config.apiUrl}`);
-      console.log(`Auth Token: ${this.config.authToken?.substring(0, 20)}...`);
-      console.log(`Status: Online and ready to accept jobs\n`);
-      
-      this.log('Worker started successfully');
+      this.displayCapabilities();
     } catch (error) {
       console.error('❌ Failed to start worker:', error.message);
       this.log('ERROR', error.message);
       process.exit(1);
     }
+  }
+
+  // ✅ ENHANCED: Accurate system capability detection with multiple methods
+  async detectCapabilities() {
+    console.log('🔍 Detecting system capabilities...');
+    
+    const cpus = os.cpus();
+    const totalMemGb = os.totalmem() / (1024 ** 3);
+    const freeMemGb = os.freemem() / (1024 ** 3);
+    
+    // CPU detection
+    const cpuCores = this.config.maxCpuCores 
+      ? Math.min(this.config.maxCpuCores, cpus.length) 
+      : cpus.length;
+    const cpuModel = cpus[0]?.model || 'Unknown CPU';
+    
+    // Memory detection with config limits
+    const memoryGb = this.config.maxMemoryGb 
+      ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
+      : Math.round(totalMemGb * 0.8 * 10) / 10;
+    
+    // ✅ ACCURATE STORAGE DETECTION
+    let storageGb = 50; // Default fallback
+    try {
+      if (process.platform === 'win32') {
+        // Windows: Check C: drive
+        try {
+          const wmic = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace', { 
+            encoding: 'utf8', 
+            timeout: 3000 
+          });
+          const lines = wmic.trim().split('\n');
+          if (lines[1]) {
+            const freeBytes = parseInt(lines[1].trim());
+            storageGb = Math.round(freeBytes / (1024 ** 3));
+          }
+        } catch (e) {
+          console.log('⚠️  Could not detect storage via wmic, using default');
+          storageGb = this.config.maxStorageGb || 50;
+        }
+      } else {
+        // Linux/Mac: Check available space
+        try {
+          const output = execSync('df -h / | tail -1 | awk \'{print $4}\'', { 
+            encoding: 'utf8', 
+            timeout: 3000 
+          }).trim();
+          const match = output.match(/(\d+\.?\d*)([KMGT])/);
+          if (match) {
+            const [, size, unit] = match;
+            const multipliers = { K: 0.001, M: 0.001, G: 1, T: 1024 };
+            storageGb = Math.round(parseFloat(size) * (multipliers[unit] || 1));
+          }
+        } catch (e) {
+          console.log('⚠️  Could not detect storage via df, using config or default');
+          storageGb = this.config.maxStorageGb || 50;
+        }
+      }
+    } catch (e) {
+      console.log('⚠️  Could not detect storage, using default');
+      storageGb = this.config.maxStorageGb || 50;
+    }
+    
+    // Apply config limits for storage
+    storageGb = this.config.maxStorageGb 
+      ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
+      : Math.round(storageGb * 0.5 * 10) / 10;
+    
+    // ✅ ENHANCED GPU DETECTION with multiple methods
+    let gpuAvailable = false;
+    let gpuModel = null;
+    let gpuMemoryGb = 0;
+    
+    if (this.config.enableGpu !== false) { // Allow GPU detection unless explicitly disabled
+      try {
+        // Try nvidia-smi first (NVIDIA GPUs)
+        try {
+          const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
+            encoding: 'utf8', 
+            timeout: 3000 
+          });
+          const lines = nvidiaSmi.trim().split('\n');
+          if (lines[0]) {
+            const [name, memory] = lines[0].split(',');
+            gpuModel = name.trim();
+            gpuMemoryGb = parseFloat(memory.trim()) / 1024;
+            gpuAvailable = true;
+            console.log(`✓ NVIDIA GPU detected: ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB)`);
+          }
+        } catch (nvidiaError) {
+          // Try lspci for other GPUs (Linux)
+          if (process.platform === 'linux') {
+            try {
+              const output = execSync('lspci | grep -i vga', { 
+                encoding: 'utf8', 
+                timeout: 3000 
+              });
+              if (output.includes('AMD') || output.includes('Radeon')) {
+                gpuAvailable = true;
+                gpuModel = 'AMD GPU (detected)';
+                gpuMemoryGb = 0; // Cannot determine memory without specific tools
+                console.log('✓ AMD GPU detected');
+              } else if (output.includes('Intel')) {
+                gpuAvailable = true;
+                gpuModel = 'Intel GPU (detected)';
+                gpuMemoryGb = 0;
+                console.log('✓ Intel GPU detected');
+              }
+            } catch (lspciError) {
+              // No GPU detected
+            }
+          }
+        }
+      } catch (e) {
+        console.log('⚠️  GPU detection failed, assuming no GPU');
+      }
+    }
+    
+    // Platform info
+    const platform = os.platform();
+    const arch = os.arch();
+    const hostname = os.hostname();
+    
+    this.capabilities = {
+      // Core capabilities
+      cpuCores,
+      cpuModel,
+      memoryGb,
+      storageGb,
+      gpuAvailable,
+      gpuModel,
+      gpuMemoryGb,
+      
+      // System info
+      platform,
+      arch,
+      hostname,
+      nodeName: this.config.nodeName || hostname,
+      
+      // Total system resources (for reference)
+      totalSystemCpu: cpus.length,
+      totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
+      freeMemoryGb: Math.round(freeMemGb * 10) / 10,
+      
+      // Current usage (will be updated continuously)
+      cpuUsagePercent: 0,
+      memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
+      memoryAvailableGb: freeMemGb.toFixed(2),
+      
+      // Docker info
+      dockerVersion: null,
+      dockerContainers: 0,
+    };
+    
+    // Get Docker info
+    try {
+      const dockerInfo = await this.docker.info();
+      this.capabilities.dockerVersion = dockerInfo.ServerVersion;
+      this.capabilities.dockerContainers = dockerInfo.Containers;
+    } catch (e) {
+      console.log('⚠️  Docker info not available');
+    }
+    
+    console.log('✓ Capabilities detected\n');
+    console.log(`   CPU: ${cpuCores}/${cpus.length} cores (${cpuModel})`);
+    console.log(`   RAM: ${memoryGb}/${Math.round(totalMemGb * 10) / 10} GB`);
+    console.log(`   Storage: ${storageGb} GB available`);
+    console.log(`   GPU: ${gpuAvailable ? `${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}` : 'None'}\n`);
+  }
+
+  // ✅ NEW: Continuously monitor system capabilities
+  startCapabilitiesMonitoring() {
+    // Update capabilities every 10 seconds
+    this.capabilitiesInterval = setInterval(async () => {
+      await this.updateCurrentUsage();
+    }, 10000);
+  }
+
+  async updateCurrentUsage() {
+    const totalMemGb = os.totalmem() / (1024 ** 3);
+    const freeMemGb = os.freemem() / (1024 ** 3);
+    const usedMemGb = totalMemGb - freeMemGb;
+    
+    // Calculate CPU usage
+    const cpuUsage = this.calculateCpuUsage();
+    
+    // Update capabilities
+    this.capabilities.cpuUsagePercent = cpuUsage;
+    this.capabilities.memoryUsedGb = usedMemGb.toFixed(2);
+    this.capabilities.memoryAvailableGb = freeMemGb.toFixed(2);
+    
+    // Update Docker container count
+    try {
+      const containers = await this.docker.listContainers();
+      this.capabilities.dockerContainers = containers.length;
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  calculateCpuUsage() {
+    const cpus = os.cpus();
+    let totalIdle = 0;
+    let totalTick = 0;
+    
+    cpus.forEach(cpu => {
+      for (let type in cpu.times) {
+        totalTick += cpu.times[type];
+      }
+      totalIdle += cpu.times.idle;
+    });
+    
+    const idle = totalIdle / cpus.length;
+    const total = totalTick / cpus.length;
+    const usage = 100 - Math.round(100 * idle / total);
+    
+    return usage;
+  }
+
+  displayCapabilities() {
+    console.log(`Worker ID: ${this.config.workerId}`);
+    console.log(`Status: Online and ready\n`);
+    console.log('📊 System Capabilities:');
+    console.log(`   CPU: ${this.capabilities.cpuCores} cores (${this.capabilities.cpuModel})`);
+    console.log(`   Memory: ${this.capabilities.memoryGb} GB (${this.capabilities.memoryUsedGb} GB used)`);
+    console.log(`   Storage: ${this.capabilities.storageGb} GB available`);
+    console.log(`   GPU: ${this.capabilities.gpuAvailable ? `Yes - ${this.capabilities.gpuModel}${this.capabilities.gpuMemoryGb > 0 ? ` (${this.capabilities.gpuMemoryGb.toFixed(1)} GB)` : ''}` : 'No'}`);
+    console.log(`   Platform: ${this.capabilities.platform} (${this.capabilities.arch})`);
+    console.log(`   Docker: v${this.capabilities.dockerVersion || 'Unknown'}\n`);
   }
 
   async testDocker() {
@@ -64,10 +293,8 @@ class WorkerNode {
     return new Promise((resolve, reject) => {
       console.log('🔌 Connecting to coordinator...');
       
-      // FIX: Build proper WebSocket URL
       let wsUrl = this.config.coordinatorUrl;
       
-      // If coordinatorUrl not set, derive from apiUrl
       if (!wsUrl) {
         wsUrl = this.config.apiUrl
           .replace('https://distributex-api', 'wss://distributex-coordinator')
@@ -77,9 +304,7 @@ class WorkerNode {
       
       console.log(`   URL: ${wsUrl}`);
       console.log(`   Worker ID: ${this.config.workerId}`);
-      console.log(`   Auth Token: ${this.config.authToken?.substring(0, 20)}...`);
       
-      // FIX: Proper authentication headers
       this.ws = new WebSocket(wsUrl, {
         headers: {
           'Authorization': `Bearer ${this.config.authToken}`,
@@ -108,6 +333,8 @@ class WorkerNode {
       this.ws.on('close', (code, reason) => {
         console.log(`⚠️  Disconnected from coordinator (${code}: ${reason})`);
         this.log(`Disconnected: ${code} ${reason}`);
+        this.notifyDisconnect();
+        
         if (!this.isShuttingDown) {
           this.scheduleReconnect();
         }
@@ -117,17 +344,12 @@ class WorkerNode {
         console.error('WebSocket error:', error.message);
         this.log('ERROR', error.message);
         
-        // Don't reject immediately - let close handler trigger reconnect
         if (error.message.includes('401') || error.message.includes('Unauthorized')) {
           console.error('\n❌ Authentication failed!');
-          console.error('Your auth token or worker ID may be invalid.');
-          console.error('Please re-register your worker:\n');
-          console.error('  curl -fsSL https://get.distributex.cloud | bash\n');
           reject(new Error('Authentication failed'));
         }
       });
 
-      // Timeout after 30 seconds
       setTimeout(() => {
         if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
           this.ws.close();
@@ -146,11 +368,9 @@ class WorkerNode {
     
     if (this.reconnectAttempts > this.maxReconnectAttempts) {
       console.error('❌ Max reconnection attempts reached. Exiting...');
-      console.error('Please check your configuration and try again.\n');
       process.exit(1);
     }
     
-    // Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
     const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
     
     console.log(`⏳ Reconnecting in ${delay/1000}s... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})\n`);
@@ -158,6 +378,7 @@ class WorkerNode {
     this.reconnectTimeout = setTimeout(async () => {
       try {
         await this.connect();
+        await this.sendCapabilities();
         this.startHeartbeat();
       } catch (error) {
         console.error('Reconnection failed:', error.message);
@@ -166,26 +387,47 @@ class WorkerNode {
     }, delay);
   }
 
+  // ✅ SEND ENHANCED CAPABILITIES
   async sendCapabilities() {
-    const cpus = os.cpus();
-    const totalMem = os.totalmem() / (1024 ** 3);
+    console.log('📤 Sending capabilities to coordinator...');
     
-    const capabilities = {
-      cpuCores: this.config.maxCpuCores || cpus.length,
-      memoryGb: this.config.maxMemoryGb || Math.round(totalMem * 0.7),
-      storageGb: this.config.maxStorageGb || 50,
-      gpuAvailable: this.config.enableGpu || false,
-      nodeName: this.config.nodeName || os.hostname(),
-      platform: os.platform(),
-      arch: os.arch()
-    };
-
+    // Update usage before sending
+    await this.updateCurrentUsage();
+    
     this.send({
       type: 'capabilities',
-      capabilities
+      capabilities: this.capabilities
     });
     
-    this.log('Sent capabilities', JSON.stringify(capabilities));
+    // Also send to API
+    try {
+      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        },
+        body: JSON.stringify({
+          status: 'online',
+          capabilities: this.capabilities,
+          metrics: {
+            cpuUsagePercent: this.capabilities.cpuUsagePercent,
+            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
+            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
+            activeJobs: this.activeJobs.size
+          }
+        })
+      });
+      
+      if (response.ok) {
+        console.log('✓ Capabilities registered with API\n');
+      }
+    } catch (error) {
+      console.error('⚠️  Failed to register with API:', error.message);
+    }
+    
+    this.log('Sent capabilities', JSON.stringify(this.capabilities));
   }
 
   startHeartbeat() {
@@ -193,9 +435,62 @@ class WorkerNode {
       clearInterval(this.heartbeatInterval);
     }
     
-    this.heartbeatInterval = setInterval(() => {
-      // Pong responses handled in handleMessage
+    this.heartbeatInterval = setInterval(async () => {
+      await this.sendHeartbeat();
     }, 30000);
+  }
+
+  async sendHeartbeat() {
+    try {
+      await this.updateCurrentUsage();
+      
+      const status = this.activeJobs.size > 0 ? 'busy' : 'online';
+      
+      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        },
+        body: JSON.stringify({
+          status: status,
+          capabilities: this.capabilities,
+          metrics: {
+            cpuUsagePercent: this.capabilities.cpuUsagePercent,
+            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
+            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
+            activeJobs: this.activeJobs.size,
+            dockerContainers: this.capabilities.dockerContainers
+          }
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (data.pendingJobs && data.pendingJobs.length > 0) {
+          console.log(`📬 ${data.pendingJobs.length} pending job(s) available`);
+        }
+      }
+    } catch (error) {
+      console.error('Heartbeat failed:', error.message);
+    }
+  }
+
+  async notifyDisconnect() {
+    try {
+      await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/disconnect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        }
+      });
+    } catch (error) {
+      // Ignore
+    }
   }
 
   handleMessage(message) {
@@ -228,8 +523,8 @@ class WorkerNode {
   }
 
   calculateHealthScore() {
-    const cpuLoad = os.loadavg()[0] / os.cpus().length;
-    const memUsed = (os.totalmem() - os.freemem()) / os.totalmem();
+    const cpuLoad = this.capabilities.cpuUsagePercent / 100;
+    const memUsed = parseFloat(this.capabilities.memoryUsedGb) / this.capabilities.memoryGb;
     
     let score = 100;
     if (cpuLoad > 0.8) score -= 20;
@@ -250,6 +545,11 @@ class WorkerNode {
     
     this.activeJobs.set(job.jobId, job);
     this.log(`Starting job ${job.jobId}`);
+    
+    this.send({
+      type: 'status',
+      status: 'busy'
+    });
     
     this.send({
       type: 'job_update',
@@ -361,6 +661,13 @@ class WorkerNode {
       this.log('ERROR', `Job ${job.jobId} failed: ${error.message}`);
     } finally {
       this.activeJobs.delete(job.jobId);
+      
+      if (this.activeJobs.size === 0) {
+        this.send({
+          type: 'status',
+          status: 'online'
+        });
+      }
     }
   }
 
@@ -399,7 +706,7 @@ class WorkerNode {
     try {
       await fs.appendFile(path.join(LOGS_PATH, 'worker.log'), logMessage);
     } catch (e) {
-      // Ignore log errors
+      // Ignore
     }
   }
 
@@ -410,8 +717,19 @@ class WorkerNode {
       
       console.log('\n⚠️  Shutting down gracefully...');
       
+      this.send({
+        type: 'status',
+        status: 'offline'
+      });
+      
+      await this.notifyDisconnect();
+      
       if (this.heartbeatInterval) {
         clearInterval(this.heartbeatInterval);
+      }
+      
+      if (this.capabilitiesInterval) {
+        clearInterval(this.capabilitiesInterval);
       }
       
       if (this.reconnectTimeout) {
@@ -432,11 +750,6 @@ class WorkerNode {
         
         clearTimeout(timeout);
       }
-      
-      this.send({
-        type: 'status',
-        status: 'offline'
-      });
       
       if (this.ws) {
         this.ws.close();
