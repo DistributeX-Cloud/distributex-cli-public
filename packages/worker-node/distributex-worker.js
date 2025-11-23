@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Node
+ * DistributeX Worker Node - FIXED AUTH VERSION
  * Connects to coordinator and executes distributed computing jobs
  */
 
@@ -118,15 +118,25 @@ function connect() {
     }
 
     log(`Connecting to coordinator: ${COORDINATOR_URL}`);
+    log(`Using token: ${config.token.substring(0, 20)}...`);
     
     try {
-        ws = new WebSocket(COORDINATOR_URL, {
+        // Build WebSocket URL with auth params
+        const wsUrl = new URL(COORDINATOR_URL);
+        wsUrl.searchParams.set('token', config.token);
+        wsUrl.searchParams.set('workerId', config.user_id);
+        
+        log(`Full WS URL: ${wsUrl.toString().replace(config.token, 'TOKEN_HIDDEN')}`);
+        
+        ws = new WebSocket(wsUrl.toString(), {
             headers: {
                 'Authorization': `Bearer ${config.token}`,
                 'User-Agent': 'DistributeX-Worker/1.0.0',
-                'X-Worker-Id': config.user_id
+                'X-Worker-Id': config.user_id,
+                'X-Worker-Email': config.email || 'unknown'
             },
-            handshakeTimeout: 10000
+            handshakeTimeout: 15000,
+            perMessageDeflate: false
         });
 
         ws.on('open', () => {
@@ -140,8 +150,9 @@ function connect() {
             ws.send(JSON.stringify({
                 type: 'register',
                 workerId: config.user_id,
-                email: config.email,
-                capabilities: capabilities
+                email: config.email || 'unknown',
+                capabilities: capabilities,
+                timestamp: Date.now()
             }));
             
             // Start heartbeat
@@ -167,7 +178,15 @@ function connect() {
                         break;
                     
                     case 'ping':
-                        ws.send(JSON.stringify({ type: 'pong' }));
+                        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+                        break;
+                    
+                    case 'error':
+                        log(`Coordinator error: ${message.message}`, 'ERROR');
+                        if (message.message && message.message.includes('auth')) {
+                            log('Authentication error - please re-login: dxcloud login', 'ERROR');
+                            process.exit(1);
+                        }
                         break;
                     
                     default:
@@ -180,11 +199,39 @@ function connect() {
 
         ws.on('error', (err) => {
             log(`WebSocket error: ${err.message}`, 'ERROR');
+            
+            // Check for auth errors
+            if (err.message.includes('401') || err.message.includes('Unauthorized')) {
+                log('', 'ERROR');
+                log('═══════════════════════════════════════════', 'ERROR');
+                log('AUTHENTICATION FAILED', 'ERROR');
+                log('═══════════════════════════════════════════', 'ERROR');
+                log('', 'ERROR');
+                log('Your authentication token may be expired or invalid.', 'ERROR');
+                log('', 'ERROR');
+                log('Please try the following:', 'ERROR');
+                log('  1. Login again: dxcloud login', 'ERROR');
+                log('  2. Or create new account: dxcloud signup', 'ERROR');
+                log('', 'ERROR');
+                log('Config location: ' + CONFIG_FILE, 'ERROR');
+                log('', 'ERROR');
+                
+                // Stop trying to reconnect on auth errors
+                reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+            }
         });
 
         ws.on('close', (code, reason) => {
-            log(`Disconnected (code: ${code}, reason: ${reason || 'none'})`, 'WARN');
+            const reasonStr = reason ? reason.toString() : 'none';
+            log(`Disconnected (code: ${code}, reason: ${reasonStr})`, 'WARN');
             stopHeartbeat();
+            
+            // Don't retry on auth failures (401)
+            if (code === 401 || code === 403) {
+                log('Authentication error - stopping reconnection attempts', 'ERROR');
+                log('Please run: dxcloud login', 'ERROR');
+                process.exit(1);
+            }
             
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
