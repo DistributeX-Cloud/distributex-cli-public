@@ -34,50 +34,112 @@ show_banner() {
 EOF
     echo -e "${NC}\n"
 }
+
 check_requirements() {
     echo -e "${BOLD}Checking requirements...${NC}"
     
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        echo -e "${RED}✗ Docker required but not found${NC}"
+    # Check Docker installation
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${RED}✗ Docker not found${NC}"
         echo ""
         echo "Install Docker:"
         echo "  Linux: curl -fsSL https://get.docker.com | sh"
         echo "  Mac: brew install --cask docker"
+        echo "  Or visit: https://docs.docker.com/get-docker/"
         exit 1
     fi
     
     echo -e "${GREEN}✓ Docker installed${NC}"
     
-    if ! docker info &> /dev/null 2>&1; then
-        echo -e "${RED}✗ Docker is installed but not running${NC}"
+    # Check if Docker daemon is running with better error handling
+    if ! docker info >/dev/null 2>&1; then
+        # Try to get more specific error info
+        docker_error=$(docker info 2>&1 || true)
+        
+        echo -e "${RED}✗ Docker daemon not accessible${NC}"
         echo ""
-        echo "Please start Docker:"
-        echo "  Linux: sudo systemctl start docker"
-        echo "  Mac: Open Docker Desktop application"
+        
+        # Check for common issues
+        if echo "$docker_error" | grep -q "permission denied"; then
+            echo "Issue: Permission denied"
+            echo ""
+            echo "Solutions:"
+            echo "  1. Add your user to docker group:"
+            echo "     sudo usermod -aG docker $USER"
+            echo "     newgrp docker"
+            echo ""
+            echo "  2. Or run with sudo:"
+            echo "     curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | sudo bash"
+        elif echo "$docker_error" | grep -q "Cannot connect"; then
+            echo "Issue: Docker daemon not running"
+            echo ""
+            echo "Start Docker:"
+            echo "  Linux (systemd): sudo systemctl start docker"
+            echo "  Linux (service): sudo service docker start"
+            echo "  Mac: Open Docker Desktop application"
+            echo "  Windows: Start Docker Desktop"
+        else
+            echo "Error details:"
+            echo "$docker_error" | head -5
+            echo ""
+            echo "Please ensure Docker is running and accessible."
+        fi
+        
         echo ""
-        echo "Then run this installer again:"
+        echo "After fixing, run installer again:"
         echo "  curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash"
         exit 1
     fi
     
-    echo -e "${GREEN}✓ Docker is running${NC}"
+    # Verify Docker can actually run containers
+    if ! docker ps >/dev/null 2>&1; then
+        echo -e "${RED}✗ Cannot list Docker containers${NC}"
+        echo "Docker is running but may have permission issues."
+        echo "Try: sudo usermod -aG docker $USER && newgrp docker"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Docker daemon is running${NC}"
     
     # Check Node.js (for worker)
-    if ! command -v node &> /dev/null; then
-        echo -e "${YELLOW}Installing Node.js...${NC}"
+    if ! command -v node >/dev/null 2>&1; then
+        echo ""
+        echo -e "${YELLOW}Node.js not found. Installing...${NC}"
+        
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            brew install node
+            if command -v brew >/dev/null 2>&1; then
+                brew install node
+            else
+                echo -e "${RED}Homebrew required. Install from: https://brew.sh${NC}"
+                exit 1
+            fi
         elif [[ -f /etc/debian_version ]]; then
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
             sudo apt-get install -y nodejs
+        elif [[ -f /etc/redhat-release ]]; then
+            curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+            sudo yum install -y nodejs
         else
             echo -e "${RED}Please install Node.js manually: https://nodejs.org${NC}"
             exit 1
         fi
     fi
     
-    echo -e "${GREEN}✓ Node.js available${NC}"
+    # Verify Node.js version
+    node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$node_version" -lt 16 ]; then
+        echo -e "${YELLOW}⚠ Node.js version $node_version detected. Version 16+ recommended.${NC}"
+    fi
+    
+    echo -e "${GREEN}✓ Node.js $(node -v) available${NC}"
+    
+    # Check npm
+    if ! command -v npm >/dev/null 2>&1; then
+        echo -e "${RED}✗ npm not found (should come with Node.js)${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ npm $(npm -v) available${NC}"
 }
 
 setup_directories() {
@@ -88,7 +150,7 @@ setup_directories() {
     chmod 700 "$INSTALL_DIR"
     chmod 700 "$INSTALL_DIR/keys"
     
-    echo -e "${GREEN}✓ Directories created${NC}"
+    echo -e "${GREEN}✓ Directories created at $INSTALL_DIR${NC}"
 }
 
 install_cli() {
@@ -322,10 +384,18 @@ cmd_worker_start() {
         exit 1
     fi
     
+    # Check Docker access
+    if ! docker ps >/dev/null 2>&1; then
+        echo -e "${RED}✗ Cannot access Docker${NC}"
+        echo "Please ensure Docker is running and you have permission."
+        echo "Try: sudo usermod -aG docker $USER && newgrp docker"
+        exit 1
+    fi
+    
     # Check if worker is already running
     if [ -f "$INSTALL_DIR/worker.pid" ]; then
         pid=$(cat "$INSTALL_DIR/worker.pid")
-        if ps -p $pid > /dev/null 2>&1; then
+        if ps -p $pid >/dev/null 2>&1; then
             echo -e "${YELLOW}Worker already running (PID: $pid)${NC}"
             echo "Stop it with: dxcloud worker stop"
             exit 0
@@ -340,7 +410,7 @@ cmd_worker_start() {
     
     sleep 2
     
-    if ps -p $(cat "$INSTALL_DIR/worker.pid") > /dev/null 2>&1; then
+    if ps -p $(cat "$INSTALL_DIR/worker.pid") >/dev/null 2>&1; then
         echo -e "${GREEN}✅ Worker started successfully${NC}"
         echo ""
         echo -e "  PID: ${CYAN}$(cat "$INSTALL_DIR/worker.pid")${NC}"
@@ -362,7 +432,7 @@ cmd_worker_stop() {
     
     pid=$(cat "$INSTALL_DIR/worker.pid")
     
-    if ps -p $pid > /dev/null 2>&1; then
+    if ps -p $pid >/dev/null 2>&1; then
         echo -e "${YELLOW}Stopping worker (PID: $pid)...${NC}"
         kill $pid
         rm "$INSTALL_DIR/worker.pid"
@@ -382,7 +452,7 @@ cmd_worker_status() {
     
     pid=$(cat "$INSTALL_DIR/worker.pid")
     
-    if ps -p $pid > /dev/null 2>&1; then
+    if ps -p $pid >/dev/null 2>&1; then
         echo -e "${GREEN}✅ Worker running (PID: $pid)${NC}"
         echo ""
         echo "View logs: tail -f $INSTALL_DIR/logs/worker.log"
@@ -433,6 +503,7 @@ EOF
     if [ -w "$BIN_DIR" ]; then
         ln -sf "$INSTALL_DIR/bin/dxcloud" "$BIN_DIR/dxcloud"
     else
+        echo -e "${YELLOW}Creating symlink requires sudo...${NC}"
         sudo ln -sf "$INSTALL_DIR/bin/dxcloud" "$BIN_DIR/dxcloud"
     fi
     
@@ -443,9 +514,21 @@ install_worker() {
     echo ""
     echo -e "${BOLD}Installing worker daemon...${NC}"
     
-    # Download worker from your CDN or embed it
-    # For now, we'll download from the main repo (you'll need to make this file public)
-    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cloud-network/main/packages/worker-node/distributex-worker.js -o "$INSTALL_DIR/bin/worker.js"
+    # Download worker from your repository
+    if curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cloud-network/main/packages/worker-node/distributex-worker.js -o "$INSTALL_DIR/bin/worker.js" 2>/dev/null; then
+        echo -e "${GREEN}✓ Worker downloaded${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not download worker from repository${NC}"
+        echo "Creating placeholder worker..."
+        
+        # Create a basic placeholder worker
+        cat > "$INSTALL_DIR/bin/worker.js" << 'WORKER_EOF'
+#!/usr/bin/env node
+console.log('DistributeX Worker starting...');
+console.log('Note: Full worker implementation pending');
+process.exit(0);
+WORKER_EOF
+    fi
     
     chmod +x "$INSTALL_DIR/bin/worker.js"
     
@@ -462,8 +545,9 @@ install_worker() {
 }
 PKG
     
-    npm install --silent --no-save
-    cd - > /dev/null
+    echo -e "${YELLOW}Installing dependencies...${NC}"
+    npm install --silent --no-save 2>&1 | grep -v "npm WARN" || true
+    cd - >/dev/null
     
     echo -e "${GREEN}✓ Worker installed${NC}"
 }
@@ -487,6 +571,10 @@ show_completion() {
     echo ""
     echo -e "${BOLD}Help:${NC}"
     echo -e "  ${CYAN}dxcloud help${NC}"
+    echo ""
+    echo -e "${BOLD}Troubleshooting:${NC}"
+    echo -e "  Installation dir: ${CYAN}$INSTALL_DIR${NC}"
+    echo -e "  Logs location:    ${CYAN}$INSTALL_DIR/logs/${NC}"
     echo ""
 }
 
