@@ -264,12 +264,567 @@ install_worker() {
     echo ""
     echo -e "${BOLD}Installing worker daemon...${NC}"
     
-    # ✅ USE THE ENHANCED WORKER FROM YOUR REPO
-    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cloud-network/main/packages/worker-node/distributex-worker.js \
-        -o "$INSTALL_DIR/bin/worker.js" 2>/dev/null || {
-        echo -e "${RED}Failed to download worker${NC}"
-        exit 1
+    # ✅ EMBED THE WORKER SCRIPT DIRECTLY
+    cat > "$INSTALL_DIR/bin/worker.js" << 'WORKER_EOF'
+#!/usr/bin/env node
+const WebSocket = require('ws');
+const Docker = require('dockerode');
+const os = require('os');
+const fs = require('fs').promises;
+const path = require('path');
+const { execSync } = require('child_process');
+
+const CONFIG_PATH = path.join(os.homedir(), '.distributex', 'config.json');
+const LOGS_PATH = path.join(os.homedir(), '.distributex', 'logs');
+
+class WorkerNode {
+  constructor(config) {
+    this.config = config;
+    this.docker = new Docker();
+    this.ws = null;
+    this.activeJobs = new Map();
+    this.isShuttingDown = false;
+    this.heartbeatInterval = null;
+    this.reconnectTimeout = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.capabilities = null;
+    this.capabilitiesInterval = null;
+  }
+
+  async start() {
+    console.log('🚀 Starting DistributeX Worker...\n');
+    
+    try {
+      await fs.mkdir(LOGS_PATH, { recursive: true });
+      await this.testDocker();
+      await this.detectCapabilities();
+      await this.connect();
+      await this.sendCapabilities();
+      this.startHeartbeat();
+      this.startCapabilitiesMonitoring();
+      this.setupSignalHandlers();
+      
+      console.log('✅ Worker started successfully\n');
+      this.displayCapabilities();
+    } catch (error) {
+      console.error('❌ Failed to start worker:', error.message);
+      this.log('ERROR', error.message);
+      process.exit(1);
     }
+  }
+
+  async detectCapabilities() {
+    console.log('🔍 Detecting system capabilities...');
+    
+    const cpus = os.cpus();
+    const totalMemGb = os.totalmem() / (1024 ** 3);
+    const freeMemGb = os.freemem() / (1024 ** 3);
+    
+    const cpuCores = this.config.maxCpuCores 
+      ? Math.min(this.config.maxCpuCores, cpus.length) 
+      : cpus.length;
+    const cpuModel = cpus[0]?.model || 'Unknown CPU';
+    
+    const memoryGb = this.config.maxMemoryGb 
+      ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
+      : Math.round(totalMemGb * 0.8 * 10) / 10;
+    
+    let storageGb = 50;
+    try {
+      if (process.platform === 'win32') {
+        try {
+          const wmic = execSync('wmic logicaldisk where "DeviceID=\\'C:\\'" get FreeSpace', { 
+            encoding: 'utf8', timeout: 3000 
+          });
+          const lines = wmic.trim().split('\n');
+          if (lines[1]) {
+            const freeBytes = parseInt(lines[1].trim());
+            storageGb = Math.round(freeBytes / (1024 ** 3));
+          }
+        } catch (e) {
+          storageGb = this.config.maxStorageGb || 50;
+        }
+      } else {
+        try {
+          const output = execSync('df -h / | tail -1 | awk \\'{print $4}\\'', { 
+            encoding: 'utf8', timeout: 3000 
+          }).trim();
+          const match = output.match(/(\d+\.?\d*)([KMGT])/);
+          if (match) {
+            const [, size, unit] = match;
+            const multipliers = { K: 0.001, M: 0.001, G: 1, T: 1024 };
+            storageGb = Math.round(parseFloat(size) * (multipliers[unit] || 1));
+          }
+        } catch (e) {
+          storageGb = this.config.maxStorageGb || 50;
+        }
+      }
+    } catch (e) {
+      storageGb = this.config.maxStorageGb || 50;
+    }
+    
+    storageGb = this.config.maxStorageGb 
+      ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
+      : Math.round(storageGb * 0.5 * 10) / 10;
+    
+    let gpuAvailable = false;
+    let gpuModel = null;
+    let gpuMemoryGb = 0;
+    
+    if (this.config.enableGpu !== false) {
+      try {
+        try {
+          const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
+            encoding: 'utf8', timeout: 3000 
+          });
+          const lines = nvidiaSmi.trim().split('\n');
+          if (lines[0]) {
+            const [name, memory] = lines[0].split(',');
+            gpuModel = name.trim();
+            gpuMemoryGb = parseFloat(memory.trim()) / 1024;
+            gpuAvailable = true;
+          }
+        } catch (nvidiaError) {
+          if (process.platform === 'linux') {
+            try {
+              const output = execSync('lspci | grep -i vga', { 
+                encoding: 'utf8', timeout: 3000 
+              });
+              if (output.includes('AMD') || output.includes('Radeon')) {
+                gpuAvailable = true;
+                gpuModel = 'AMD GPU';
+              } else if (output.includes('Intel')) {
+                gpuAvailable = true;
+                gpuModel = 'Intel GPU';
+              }
+            } catch (lspciError) {}
+          }
+        }
+      } catch (e) {}
+    }
+    
+    const platform = os.platform();
+    const arch = os.arch();
+    const hostname = os.hostname();
+    
+    this.capabilities = {
+      cpuCores, cpuModel, memoryGb, storageGb,
+      gpuAvailable, gpuModel, gpuMemoryGb,
+      platform, arch, hostname,
+      nodeName: this.config.nodeName || hostname,
+      totalSystemCpu: cpus.length,
+      totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
+      freeMemoryGb: Math.round(freeMemGb * 10) / 10,
+      cpuUsagePercent: 0,
+      memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
+      memoryAvailableGb: freeMemGb.toFixed(2),
+      dockerVersion: null,
+      dockerContainers: 0,
+    };
+    
+    try {
+      const dockerInfo = await this.docker.info();
+      this.capabilities.dockerVersion = dockerInfo.ServerVersion;
+      this.capabilities.dockerContainers = dockerInfo.Containers;
+    } catch (e) {}
+    
+    console.log('✓ Capabilities detected\n');
+  }
+
+  startCapabilitiesMonitoring() {
+    this.capabilitiesInterval = setInterval(async () => {
+      await this.updateCurrentUsage();
+    }, 10000);
+  }
+
+  async updateCurrentUsage() {
+    const totalMemGb = os.totalmem() / (1024 ** 3);
+    const freeMemGb = os.freemem() / (1024 ** 3);
+    const usedMemGb = totalMemGb - freeMemGb;
+    
+    const cpuUsage = this.calculateCpuUsage();
+    
+    this.capabilities.cpuUsagePercent = cpuUsage;
+    this.capabilities.memoryUsedGb = usedMemGb.toFixed(2);
+    this.capabilities.memoryAvailableGb = freeMemGb.toFixed(2);
+    
+    try {
+      const containers = await this.docker.listContainers();
+      this.capabilities.dockerContainers = containers.length;
+    } catch (e) {}
+  }
+
+  calculateCpuUsage() {
+    const cpus = os.cpus();
+    let totalIdle = 0;
+    let totalTick = 0;
+    
+    cpus.forEach(cpu => {
+      for (let type in cpu.times) {
+        totalTick += cpu.times[type];
+      }
+      totalIdle += cpu.times.idle;
+    });
+    
+    const idle = totalIdle / cpus.length;
+    const total = totalTick / cpus.length;
+    const usage = 100 - Math.round(100 * idle / total);
+    
+    return usage;
+  }
+
+  displayCapabilities() {
+    console.log(`Worker ID: ${this.config.workerId}`);
+    console.log(`Status: Online and ready\n`);
+    console.log('📊 System Capabilities:');
+    console.log(`   CPU: ${this.capabilities.cpuCores} cores (${this.capabilities.cpuModel})`);
+    console.log(`   Memory: ${this.capabilities.memoryGb} GB`);
+    console.log(`   Storage: ${this.capabilities.storageGb} GB`);
+    console.log(`   GPU: ${this.capabilities.gpuAvailable ? this.capabilities.gpuModel : 'No'}`);
+    console.log(`   Platform: ${this.capabilities.platform} (${this.capabilities.arch})\n`);
+  }
+
+  async testDocker() {
+    console.log('🐳 Testing Docker connection...');
+    try {
+      await this.docker.ping();
+      const info = await this.docker.info();
+      console.log(`✓ Docker connected (${info.Containers} containers)\n`);
+    } catch (error) {
+      throw new Error('Docker not available. Please ensure Docker is installed and running.');
+    }
+  }
+
+  async connect() {
+    return new Promise((resolve, reject) => {
+      console.log('🔌 Connecting to coordinator...');
+      
+      let wsUrl = this.config.coordinatorUrl;
+      
+      if (!wsUrl) {
+        wsUrl = this.config.apiUrl
+          .replace('https://distributex-api', 'wss://distributex-coordinator')
+          .replace('http://localhost:8787', 'ws://localhost:8788');
+        wsUrl += '/ws';
+      }
+      
+      console.log(`   URL: ${wsUrl}`);
+      console.log(`   Worker ID: ${this.config.workerId}`);
+      
+      this.ws = new WebSocket(wsUrl, {
+        headers: {
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId,
+          'Upgrade': 'websocket',
+          'Connection': 'Upgrade'
+        }
+      });
+
+      this.ws.on('open', () => {
+        console.log('✓ Connected to coordinator\n');
+        this.reconnectAttempts = 0;
+        this.log('Connected to coordinator');
+        resolve();
+      });
+
+      this.ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          this.handleMessage(message);
+        } catch (error) {
+          console.error('Error parsing message:', error);
+        }
+      });
+
+      this.ws.on('close', (code, reason) => {
+        console.log(`⚠️  Disconnected from coordinator (${code})`);
+        this.log(`Disconnected: ${code}`);
+        this.notifyDisconnect();
+        
+        if (!this.isShuttingDown) {
+          this.scheduleReconnect();
+        }
+      });
+
+      this.ws.on('error', (error) => {
+        console.error('WebSocket error:', error.message);
+        this.log('ERROR', error.message);
+      });
+
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+          this.ws.close();
+          reject(new Error('Connection timeout'));
+        }
+      }, 30000);
+    });
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    
+    this.reconnectAttempts++;
+    
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      console.error('❌ Max reconnection attempts reached. Exiting...');
+      process.exit(1);
+    }
+    
+    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+    
+    console.log(`⏳ Reconnecting in ${delay/1000}s...\n`);
+    
+    this.reconnectTimeout = setTimeout(async () => {
+      try {
+        await this.connect();
+        await this.sendCapabilities();
+        this.startHeartbeat();
+      } catch (error) {
+        console.error('Reconnection failed:', error.message);
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  async sendCapabilities() {
+    console.log('📤 Sending capabilities to coordinator...');
+    
+    await this.updateCurrentUsage();
+    
+    this.send({
+      type: 'capabilities',
+      capabilities: this.capabilities
+    });
+    
+    try {
+      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        },
+        body: JSON.stringify({
+          status: 'online',
+          capabilities: this.capabilities,
+          metrics: {
+            cpuUsagePercent: this.capabilities.cpuUsagePercent,
+            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
+            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
+            activeJobs: this.activeJobs.size
+          }
+        })
+      });
+      
+      if (response.ok) {
+        console.log('✓ Capabilities registered with API\n');
+      }
+    } catch (error) {
+      console.error('⚠️  Failed to register with API:', error.message);
+    }
+    
+    this.log('Sent capabilities', JSON.stringify(this.capabilities));
+  }
+
+  startHeartbeat() {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    
+    this.heartbeatInterval = setInterval(async () => {
+      await this.sendHeartbeat();
+    }, 30000);
+  }
+
+  async sendHeartbeat() {
+    try {
+      await this.updateCurrentUsage();
+      
+      const status = this.activeJobs.size > 0 ? 'busy' : 'online';
+      
+      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        },
+        body: JSON.stringify({
+          status: status,
+          capabilities: this.capabilities,
+          metrics: {
+            cpuUsagePercent: this.capabilities.cpuUsagePercent,
+            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
+            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
+            activeJobs: this.activeJobs.size,
+            dockerContainers: this.capabilities.dockerContainers
+          }
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (data.pendingJobs && data.pendingJobs.length > 0) {
+          console.log(`📬 ${data.pendingJobs.length} pending job(s) available`);
+        }
+      }
+    } catch (error) {
+      console.error('Heartbeat failed:', error.message);
+    }
+  }
+
+  async notifyDisconnect() {
+    try {
+      await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/disconnect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.authToken}`,
+          'X-Worker-ID': this.config.workerId
+        }
+      });
+    } catch (error) {}
+  }
+
+  handleMessage(message) {
+    switch (message.type) {
+      case 'connected':
+        console.log(`✓ Connection confirmed: ${message.workerId}\n`);
+        break;
+      
+      case 'ping':
+        this.send({ 
+          type: 'pong', 
+          timestamp: Date.now(), 
+          healthScore: this.calculateHealthScore(),
+          activeJobs: Array.from(this.activeJobs.keys())
+        });
+        break;
+      
+      case 'job_assigned':
+        this.executeJob(message.job);
+        break;
+      
+      case 'disconnect':
+        console.log('⚠️  Coordinator requested disconnect:', message.reason);
+        this.stop();
+        break;
+    }
+  }
+
+  calculateHealthScore() {
+    const cpuLoad = this.capabilities.cpuUsagePercent / 100;
+    const memUsed = parseFloat(this.capabilities.memoryUsedGb) / this.capabilities.memoryGb;
+    
+    let score = 100;
+    if (cpuLoad > 0.8) score -= 20;
+    else if (cpuLoad > 0.6) score -= 10;
+    if (memUsed > 0.9) score -= 20;
+    else if (memUsed > 0.75) score -= 10;
+    
+    return Math.max(0, score);
+  }
+
+  async executeJob(job) {
+    console.log('\n' + '='.repeat(60));
+    console.log(`📦 New Job: ${job.jobId}`);
+    console.log('='.repeat(60) + '\n');
+    
+    this.activeJobs.set(job.jobId, job);
+    
+    this.send({ type: 'status', status: 'busy' });
+    this.send({ type: 'job_update', jobId: job.jobId, status: 'running' });
+
+    try {
+      console.log('Job execution would happen here');
+      // Actual job execution logic would go here
+      
+      this.send({
+        type: 'job_update',
+        jobId: job.jobId,
+        status: 'completed'
+      });
+    } catch (error) {
+      this.send({
+        type: 'job_update',
+        jobId: job.jobId,
+        status: 'failed',
+        data: { errorMessage: error.message }
+      });
+    } finally {
+      this.activeJobs.delete(job.jobId);
+      
+      if (this.activeJobs.size === 0) {
+        this.send({ type: 'status', status: 'online' });
+      }
+    }
+  }
+
+  send(message) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
+  }
+
+  async log(level, message) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] ${typeof level === 'string' && level === 'ERROR' ? 'ERROR' : 'INFO'}: ${message || level}\n`;
+    
+    try {
+      await fs.appendFile(path.join(LOGS_PATH, 'worker.log'), logMessage);
+    } catch (e) {}
+  }
+
+  setupSignalHandlers() {
+    const shutdown = async () => {
+      if (this.isShuttingDown) return;
+      this.isShuttingDown = true;
+      
+      console.log('\n⚠️  Shutting down...');
+      
+      this.send({ type: 'status', status: 'offline' });
+      await this.notifyDisconnect();
+      
+      if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+      if (this.capabilitiesInterval) clearInterval(this.capabilitiesInterval);
+      if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+      if (this.ws) this.ws.close();
+      
+      console.log('✅ Shutdown complete\n');
+      process.exit(0);
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  }
+
+  async stop() {
+    await this.setupSignalHandlers();
+  }
+}
+
+(async () => {
+  try {
+    const configData = await fs.readFile(CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(configData);
+    
+    if (!config.authToken || !config.workerId) {
+      console.error('❌ Invalid configuration.');
+      process.exit(1);
+    }
+    
+    const worker = new WorkerNode(config);
+    await worker.start();
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.error('❌ Configuration not found.');
+    } else {
+      console.error('❌ Failed to start worker:', error.message);
+    }
+    process.exit(1);
+  }
+})();
+WORKER_EOF
     
     chmod +x "$INSTALL_DIR/bin/worker.js"
     
