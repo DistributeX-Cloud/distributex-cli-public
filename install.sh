@@ -514,19 +514,194 @@ install_worker() {
     echo ""
     echo -e "${BOLD}Installing worker daemon...${NC}"
     
-    # Download worker from your repository
-    if curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cloud-network/main/packages/worker-node/distributex-worker.js -o "$INSTALL_DIR/bin/worker.js" 2>/dev/null; then
-        echo -e "${GREEN}✓ Worker downloaded${NC}"
+    # Try to download worker from repository first
+    WORKER_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cloud-network/main/packages/worker-node/distributex-worker.js"
+    
+    if curl -fsSL "$WORKER_URL" -o "$INSTALL_DIR/bin/worker.js" 2>/dev/null && [ -s "$INSTALL_DIR/bin/worker.js" ]; then
+        echo -e "${GREEN}✓ Worker downloaded from repository${NC}"
     else
-        echo -e "${YELLOW}⚠ Could not download worker from repository${NC}"
-        echo "Creating placeholder worker..."
+        echo -e "${YELLOW}⚠ Downloading from repository, using embedded worker...${NC}"
         
-        # Create a basic placeholder worker
+        # Embedded worker implementation
         cat > "$INSTALL_DIR/bin/worker.js" << 'WORKER_EOF'
 #!/usr/bin/env node
-console.log('DistributeX Worker starting...');
-console.log('Note: Full worker implementation pending');
-process.exit(0);
+const WebSocket = require('ws');
+const Docker = require('dockerode');
+const fs = require('fs');
+const path = require('path');
+
+const INSTALL_DIR = process.env.HOME + '/.distributex';
+const CONFIG_FILE = path.join(INSTALL_DIR, 'config', 'auth.json');
+const COORDINATOR_URL = process.env.DISTRIBUTEX_COORDINATOR_URL || 'wss://distributex-coordinator.distributex.workers.dev/ws';
+
+let config = {};
+let ws = null;
+let docker = new Docker();
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+
+// Load config
+function loadConfig() {
+    try {
+        const data = fs.readFileSync(CONFIG_FILE, 'utf8');
+        config = JSON.parse(data);
+        return true;
+    } catch (err) {
+        console.error('Failed to load config:', err.message);
+        return false;
+    }
+}
+
+// Connect to coordinator
+function connect() {
+    if (!loadConfig()) {
+        console.error('Cannot connect: No authentication config found');
+        process.exit(1);
+    }
+
+    console.log('Connecting to coordinator...');
+    console.log(`URL: ${COORDINATOR_URL}`);
+    
+    ws = new WebSocket(COORDINATOR_URL, {
+        headers: {
+            'Authorization': `Bearer ${config.token}`,
+            'User-Agent': 'DistributeX-Worker/1.0.0'
+        }
+    });
+
+    ws.on('open', () => {
+        console.log('✓ Connected to coordinator');
+        reconnectAttempts = 0;
+        
+        // Register worker
+        ws.send(JSON.stringify({
+            type: 'register',
+            workerId: config.user_id,
+            capabilities: {
+                cpu: require('os').cpus().length,
+                memory: Math.floor(require('os').totalmem() / (1024 * 1024 * 1024)),
+                docker: true
+            }
+        }));
+    });
+
+    ws.on('message', async (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+            console.log('Received message:', message.type);
+            
+            if (message.type === 'job_assigned') {
+                await handleJob(message.job);
+            }
+        } catch (err) {
+            console.error('Error handling message:', err);
+        }
+    });
+
+    ws.on('error', (err) => {
+        console.error('WebSocket error:', err.message);
+    });
+
+    ws.on('close', () => {
+        console.log('Disconnected from coordinator');
+        
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            console.log(`Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+            setTimeout(connect, delay);
+        } else {
+            console.error('Max reconnection attempts reached. Exiting.');
+            process.exit(1);
+        }
+    });
+}
+
+// Handle job execution
+async function handleJob(job) {
+    console.log(`\n=== Executing Job ${job.jobId} ===`);
+    console.log(`Image: ${job.containerImage}`);
+    console.log(`Command: ${job.command.join(' ')}`);
+    
+    try {
+        // Pull image
+        console.log('Pulling image...');
+        await new Promise((resolve, reject) => {
+            docker.pull(job.containerImage, (err, stream) => {
+                if (err) return reject(err);
+                docker.modem.followProgress(stream, (err, output) => {
+                    if (err) return reject(err);
+                    resolve(output);
+                });
+            });
+        });
+        
+        // Create and start container
+        console.log('Starting container...');
+        const container = await docker.createContainer({
+            Image: job.containerImage,
+            Cmd: job.command,
+            HostConfig: {
+                Memory: (job.requiredMemoryGb || 2) * 1024 * 1024 * 1024,
+                CpuShares: (job.requiredCpuCores || 1) * 1024,
+                AutoRemove: true
+            }
+        });
+        
+        await container.start();
+        
+        // Wait for completion
+        const result = await container.wait();
+        
+        // Get logs
+        const logs = await container.logs({
+            stdout: true,
+            stderr: true
+        });
+        
+        console.log('Job completed with status:', result.StatusCode);
+        
+        // Report result
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'job_completed',
+                jobId: job.jobId,
+                status: result.StatusCode === 0 ? 'completed' : 'failed',
+                output: logs.toString('utf8')
+            }));
+        }
+        
+    } catch (err) {
+        console.error('Job execution failed:', err.message);
+        
+        // Report failure
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'job_failed',
+                jobId: job.jobId,
+                error: err.message
+            }));
+        }
+    }
+}
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\nShutting down worker...');
+    if (ws) ws.close();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\nShutting down worker...');
+    if (ws) ws.close();
+    process.exit(0);
+});
+
+// Start worker
+console.log('DistributeX Worker v1.0.0');
+console.log('========================\n');
+connect();
 WORKER_EOF
     fi
     
