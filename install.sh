@@ -106,36 +106,54 @@ setup_directories() {
     echo -e "${GREEN}✓ Directories created at $INSTALL_DIR${NC}"
 }
 
-# ✅ FIXED: Proper authentication flow
+# ✅ FIXED: Proper authentication flow with terminal check
 authenticate_user() {
     echo ""
     echo -e "${BOLD}DistributeX Setup${NC}\n"
+    
+    # Check if we can read from terminal
+    if [ ! -t 0 ]; then
+        exec < /dev/tty
+    fi
+    
     echo "Choose an option:"
     echo "  1) Create new account"
     echo "  2) Login to existing account"
     echo ""
-    read -p "$(echo -e ${CYAN}Choice [1-2]:${NC} )" auth_choice </dev/tty
+    
+    while true; do
+        read -p "$(echo -e ${CYAN}Choice [1-2]:${NC} )" auth_choice
+        
+        if [ "$auth_choice" == "1" ] || [ "$auth_choice" == "2" ]; then
+            break
+        else
+            echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+        fi
+    done
     
     if [ "$auth_choice" == "1" ]; then
         # Signup
         echo ""
-        read -p "$(echo -e ${CYAN}Full Name:${NC} )" name </dev/tty
-        read -p "$(echo -e ${CYAN}Email:${NC} )" email </dev/tty
-        read -sp "$(echo -e ${CYAN}Password:${NC} )" password </dev/tty
+        read -p "$(echo -e ${CYAN}Full Name:${NC} )" name
+        read -p "$(echo -e ${CYAN}Email:${NC} )" email
+        read -sp "$(echo -e ${CYAN}Password:${NC} )" password
         echo ""
         echo ""
         echo "Select Role:"
         echo "  1) Contributor (share resources)"
         echo "  2) Developer (submit jobs)"
         echo "  3) Both"
-        read -p "$(echo -e ${CYAN}Choice [1-3]:${NC} )" role_choice </dev/tty
         
-        case $role_choice in
-            1) role="contributor" ;;
-            2) role="developer" ;;
-            3) role="both" ;;
-            *) echo -e "${RED}Invalid choice${NC}"; exit 1 ;;
-        esac
+        while true; do
+            read -p "$(echo -e ${CYAN}Choice [1-3]:${NC} )" role_choice
+            
+            case $role_choice in
+                1) role="contributor"; break ;;
+                2) role="developer"; break ;;
+                3) role="both"; break ;;
+                *) echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}" ;;
+            esac
+        done
         
         echo ""
         echo -e "${YELLOW}Creating account...${NC}"
@@ -147,8 +165,8 @@ authenticate_user() {
     else
         # Login
         echo ""
-        read -p "$(echo -e ${CYAN}Email:${NC} )" email </dev/tty
-        read -sp "$(echo -e ${CYAN}Password:${NC} )" password </dev/tty
+        read -p "$(echo -e ${CYAN}Email:${NC} )" email
+        read -sp "$(echo -e ${CYAN}Password:${NC} )" password
         echo ""
         echo ""
         echo -e "${YELLOW}Logging in...${NC}"
