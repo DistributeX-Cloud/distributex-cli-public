@@ -72,20 +72,70 @@ cmd_worker_stop() {
 
 # Command: worker status
 cmd_worker_status() {
-    if [ ! -f "$INSTALL_DIR/worker.pid" ]; then
-        echo -e "${RED}Worker not running${NC}"
-        exit 0
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}Not configured.${NC}"
+        exit 1
     fi
     
-    pid=$(cat "$INSTALL_DIR/worker.pid")
+    API_URL=$(grep -o '"apiUrl":"[^"]*"' "$CONFIG_FILE" | cut -d'"' -f4)
+    WORKER_ID=$(grep -o '"workerId":"[^"]*"' "$CONFIG_FILE" | cut -d'"' -f4)
+    TOKEN=$(grep -o '"authToken":"[^"]*"' "$CONFIG_FILE" | cut -d'"' -f4)
     
-    if ps -p $pid >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ Worker running (PID: $pid)${NC}"
-        echo ""
+    # Check local process
+    local_running=false
+    if [ -f "$INSTALL_DIR/worker.pid" ]; then
+        pid=$(cat "$INSTALL_DIR/worker.pid")
+        if ps -p $pid >/dev/null 2>&1; then
+            local_running=true
+            echo -e "${GREEN}✓ Worker process running (PID: $pid)${NC}"
+        else
+            echo -e "${RED}✗ Worker process not running (stale PID)${NC}"
+            rm "$INSTALL_DIR/worker.pid"
+        fi
+    else
+        echo -e "${RED}✗ Worker process not running${NC}"
+    fi
+    
+    echo ""
+    
+    # Check server status
+    echo -e "${CYAN}Checking server status...${NC}"
+    response=$(curl -s "$API_URL/api/workers/$WORKER_ID/status" \
+        -H "Authorization: Bearer $TOKEN")
+    
+    if echo "$response" | grep -q '"success":true'; then
+        is_active=$(echo "$response" | grep -o '"isActive":[^,}]*' | cut -d':' -f2)
+        status=$(echo "$response" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+        last_heartbeat=$(echo "$response" | grep -o '"lastHeartbeat":"[^"]*"' | cut -d'"' -f4)
+        
+        echo "Server Status:"
+        if [ "$is_active" = "true" ]; then
+            echo -e "  ${GREEN}✓ Active${NC} (status: $status)"
+        else
+            echo -e "  ${RED}✗ Inactive${NC} (status: $status)"
+        fi
+        echo "  Last heartbeat: $last_heartbeat"
+        
+        # Show resources if available
+        cpu=$(echo "$response" | grep -o '"cpuCores":[0-9]*' | cut -d':' -f2)
+        memory=$(echo "$response" | grep -o '"memoryGb":[0-9.]*' | cut -d':' -f2)
+        
+        if [ -n "$cpu" ] && [ "$cpu" != "0" ]; then
+            echo ""
+            echo "Resources:"
+            echo "  CPU: $cpu cores"
+            echo "  Memory: $memory GB"
+        fi
+    else
+        echo -e "${RED}✗ Could not reach server${NC}"
+    fi
+    
+    echo ""
+    
+    if [ "$local_running" = true ]; then
         echo "View logs: tail -f $INSTALL_DIR/logs/worker.log"
     else
-        echo -e "${RED}Worker not running (stale PID)${NC}"
-        rm "$INSTALL_DIR/worker.pid"
+        echo "Start worker: dxcloud worker start"
     fi
 }
 
