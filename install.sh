@@ -114,21 +114,21 @@ authenticate_user() {
     echo "  1) Create new account"
     echo "  2) Login to existing account"
     echo ""
-    read -p "$(echo -e ${CYAN}Choice [1-2]:${NC} )" auth_choice
+    read -p "$(echo -e ${CYAN}Choice [1-2]:${NC} )" auth_choice </dev/tty
     
     if [ "$auth_choice" == "1" ]; then
         # Signup
         echo ""
-        read -p "$(echo -e ${CYAN}Full Name:${NC} )" name
-        read -p "$(echo -e ${CYAN}Email:${NC} )" email
-        read -sp "$(echo -e ${CYAN}Password:${NC} )" password
+        read -p "$(echo -e ${CYAN}Full Name:${NC} )" name </dev/tty
+        read -p "$(echo -e ${CYAN}Email:${NC} )" email </dev/tty
+        read -sp "$(echo -e ${CYAN}Password:${NC} )" password </dev/tty
         echo ""
         echo ""
         echo "Select Role:"
         echo "  1) Contributor (share resources)"
         echo "  2) Developer (submit jobs)"
         echo "  3) Both"
-        read -p "$(echo -e ${CYAN}Choice [1-3]:${NC} )" role_choice
+        read -p "$(echo -e ${CYAN}Choice [1-3]:${NC} )" role_choice </dev/tty
         
         case $role_choice in
             1) role="contributor" ;;
@@ -147,8 +147,8 @@ authenticate_user() {
     else
         # Login
         echo ""
-        read -p "$(echo -e ${CYAN}Email:${NC} )" email
-        read -sp "$(echo -e ${CYAN}Password:${NC} )" password
+        read -p "$(echo -e ${CYAN}Email:${NC} )" email </dev/tty
+        read -sp "$(echo -e ${CYAN}Password:${NC} )" password </dev/tty
         echo ""
         echo ""
         echo -e "${YELLOW}Logging in...${NC}"
