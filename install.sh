@@ -13,6 +13,7 @@ NC='\033[0m'
 CONFIG_DIR="$HOME/.distributex"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 API_URL="${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main"
 
 # Helper input functions
 prompt() {
@@ -49,6 +50,37 @@ cat << "EOF"
 EOF
 echo -e "${NC}\n"
 
+# Check prerequisites
+echo -e "${BOLD}Checking prerequisites...${NC}\n"
+
+# Check Docker
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ Docker is not installed${NC}"
+    echo "Please install Docker first: https://docs.docker.com/get-docker/"
+    exit 1
+fi
+
+if ! docker ps &> /dev/null; then
+    echo -e "${RED}❌ Docker daemon is not running${NC}"
+    echo "Please start Docker and try again"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Docker installed and running${NC}"
+
+# Check for docker compose command
+if docker compose version &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+else
+    echo -e "${RED}❌ Docker Compose is not installed${NC}"
+    echo "Please install Docker Compose"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Docker Compose available${NC}\n"
+
 # ==================== DETECT EXTERNAL STORAGE ====================
 detect_external_storage() {
     echo -e "${BOLD}Detecting External Storage Devices${NC}\n"
@@ -76,7 +108,7 @@ detect_external_storage() {
                     device_names+=("USB Drive: $device ($size total, $avail available) at $mount_point")
                 fi
             fi
-        done < <(df -h | grep -E "^/dev/(sd|nvme)")
+        done < <(df -h 2>/dev/null | grep -E "^/dev/(sd|nvme)")
         
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS: Detect external volumes
@@ -88,32 +120,12 @@ detect_external_storage() {
             devices+=("$device")
             mount_points+=("$mount_point")
             device_names+=("External Volume: $(basename $mount_point) ($size total, $avail available)")
-        done < <(ls /Volumes | grep -v "Macintosh HD" | while read vol; do echo "/Volumes/$vol"; done)
-        
-    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
-        # Windows: Detect removable drives
-        for drive in {D..Z}; do
-            if [ -d "/$drive/" ]; then
-                drivetype=$(wmic logicaldisk where "DeviceID='$drive:'" get DriveType 2>/dev/null | grep -o '[0-9]')
-                if [ "$drivetype" == "2" ]; then  # 2 = Removable
-                    size=$(wmic logicaldisk where "DeviceID='$drive:'" get Size 2>/dev/null | grep -o '[0-9]*')
-                    free=$(wmic logicaldisk where "DeviceID='$drive:'" get FreeSpace 2>/dev/null | grep -o '[0-9]*')
-                    
-                    if [ -n "$size" ] && [ "$size" -gt 0 ]; then
-                        size_gb=$((size / 1024 / 1024 / 1024))
-                        free_gb=$((free / 1024 / 1024 / 1024))
-                        
-                        devices+=("$drive:")
-                        mount_points+=("/$drive")
-                        device_names+=("Drive $drive: (${size_gb}GB total, ${free_gb}GB free)")
-                    fi
-                fi
-            fi
-        done
+        done < <(ls /Volumes 2>/dev/null | grep -v "Macintosh HD" | while read vol; do echo "/Volumes/$vol"; done)
     fi
     
     if [ ${#devices[@]} -eq 0 ]; then
         echo -e "${YELLOW}No external storage devices detected${NC}"
+        echo "[]" > "$CONFIG_DIR/storage_devices.json"
         echo ""
         return
     fi
@@ -125,8 +137,7 @@ detect_external_storage() {
     done
     
     echo ""
-    echo "Select devices to use for distributed computing (comma-separated, e.g., 1,2,3)"
-    echo "Or press Enter to skip"
+    echo "Select devices to use (comma-separated, e.g., 1,2) or press Enter to skip:"
     prompt "Selection: " selection
     
     if [ -z "$selection" ]; then
@@ -163,6 +174,8 @@ detect_external_storage() {
 
 # ==================== AUTHENTICATION ====================
 echo -e "${BOLD}Step 1: Authentication${NC}\n"
+
+mkdir -p "$CONFIG_DIR"
 
 if [ -f "$CONFIG_FILE" ]; then
     echo -e "${YELLOW}Existing configuration found${NC}"
@@ -218,7 +231,6 @@ if [ -z "$AUTH_TOKEN" ]; then
 fi
 
 # ==================== DETECT STORAGE ====================
-mkdir -p "$CONFIG_DIR"
 detect_external_storage
 
 # ==================== DETECT GPU ====================
@@ -231,6 +243,12 @@ if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
         echo -e "${GREEN}✓ NVIDIA GPU detected and accessible${NC}"
     fi
 fi
+
+if [ "$GPU_TYPE" == "cpu" ]; then
+    echo -e "${YELLOW}No GPU detected or GPU not accessible to Docker${NC}"
+fi
+
+echo ""
 
 # ==================== SAVE CONFIG ====================
 cat > "$CONFIG_FILE" << EOF
@@ -245,17 +263,35 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# ==================== BUILD & START WORKER ====================
-echo -e "\n${BOLD}Step 3: Starting Worker${NC}\n"
+echo -e "${GREEN}✓ Configuration saved${NC}\n"
+
+# ==================== DOWNLOAD REQUIRED FILES ====================
+echo -e "${BOLD}Step 3: Downloading worker files...${NC}\n"
 
 cd "$CONFIG_DIR"
 
-# Create docker-compose.yml
+# Download Dockerfile
+echo "Downloading Dockerfile..."
+curl -fsSL "${GITHUB_RAW_BASE}/Dockerfile" -o Dockerfile
+
+# Download worker script
+echo "Downloading worker script..."
+curl -fsSL "${GITHUB_RAW_BASE}/packages/worker-node/distributex-worker.js" -o distributex-worker.js
+
+# Download package.json
+echo "Downloading package.json..."
+curl -fsSL "${GITHUB_RAW_BASE}/package.json" -o package.json
+
+echo -e "${GREEN}✓ Files downloaded${NC}\n"
+
+# ==================== CREATE DOCKER COMPOSE FILE ====================
+echo -e "${BOLD}Step 4: Creating Docker Compose configuration...${NC}\n"
+
 cat > docker-compose.yml << 'DOCKEREOF'
-version: '3.8'
 services:
   worker:
     build: .
+    image: distributex-worker:latest
     container_name: distributex-worker
     restart: unless-stopped
     privileged: true
@@ -263,6 +299,8 @@ services:
       - AUTH_TOKEN=${AUTH_TOKEN}
       - WORKER_ID=${WORKER_ID}
       - API_URL=${API_URL}
+      - COORDINATOR_URL=${COORDINATOR_URL}
+      - NODE_NAME=${NODE_NAME:-distributex-worker}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.json:/config/config.json:ro
@@ -285,25 +323,55 @@ fi
 
 # Add external storage mounts
 if [ -f "$CONFIG_DIR/storage_devices.json" ]; then
-    storage_count=$(jq 'length' "$CONFIG_DIR/storage_devices.json")
+    storage_count=$(jq 'length' "$CONFIG_DIR/storage_devices.json" 2>/dev/null || echo "0")
     if [ "$storage_count" -gt 0 ]; then
         echo "    # External Storage Mounts" >> docker-compose.yml
         jq -r '.[] | "      - \(.mountPoint):/external/storage\(.device | gsub("/dev/"; ""))/"' "$CONFIG_DIR/storage_devices.json" >> docker-compose.yml
     fi
 fi
 
-# Detect docker compose command
-if command -v docker-compose &>/dev/null; then
-    docker-compose up -d --build
-elif docker compose version &>/dev/null; then
-    docker compose up -d --build
+echo -e "${GREEN}✓ Docker Compose file created${NC}\n"
+
+# ==================== CREATE .ENV FILE ====================
+cat > .env << EOF
+AUTH_TOKEN=$AUTH_TOKEN
+WORKER_ID=$WORKER_ID
+API_URL=$API_URL
+COORDINATOR_URL=wss://distributex-coordinator.distributex.workers.dev/ws
+NODE_NAME=distributex-worker-$(hostname)
+EOF
+
+echo -e "${GREEN}✓ Environment file created${NC}\n"
+
+# ==================== BUILD & START WORKER ====================
+echo -e "${BOLD}Step 5: Building and starting worker...${NC}\n"
+
+echo "Building Docker image (this may take a few minutes)..."
+$DOCKER_COMPOSE_CMD build
+
+echo ""
+echo "Starting worker container..."
+$DOCKER_COMPOSE_CMD up -d
+
+echo ""
+
+# Wait for container to start
+sleep 3
+
+# Check if container is running
+if docker ps | grep -q distributex-worker; then
+    echo -e "${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
+    echo -e "Worker ID: ${CYAN}$WORKER_ID${NC}"
+    echo -e "Status: ${GREEN}Running${NC}\n"
+    echo -e "Dashboard: ${CYAN}https://distributex.cloud${NC}\n"
+    echo -e "${BOLD}Useful Commands:${NC}"
+    echo -e "  View logs:    ${CYAN}docker logs -f distributex-worker${NC}"
+    echo -e "  Stop worker:  ${CYAN}docker stop distributex-worker${NC}"
+    echo -e "  Start worker: ${CYAN}docker start distributex-worker${NC}"
+    echo -e "  Restart:      ${CYAN}docker restart distributex-worker${NC}"
+    echo ""
 else
-    echo "ERROR: Docker Compose not found. Install it with:"
-    echo "  sudo apt install docker-compose-plugin"
+    echo -e "${RED}❌ Container failed to start${NC}"
+    echo "Check logs with: docker logs distributex-worker"
     exit 1
 fi
-
-echo -e "\n${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
-echo -e "Worker ID: ${CYAN}$WORKER_ID${NC}"
-echo -e "Status: ${GREEN}Running${NC}\n"
-echo -e "Dashboard: ${CYAN}https://distributex.cloud${NC}\n"
