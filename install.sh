@@ -333,6 +333,7 @@ fi
 # Check AMD GPU if no NVIDIA detected
 if [ "$GPU_DETECTED" = false ] && [ "$GPU_TYPE" != "nvidia" ]; then
     echo -e "${BLUE}Checking for AMD GPU...${NC}"
+fi
 
 # Detect other resources
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "1")
