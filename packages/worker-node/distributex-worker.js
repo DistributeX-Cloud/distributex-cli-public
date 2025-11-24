@@ -290,12 +290,24 @@ class WorkerNode {
             memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
             memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
             activeJobs: this.activeJobs.size
+          },
+          deviceInfo: {
+            deviceId: this.config.deviceId,
+            deviceFingerprint: this.config.deviceFingerprint,
+            userId: this.config.userId
           }
         })
       });
       
       if (response.ok) {
+        const data = await response.json();
         console.log('✓ Registered with API');
+        
+        if (data.registered) {
+          console.log('✓ New device/worker registered');
+        } else if (data.updated) {
+          console.log('✓ Existing worker updated');
+        }
       } else {
         console.error(`⚠️  API registration failed: ${response.status}`);
       }
@@ -382,6 +394,11 @@ class WorkerNode {
             memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
             activeJobs: this.activeJobs.size,
             dockerContainers: this.capabilities.dockerContainers
+          },
+          deviceInfo: {
+            deviceId: this.config.deviceId,
+            deviceFingerprint: this.config.deviceFingerprint,
+            userId: this.config.userId
           }
         })
       });
