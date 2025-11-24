@@ -188,7 +188,7 @@ if [ -z "$AUTH_TOKEN" ]; then
         
         echo ""
         echo "Select Role:"
-        echo "  1) Contributor (share resources, earn rewards)"
+        echo "  1) Contributor (share resources, support developers)"
         echo "  2) Developer (submit workloads, use network)"
         echo "  3) Both"
         prompt "Choice [1-3]: " role_choice
