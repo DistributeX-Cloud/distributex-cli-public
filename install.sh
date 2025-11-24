@@ -292,7 +292,11 @@ if [ -f "$CONFIG_DIR/storage_devices.json" ]; then
     fi
 fi
 
-docker-compose up -d --build
+if command -v docker-compose &>/dev/null; then
+    docker-compose up -d --build
+else
+    docker compose up -d --build
+fi
 
 echo -e "\n${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
 echo -e "Worker ID: ${CYAN}$WORKER_ID${NC}"
