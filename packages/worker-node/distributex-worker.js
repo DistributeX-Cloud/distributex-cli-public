@@ -129,72 +129,194 @@ async detectCapabilities() {
     ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
     : Math.round(storageGb * 0.5 * 10) / 10;
   
-  // ✅ ENHANCED GPU DETECTION
-  let gpuAvailable = false;
-  let gpuModel = null;
-  let gpuMemoryGb = 0;
-  
-  if (this.config.enableGpu !== false) {
+// Enhanced GPU detection for all types - Add to worker's detectCapabilities()
+
+// ✅ COMPREHENSIVE GPU DETECTION (NVIDIA, AMD, Intel, Apple)
+let gpuAvailable = false;
+let gpuModel = null;
+let gpuMemoryGb = 0;
+let gpuCount = 0;
+
+if (this.config.enableGpu !== false) {
+  try {
+    // 1. NVIDIA GPU Detection (Linux/Windows)
     try {
-      const { execSync } = require('child_process');
+      const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total,count --format=csv,noheader', { 
+        encoding: 'utf8', 
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      });
+      const lines = nvidiaSmi.trim().split('\n');
+      if (lines.length > 0 && lines[0]) {
+        const parts = lines[0].split(',');
+        gpuModel = parts[0]?.trim() || 'NVIDIA GPU';
+        const memoryStr = parts[1]?.trim() || '0 MiB';
+        gpuMemoryGb = parseFloat(memoryStr) / 1024;
+        gpuCount = lines.length;
+        gpuAvailable = true;
+        console.log(`✓ NVIDIA GPU detected: ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB) x${gpuCount}`);
+      }
+    } catch (nvidiaError) {
+      // NVIDIA not found, try other methods
       
-      // Try nvidia-smi first (NVIDIA GPUs)
-      try {
-        const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
-          encoding: 'utf8', 
-          timeout: 3000 
-        });
-        const lines = nvidiaSmi.trim().split('\n');
-        if (lines[0]) {
-          const parts = lines[0].split(',');
-          gpuModel = parts[0].trim();
-          gpuMemoryGb = parseFloat(parts[1].trim()) / 1024;
-          gpuAvailable = true;
-          console.log(`✓ NVIDIA GPU detected: ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB)`);
-        }
-      } catch (nvidiaError) {
-        // Try lspci for other GPUs (Linux)
-        if (process.platform === 'linux') {
-          try {
-            const output = execSync('lspci | grep -i vga', { 
-              encoding: 'utf8', 
-              timeout: 3000 
-            });
-            if (output.includes('AMD') || output.includes('Radeon')) {
-              gpuAvailable = true;
-              gpuModel = 'AMD GPU (detected)';
-              console.log('✓ AMD GPU detected');
-            } else if (output.includes('Intel')) {
-              gpuAvailable = true;
-              gpuModel = 'Intel GPU (detected)';
-              console.log('✓ Intel GPU detected');
-            }
-          } catch (lspciError) {
-            // No GPU detected
+      // 2. AMD GPU Detection (Linux)
+      if (process.platform === 'linux') {
+        try {
+          const rocmSmi = execSync('rocm-smi --showproductname', { 
+            encoding: 'utf8', 
+            timeout: 3000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          if (rocmSmi && rocmSmi.length > 0) {
+            gpuAvailable = true;
+            gpuModel = 'AMD GPU (ROCm)';
+            gpuCount = 1;
+            console.log('✓ AMD GPU with ROCm detected');
           }
-        }
-        
-        // Try for Mac Metal GPUs
-        if (process.platform === 'darwin') {
+        } catch (rocmError) {
+          // Try lspci for AMD
           try {
-            const output = execSync('system_profiler SPDisplaysDataType | grep Chipset', { 
+            const lspci = execSync('lspci | grep -iE "vga|3d|display"', { 
               encoding: 'utf8', 
-              timeout: 3000 
+              timeout: 3000,
+              stdio: ['pipe', 'pipe', 'ignore']
             });
-            if (output) {
+            
+            if (lspci.toLowerCase().includes('amd') || lspci.toLowerCase().includes('radeon')) {
               gpuAvailable = true;
-              gpuModel = output.split(':')[1]?.trim() || 'Mac GPU';
-              console.log(`✓ Mac GPU detected: ${gpuModel}`);
+              gpuModel = 'AMD Radeon GPU';
+              gpuCount = (lspci.match(/AMD|Radeon/gi) || []).length;
+              console.log(`✓ AMD GPU detected via lspci x${gpuCount}`);
+            } else if (lspci.toLowerCase().includes('intel')) {
+              gpuAvailable = true;
+              gpuModel = 'Intel Integrated GPU';
+              gpuCount = 1;
+              console.log('✓ Intel GPU detected via lspci');
             }
-          } catch (macError) {
-            // No GPU detected
-          }
+          } catch (lspciError) {}
         }
       }
-    } catch (e) {
-      console.log('⚠️  GPU detection failed, assuming no GPU');
+      
+      // 3. Apple Silicon / Metal (macOS)
+      if (process.platform === 'darwin' && !gpuAvailable) {
+        try {
+          const systemProfiler = execSync('system_profiler SPDisplaysDataType', { 
+            encoding: 'utf8', 
+            timeout: 3000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          
+          // Check for Apple Silicon GPU
+          if (systemProfiler.includes('Apple') && (systemProfiler.includes('M1') || 
+              systemProfiler.includes('M2') || systemProfiler.includes('M3') || 
+              systemProfiler.includes('M4'))) {
+            const match = systemProfiler.match(/(M[1-4][\s\w]*)/);
+            gpuModel = match ? `Apple ${match[1].trim()} GPU` : 'Apple Silicon GPU';
+            gpuAvailable = true;
+            gpuCount = 1;
+            
+            // Try to extract VRAM
+            const vramMatch = systemProfiler.match(/(\d+)\s*(GB|MB)/i);
+            if (vramMatch) {
+              const size = parseFloat(vramMatch[1]);
+              gpuMemoryGb = vramMatch[2].toUpperCase() === 'GB' ? size : size / 1024;
+            }
+            
+            console.log(`✓ Apple Silicon GPU detected: ${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}`);
+          }
+          // Check for discrete AMD GPU on Intel Macs
+          else if (systemProfiler.includes('AMD') || systemProfiler.includes('Radeon')) {
+            const chipsetMatch = systemProfiler.match(/Chipset Model:\s*(.+)/);
+            gpuModel = chipsetMatch ? chipsetMatch[1].trim() : 'AMD GPU';
+            gpuAvailable = true;
+            gpuCount = 1;
+            
+            const vramMatch = systemProfiler.match(/VRAM.*?(\d+)\s*(GB|MB)/i);
+            if (vramMatch) {
+              const size = parseFloat(vramMatch[1]);
+              gpuMemoryGb = vramMatch[2].toUpperCase() === 'GB' ? size : size / 1024;
+            }
+            
+            console.log(`✓ Mac AMD GPU detected: ${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}`);
+          }
+        } catch (macError) {}
+      }
+      
+      // 4. Windows GPU Detection (if NVIDIA failed)
+      if (process.platform === 'win32' && !gpuAvailable) {
+        try {
+          const wmic = execSync('wmic path win32_VideoController get name,AdapterRAM', { 
+            encoding: 'utf8', 
+            timeout: 3000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          
+          const lines = wmic.trim().split('\n').slice(1); // Skip header
+          const gpuLines = lines.filter(line => line.trim().length > 0);
+          
+          if (gpuLines.length > 0) {
+            // Find discrete GPU (not Intel integrated)
+            const discreteGpu = gpuLines.find(line => 
+              !line.toLowerCase().includes('intel') || 
+              line.toLowerCase().includes('arc')
+            ) || gpuLines[0];
+            
+            const parts = discreteGpu.trim().split(/\s{2,}/);
+            if (parts.length >= 2) {
+              gpuModel = parts[1] || 'GPU';
+              const ramBytes = parseInt(parts[0]) || 0;
+              gpuMemoryGb = ramBytes / (1024 ** 3);
+              gpuAvailable = true;
+              gpuCount = gpuLines.length;
+              
+              console.log(`✓ Windows GPU detected: ${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB)` : ''}`);
+            }
+          }
+        } catch (wmicError) {}
+      }
+      
+      // 5. Check for Vulkan support (cross-platform)
+      if (!gpuAvailable) {
+        try {
+          const vulkanInfo = execSync('vulkaninfo --summary 2>/dev/null || vulkaninfo 2>/dev/null', { 
+            encoding: 'utf8', 
+            timeout: 3000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          
+          if (vulkanInfo && vulkanInfo.length > 0 && !vulkanInfo.includes('Cannot')) {
+            const deviceMatch = vulkanInfo.match(/deviceName\s*=\s*(.+)/);
+            gpuModel = deviceMatch ? deviceMatch[1].trim() : 'Vulkan Compatible GPU';
+            gpuAvailable = true;
+            gpuCount = 1;
+            console.log(`✓ GPU detected via Vulkan: ${gpuModel}`);
+          }
+        } catch (vulkanError) {}
+      }
+      
+      // 6. OpenGL/OpenCL detection (last resort)
+      if (!gpuAvailable && process.platform === 'linux') {
+        try {
+          const glxInfo = execSync('glxinfo | grep "OpenGL renderer"', { 
+            encoding: 'utf8', 
+            timeout: 3000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          
+          const match = glxInfo.match(/OpenGL renderer string:\s*(.+)/);
+          if (match) {
+            gpuModel = match[1].trim();
+            gpuAvailable = true;
+            gpuCount = 1;
+            console.log(`✓ GPU detected via OpenGL: ${gpuModel}`);
+          }
+        } catch (glError) {}
+      }
     }
+  } catch (e) {
+    console.log('⚠️  GPU detection failed, assuming no GPU available');
   }
+}
   
   // Platform info
   const platform = os.platform();
@@ -209,7 +331,8 @@ async detectCapabilities() {
     storageGb,
     gpuAvailable,
     gpuModel,
-    gpuMemoryGb,
+    gpuMemoryGb: Math.round(gpuMemoryGb * 10) / 10,
+    gpuCount,
     
     // System info
     platform,
