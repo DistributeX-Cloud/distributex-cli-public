@@ -1,0 +1,98 @@
+# docker-compose.yml - DistributeX Worker with GPU Support
+
+version: '3.8'
+
+services:
+  # Worker with NVIDIA GPU support
+  worker-nvidia:
+    build: .
+    image: distributex-worker:latest
+    container_name: distributex-worker-nvidia
+    restart: unless-stopped
+    privileged: true  # Required for Docker-in-Docker
+    environment:
+      - DISTRIBUTEX_API_URL=${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}
+      - DISTRIBUTEX_COORDINATOR_URL=${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev/ws}
+      - AUTH_TOKEN=${AUTH_TOKEN}
+      - WORKER_ID=${WORKER_ID}
+      - NODE_NAME=${NODE_NAME:-docker-worker-nvidia}
+      - ENABLE_GPU=true
+      - GPU_TYPE=nvidia
+      - MAX_CPU_CORES=${MAX_CPU_CORES}
+      - MAX_MEMORY_GB=${MAX_MEMORY_GB}
+      - MAX_STORAGE_GB=${MAX_STORAGE_GB}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker-in-Docker
+      - worker-data:/root/.distributex
+      - /tmp:/tmp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    profiles:
+      - nvidia
+
+  # Worker with AMD GPU support (ROCm)
+  worker-amd:
+    build: .
+    image: distributex-worker:latest
+    container_name: distributex-worker-amd
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - DISTRIBUTEX_API_URL=${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}
+      - DISTRIBUTEX_COORDINATOR_URL=${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev/ws}
+      - AUTH_TOKEN=${AUTH_TOKEN}
+      - WORKER_ID=${WORKER_ID}
+      - NODE_NAME=${NODE_NAME:-docker-worker-amd}
+      - ENABLE_GPU=true
+      - GPU_TYPE=amd
+      - MAX_CPU_CORES=${MAX_CPU_CORES}
+      - MAX_MEMORY_GB=${MAX_MEMORY_GB}
+      - MAX_STORAGE_GB=${MAX_STORAGE_GB}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - worker-data:/root/.distributex
+      - /dev/dri:/dev/dri  # AMD GPU access
+      - /tmp:/tmp
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    profiles:
+      - amd
+
+  # Worker without GPU (CPU only)
+  worker-cpu:
+    build: .
+    image: distributex-worker:latest
+    container_name: distributex-worker-cpu
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - DISTRIBUTEX_API_URL=${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}
+      - DISTRIBUTEX_COORDINATOR_URL=${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev/ws}
+      - AUTH_TOKEN=${AUTH_TOKEN}
+      - WORKER_ID=${WORKER_ID}
+      - NODE_NAME=${NODE_NAME:-docker-worker-cpu}
+      - ENABLE_GPU=false
+      - MAX_CPU_CORES=${MAX_CPU_CORES}
+      - MAX_MEMORY_GB=${MAX_MEMORY_GB}
+      - MAX_STORAGE_GB=${MAX_STORAGE_GB}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - worker-data:/root/.distributex
+      - /tmp:/tmp
+    profiles:
+      - cpu
+
+volumes:
+  worker-data:
+    driver: local
+
+# Usage:
+# 1. NVIDIA GPU: docker-compose --profile nvidia up -d
+# 2. AMD GPU:    docker-compose --profile amd up -d
+# 3. CPU only:   docker-compose --profile cpu up -d
