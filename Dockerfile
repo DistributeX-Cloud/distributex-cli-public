@@ -1,4 +1,4 @@
-# DistributeX Worker Node - Docker Image
+# DistributeX Worker Node - Simplified Docker Image
 # Supports NVIDIA, AMD, and Intel GPUs with accurate detection
 
 FROM node:20-slim
@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     lshw \
     dmidecode \
     procps \
+    bc \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (to run containers from within)
@@ -20,7 +21,7 @@ RUN curl -fsSL https://get.docker.com | sh
 
 # Install NVIDIA detection tools (optional, for GPU detection)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nvidia-smi || true \
+    nvidia-utils || true \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ROCm tools for AMD GPU detection (optional)
@@ -39,10 +40,9 @@ RUN npm install --omit=dev --no-package-lock
 
 # Copy worker source
 COPY distributex-worker.js ./
-COPY gpu-detect.sh ./
 
 # Make scripts executable
-RUN chmod +x distributex-worker.js gpu-detect.sh
+RUN chmod +x distributex-worker.js
 
 # Create directories
 RUN mkdir -p /root/.distributex/logs
