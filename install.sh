@@ -172,10 +172,56 @@ detect_external_storage() {
     echo -e "${GREEN}✓ External storage configured${NC}\n"
 }
 
+# ==================== DEVICE FINGERPRINTING ====================
+generate_device_fingerprint() {
+    local components=""
+    
+    # CPU info
+    local cpu_model=$(cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 | cut -d: -f2 | xargs || echo "unknown")
+    local cpu_cores=$(nproc 2>/dev/null || echo "1")
+    components="${components}cpu:${cpu_model}:${cpu_cores}|"
+    
+    # Total memory
+    local total_mem=$(free -b 2>/dev/null | grep Mem | awk '{print $2}' || echo "0")
+    components="${components}mem:${total_mem}|"
+    
+    # Platform
+    components="${components}platform:$(uname -s)|"
+    components="${components}arch:$(uname -m)|"
+    
+    # Machine ID (most reliable)
+    if [ -f /etc/machine-id ]; then
+        local machine_id=$(cat /etc/machine-id)
+        components="${components}machine:${machine_id}|"
+    elif [ -f /var/lib/dbus/machine-id ]; then
+        local machine_id=$(cat /var/lib/dbus/machine-id)
+        components="${components}machine:${machine_id}|"
+    fi
+    
+    # Hostname
+    components="${components}hostname:$(hostname)|"
+    
+    # MAC addresses
+    local macs=$(ip link 2>/dev/null | grep "link/ether" | awk '{print $2}' | sort | tr '\n' ',' || echo "")
+    if [ -n "$macs" ]; then
+        components="${components}mac:${macs}|"
+    fi
+    
+    # Generate hash
+    local fingerprint=$(echo -n "$components" | sha256sum | awk '{print $1}')
+    echo "$fingerprint"
+}
+
 # ==================== AUTHENTICATION ====================
 echo -e "${BOLD}Step 1: Authentication${NC}\n"
 
 mkdir -p "$CONFIG_DIR"
+
+# Generate device fingerprint
+DEVICE_FINGERPRINT=$(generate_device_fingerprint)
+DEVICE_ID="device-${DEVICE_FINGERPRINT:0:32}"
+
+echo -e "${CYAN}Device ID: ${DEVICE_ID:0:20}...${NC}\n"
 
 if [ -f "$CONFIG_FILE" ]; then
     echo -e "${YELLOW}Existing configuration found${NC}"
@@ -183,7 +229,11 @@ if [ -f "$CONFIG_FILE" ]; then
     if [[ $use_existing =~ ^[Yy]$ ]]; then
         AUTH_TOKEN=$(jq -r '.authToken' "$CONFIG_FILE")
         USER_ID=$(jq -r '.userId' "$CONFIG_FILE")
-        WORKER_ID="worker-$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 16 | head -n 1)"
+        
+        # Generate worker ID based on user + device
+        USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
+        DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
+        WORKER_ID="worker-${USER_HASH}-${DEVICE_HASH}"
     else
         rm "$CONFIG_FILE"
     fi
@@ -227,8 +277,14 @@ if [ -z "$AUTH_TOKEN" ]; then
     
     AUTH_TOKEN=$(echo "$response" | jq -r '.token')
     USER_ID=$(echo "$response" | jq -r '.user.id')
-    WORKER_ID="worker-$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 16 | head -n 1)"
+    
+    # Generate worker ID based on user + device
+    USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
+    DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
+    WORKER_ID="worker-${USER_HASH}-${DEVICE_HASH}"
 fi
+
+echo -e "${GREEN}✓ Worker ID: ${WORKER_ID}${NC}\n"
 
 # ==================== DETECT STORAGE ====================
 detect_external_storage
@@ -256,6 +312,8 @@ cat > "$CONFIG_FILE" << EOF
   "authToken": "$AUTH_TOKEN",
   "userId": "$USER_ID",
   "workerId": "$WORKER_ID",
+  "deviceId": "$DEVICE_ID",
+  "deviceFingerprint": "$DEVICE_FINGERPRINT",
   "apiUrl": "$API_URL",
   "coordinatorUrl": "wss://distributex-coordinator.distributex.workers.dev/ws",
   "gpuType": "$GPU_TYPE",
