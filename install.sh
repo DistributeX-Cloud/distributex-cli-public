@@ -1,5 +1,5 @@
 #!/bin/bash
-# DistributeX Complete CLI + Worker Installation - FIXED
+# DistributeX Complete Docker Worker Installation - UPDATED
 # curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash
 
 set -e
@@ -13,11 +13,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Configuration
-VERSION="1.0.0"
+VERSION="2.0.0"
 INSTALL_DIR="$HOME/.distributex"
-BIN_DIR="/usr/local/bin"
 API_URL="${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}"
-COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev}"
+COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-wss://distributex-coordinator.distributex.workers.dev/ws}"
 
 show_banner() {
     clear
@@ -29,7 +28,7 @@ show_banner() {
  / /_/ / (__  ) /_/ /  / / /_/ / /_/ / /_/  __/ |  
 /_____/_/____/\__/_/  /_/_.___/\__,_/\__/\___/_/|_|
                                                     
-         Free Distributed Computing Network
+         Docker-Based Distributed Computing
 EOF
     echo -e "${NC}\n"
 }
@@ -49,127 +48,54 @@ check_requirements() {
     
     echo -e "${GREEN}✓ Docker installed${NC}"
     
-    # Check Docker daemon with detailed troubleshooting
+    # Check Docker daemon
     if ! docker info >/dev/null 2>&1; then
         docker_error=$(docker info 2>&1 || true)
         echo -e "${RED}✗ Docker daemon not accessible${NC}"
         echo ""
-        echo -e "${YELLOW}Attempting to fix Docker issues...${NC}"
-        echo ""
         
         if echo "$docker_error" | grep -q "permission denied"; then
-            echo "Issue: Permission denied"
-            echo ""
-            echo "Fixing permissions..."
+            echo -e "${YELLOW}Fixing Docker permissions...${NC}"
             sudo usermod -aG docker $USER
             echo -e "${GREEN}✓ Added $USER to docker group${NC}"
             echo ""
-            echo -e "${YELLOW}Please run these commands to apply changes:${NC}"
+            echo -e "${YELLOW}Please run these commands:${NC}"
             echo "  newgrp docker"
-            echo "  # Or log out and back in"
-            echo ""
-            echo "Then re-run this installer:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash"
+            echo "  # Then re-run this installer"
             exit 1
         else
-            echo "Issue: Docker daemon not running"
-            echo ""
-            echo "Starting Docker daemon..."
-            
-            # Try to start Docker
-            if command -v systemctl >/dev/null 2>&1; then
-                sudo systemctl start docker
-                sudo systemctl enable docker
-                echo -e "${GREEN}✓ Docker daemon started${NC}"
-                
-                # Wait a moment for Docker to start
-                sleep 2
-                
-                # Check if it's running now
-                if docker info >/dev/null 2>&1; then
-                    echo -e "${GREEN}✓ Docker is now accessible${NC}"
-                else
-                    echo -e "${RED}✗ Docker still not accessible${NC}"
-                    echo ""
-                    echo "Manual steps:"
-                    echo "  sudo systemctl start docker"
-                    echo "  sudo systemctl enable docker"
-                    echo "  sudo usermod -aG docker $USER"
-                    echo "  newgrp docker"
-                    echo "  docker ps"
-                    exit 1
-                fi
-            else
-                echo -e "${YELLOW}Please start Docker manually:${NC}"
-                echo "  Mac: Open Docker Desktop"
-                echo "  Linux: sudo systemctl start docker"
-                echo ""
-                echo "Then re-run this installer"
-                exit 1
-            fi
+            echo "Please start Docker daemon:"
+            echo "  Linux: sudo systemctl start docker"
+            echo "  Mac: Open Docker Desktop"
+            exit 1
         fi
     fi
     
-    # Verify Docker works
-    if ! docker ps >/dev/null 2>&1; then
-        echo -e "${RED}✗ Cannot list Docker containers${NC}"
-        echo ""
-        echo "Please run these commands:"
-        echo "  sudo systemctl start docker"
-        echo "  sudo systemctl enable docker"
-        echo "  sudo usermod -aG docker $USER"
-        echo "  newgrp docker"
-        echo "  docker ps"
-        echo ""
-        echo "Then re-run this installer"
+    echo -e "${GREEN}✓ Docker daemon running${NC}"
+    
+    # Check Docker Compose
+    if command -v docker-compose >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Docker Compose available${NC}"
+    else
+        echo -e "${RED}✗ Docker Compose not found${NC}"
+        echo "Install: https://docs.docker.com/compose/install/"
         exit 1
     fi
-    
-    echo -e "${GREEN}✓ Docker daemon is running${NC}"
-    
-    # Check Node.js
-    if ! command -v node >/dev/null 2>&1; then
-        echo ""
-        echo -e "${YELLOW}Node.js not found. Installing...${NC}"
-        
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            if command -v brew >/dev/null 2>&1; then
-                brew install node
-            else
-                echo -e "${RED}Homebrew required. Install from: https://brew.sh${NC}"
-                exit 1
-            fi
-        elif [[ -f /etc/debian_version ]]; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-            sudo apt-get install -y nodejs
-        else
-            echo -e "${RED}Please install Node.js manually: https://nodejs.org${NC}"
-            exit 1
-        fi
-    fi
-    
-    node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [ "$node_version" -lt 16 ]; then
-        echo -e "${YELLOW}⚠ Node.js version $node_version detected. Version 16+ recommended.${NC}"
-    fi
-    
-    echo -e "${GREEN}✓ Node.js $(node -v) available${NC}"
 }
 
 setup_directories() {
     echo ""
     echo -e "${BOLD}Setting up directories...${NC}"
     
-    mkdir -p "$INSTALL_DIR"/{bin,logs,config}
+    mkdir -p "$INSTALL_DIR"/{logs,config}
     chmod 700 "$INSTALL_DIR"
     
-    echo -e "${GREEN}✓ Directories created at $INSTALL_DIR${NC}"
+    echo -e "${GREEN}✓ Directories created${NC}"
 }
 
-# ✅ FIXED: Proper authentication flow with terminal check
 authenticate_user() {
     echo ""
-    echo -e "${BOLD}DistributeX Setup${NC}\n"
+    echo -e "${BOLD}DistributeX Authentication${NC}\n"
     
     # Check if we can read from terminal
     if [ ! -t 0 ]; then
@@ -236,20 +162,20 @@ authenticate_user() {
             -d "{\"email\":\"$email\",\"password\":\"$password\"}")
     fi
     
-    # ✅ PARSE RESPONSE
+    # Parse response
     if echo "$response" | grep -q '"success":true'; then
         TOKEN=$(echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
         USER_ID=$(echo "$response" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
         USER_ROLE=$(echo "$response" | grep -o '"role":"[^"]*"' | cut -d'"' -f4)
         
-        # ✅ EXTRACT WORKER CREDENTIALS IF AVAILABLE
+        # Extract worker credentials if available
         WORKER_ID=$(echo "$response" | grep -o '"workerId":"[^"]*"' | cut -d'"' -f4)
         WORKER_NAME=$(echo "$response" | grep -o '"workerName":"[^"]*"' | cut -d'"' -f4)
         
         echo ""
         echo -e "${GREEN}✅ Authentication successful!${NC}"
         
-        # ✅ IF NO WORKER BUT USER IS CONTRIBUTOR, CREATE ONE
+        # If no worker but user is contributor, create one
         if [ -z "$WORKER_ID" ] && ([ "$USER_ROLE" == "contributor" ] || [ "$USER_ROLE" == "both" ]); then
             echo ""
             echo -e "${YELLOW}Registering worker node...${NC}"
@@ -257,7 +183,7 @@ authenticate_user() {
             worker_response=$(curl -s -X POST "$API_URL/api/workers/register" \
                 -H "Content-Type: application/json" \
                 -H "Authorization: Bearer $TOKEN" \
-                -d "{\"nodeName\":\"$(hostname)-node\",\"cpuCores\":1,\"memoryGb\":1}")
+                -d "{\"nodeName\":\"$(hostname)-docker-node\",\"cpuCores\":1,\"memoryGb\":1}")
             
             if echo "$worker_response" | grep -q '"success":true'; then
                 WORKER_ID=$(echo "$worker_response" | grep -o '"workerId":"[^"]*"' | cut -d'"' -f4)
@@ -275,21 +201,18 @@ authenticate_user() {
     fi
 }
 
-# ✅ SAVE CONFIGURATION WITH WORKER INFO
 save_config() {
+    echo ""
+    echo -e "${BOLD}Saving configuration...${NC}"
+    
     cat > "$INSTALL_DIR/config.json" << EOF
 {
   "apiUrl": "$API_URL",
-  "coordinatorUrl": "$COORDINATOR_URL/ws",
+  "coordinatorUrl": "$COORDINATOR_URL",
   "authToken": "$TOKEN",
   "workerId": "$WORKER_ID",
   "userId": "$USER_ID",
   "nodeName": "$WORKER_NAME",
-  "allowNetwork": false,
-  "maxCpuCores": null,
-  "maxMemoryGb": null,
-  "maxStorageGb": null,
-  "enableGpu": false,
   "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
@@ -297,627 +220,137 @@ EOF
     echo -e "${GREEN}✓ Configuration saved${NC}"
 }
 
+create_env_file() {
+    echo ""
+    echo -e "${BOLD}Creating Docker environment...${NC}"
+    
+    cat > "$INSTALL_DIR/.env" << EOF
+# DistributeX Worker Configuration
+AUTH_TOKEN=$TOKEN
+WORKER_ID=$WORKER_ID
+NODE_NAME=$WORKER_NAME
+DISTRIBUTEX_API_URL=$API_URL
+DISTRIBUTEX_COORDINATOR_URL=$COORDINATOR_URL
+
+# Resource Limits (optional)
+MAX_CPU_CORES=
+MAX_MEMORY_GB=
+MAX_STORAGE_GB=
+
+# GPU Settings
+ENABLE_GPU=true
+GPU_TYPE=
+EOF
+    
+    chmod 600 "$INSTALL_DIR/.env"
+    echo -e "${GREEN}✓ Environment file created${NC}"
+}
+
+download_docker_files() {
+    echo ""
+    echo -e "${BOLD}Downloading Docker configuration...${NC}"
+    
+    cd "$INSTALL_DIR"
+    
+    # Download files
+    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/Dockerfile -o Dockerfile
+    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/docker-compose.yml -o docker-compose.yml
+    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/gpu-detect.sh -o gpu-detect.sh
+    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/packages/worker-node/distributex-worker.js -o distributex-worker.js
+    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/package.json -o package.json
+    
+    chmod +x gpu-detect.sh
+    
+    echo -e "${GREEN}✓ Docker files downloaded${NC}"
+}
+
+build_docker_image() {
+    echo ""
+    echo -e "${BOLD}Building Docker image...${NC}"
+    
+    cd "$INSTALL_DIR"
+    docker build -t distributex-worker:latest . > /dev/null 2>&1 &
+    
+    # Show progress
+    local pid=$!
+    local spin='-\|/'
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r  Building... ${spin:$i:1}"
+        sleep .1
+    done
+    
+    wait $pid
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        printf "\r${GREEN}✓ Docker image built          ${NC}\n"
+    else
+        printf "\r${RED}✗ Build failed               ${NC}\n"
+        exit 1
+    fi
+}
+
 install_cli() {
     echo ""
     echo -e "${BOLD}Installing CLI...${NC}"
     
-    # Download CLI from your repo or embed it
-    curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/dxcloud.sh \
-        -o "$INSTALL_DIR/bin/dxcloud" 2>/dev/null || {
-        # Fallback: Use embedded version from earlier
-        cp /path/to/embedded/dxcloud "$INSTALL_DIR/bin/dxcloud"
-    }
+    # Remove old CLI if exists
+    sudo rm -f /usr/local/bin/dxcloud 2>/dev/null || true
     
-    chmod +x "$INSTALL_DIR/bin/dxcloud"
+    # Download new CLI
+    sudo curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/dxcloud.sh \
+        -o /usr/local/bin/dxcloud
     
-    # Create symlink
-    if [ -w "$BIN_DIR" ]; then
-        ln -sf "$INSTALL_DIR/bin/dxcloud" "$BIN_DIR/dxcloud"
+    sudo chmod +x /usr/local/bin/dxcloud
+    
+    echo -e "${GREEN}✓ CLI installed to /usr/local/bin/dxcloud${NC}"
+}
+
+detect_and_start_worker() {
+    echo ""
+    echo -e "${BOLD}Detecting GPU and starting worker...${NC}"
+    
+    # Detect GPU type
+    GPU_PROFILE="cpu"
+    if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+        GPU_PROFILE="nvidia"
+        GPU_INFO=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+        echo -e "${GREEN}✓ NVIDIA GPU detected: $GPU_INFO${NC}"
+    elif lspci 2>/dev/null | grep -iE "vga|3d" | grep -qi "amd\|radeon"; then
+        GPU_PROFILE="amd"
+        GPU_INFO=$(lspci | grep -iE "vga|3d" | grep -i "amd" | head -1)
+        echo -e "${GREEN}✓ AMD GPU detected${NC}"
     else
-        sudo ln -sf "$INSTALL_DIR/bin/dxcloud" "$BIN_DIR/dxcloud"
+        echo -e "${YELLOW}⚠ No GPU detected, using CPU-only mode${NC}"
     fi
     
-    echo -e "${GREEN}✓ CLI installed${NC}"
-}
-
-install_worker() {
+    # Update .env with GPU type
+    sed -i "s/GPU_TYPE=.*/GPU_TYPE=$GPU_PROFILE/" "$INSTALL_DIR/.env"
+    
+    # Start worker
+    cd "$INSTALL_DIR"
+    
+    if command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD="docker-compose"
+    else
+        COMPOSE_CMD="docker compose"
+    fi
+    
     echo ""
-    echo -e "${BOLD}Installing worker daemon...${NC}"
+    echo -e "${CYAN}Starting worker container...${NC}"
+    $COMPOSE_CMD --profile $GPU_PROFILE up -d
     
-    # ✅ EMBED THE WORKER SCRIPT DIRECTLY
-    cat > "$INSTALL_DIR/bin/worker.js" << 'WORKER_EOF'
-#!/usr/bin/env node
-const WebSocket = require('ws');
-const Docker = require('dockerode');
-const os = require('os');
-const fs = require('fs').promises;
-const path = require('path');
-const { execSync } = require('child_process');
-
-const CONFIG_PATH = path.join(os.homedir(), '.distributex', 'config.json');
-const LOGS_PATH = path.join(os.homedir(), '.distributex', 'logs');
-
-class WorkerNode {
-  constructor(config) {
-    this.config = config;
-    this.docker = new Docker();
-    this.ws = null;
-    this.activeJobs = new Map();
-    this.isShuttingDown = false;
-    this.heartbeatInterval = null;
-    this.reconnectTimeout = null;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
-    this.capabilities = null;
-    this.capabilitiesInterval = null;
-  }
-
-  async start() {
-    console.log('🚀 Starting DistributeX Worker...\n');
+    sleep 3
     
-    try {
-      await fs.mkdir(LOGS_PATH, { recursive: true });
-      await this.testDocker();
-      await this.detectCapabilities();
-      await this.connect();
-      await this.sendCapabilities();
-      this.startHeartbeat();
-      this.startCapabilitiesMonitoring();
-      this.setupSignalHandlers();
-      
-      console.log('✅ Worker started successfully\n');
-      this.displayCapabilities();
-    } catch (error) {
-      console.error('❌ Failed to start worker:', error.message);
-      this.log('ERROR', error.message);
-      process.exit(1);
-    }
-  }
-
-  async detectCapabilities() {
-    console.log('🔍 Detecting system capabilities...');
-    
-    const cpus = os.cpus();
-    const totalMemGb = os.totalmem() / (1024 ** 3);
-    const freeMemGb = os.freemem() / (1024 ** 3);
-    
-    const cpuCores = this.config.maxCpuCores 
-      ? Math.min(this.config.maxCpuCores, cpus.length) 
-      : cpus.length;
-    const cpuModel = cpus[0]?.model || 'Unknown CPU';
-    
-    const memoryGb = this.config.maxMemoryGb 
-      ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
-      : Math.round(totalMemGb * 0.8 * 10) / 10;
-    
-    let storageGb = 50;
-    try {
-      if (process.platform === 'win32') {
-        try {
-          const wmic = execSync('wmic logicaldisk where "DeviceID=C:" get FreeSpace', { 
-            encoding: 'utf8', timeout: 3000 
-          });
-          const lines = wmic.trim().split('\n');
-          if (lines[1]) {
-            const freeBytes = parseInt(lines[1].trim());
-            storageGb = Math.round(freeBytes / (1024 ** 3));
-          }
-        } catch (e) {
-          storageGb = this.config.maxStorageGb || 50;
-        }
-      } else {
-        try {
-          const output = execSync('df -h / | tail -1', { 
-            encoding: 'utf8', timeout: 3000 
-          }).trim();
-          const parts = output.split(/\s+/);
-          const availStr = parts[3] || '50G';
-          const match = availStr.match(/(\d+\.?\d*)([KMGT])/);
-          if (match) {
-            const [, size, unit] = match;
-            const multipliers = { K: 0.001, M: 0.001, G: 1, T: 1024 };
-            storageGb = Math.round(parseFloat(size) * (multipliers[unit] || 1));
-          }
-        } catch (e) {
-          storageGb = this.config.maxStorageGb || 50;
-        }
-      }
-    } catch (e) {
-      storageGb = this.config.maxStorageGb || 50;
-    }
-    
-    storageGb = this.config.maxStorageGb 
-      ? Math.min(this.config.maxStorageGb, storageGb * 0.5) 
-      : Math.round(storageGb * 0.5 * 10) / 10;
-    
-    let gpuAvailable = false;
-    let gpuModel = null;
-    let gpuMemoryGb = 0;
-    
-    if (this.config.enableGpu !== false) {
-      try {
-        try {
-          const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
-            encoding: 'utf8', timeout: 3000 
-          });
-          const lines = nvidiaSmi.trim().split('\n');
-          if (lines[0]) {
-            const [name, memory] = lines[0].split(',');
-            gpuModel = name.trim();
-            gpuMemoryGb = parseFloat(memory.trim()) / 1024;
-            gpuAvailable = true;
-          }
-        } catch (nvidiaError) {
-          if (process.platform === 'linux') {
-            try {
-              const output = execSync('lspci | grep -i vga', { 
-                encoding: 'utf8', timeout: 3000 
-              });
-              if (output.includes('AMD') || output.includes('Radeon')) {
-                gpuAvailable = true;
-                gpuModel = 'AMD GPU';
-              } else if (output.includes('Intel')) {
-                gpuAvailable = true;
-                gpuModel = 'Intel GPU';
-              }
-            } catch (lspciError) {}
-          }
-        }
-      } catch (e) {}
-    }
-    
-    const platform = os.platform();
-    const arch = os.arch();
-    const hostname = os.hostname();
-    
-    this.capabilities = {
-      cpuCores, cpuModel, memoryGb, storageGb,
-      gpuAvailable, gpuModel, gpuMemoryGb,
-      platform, arch, hostname,
-      nodeName: this.config.nodeName || hostname,
-      totalSystemCpu: cpus.length,
-      totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
-      freeMemoryGb: Math.round(freeMemGb * 10) / 10,
-      cpuUsagePercent: 0,
-      memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
-      memoryAvailableGb: freeMemGb.toFixed(2),
-      dockerVersion: null,
-      dockerContainers: 0,
-    };
-    
-    try {
-      const dockerInfo = await this.docker.info();
-      this.capabilities.dockerVersion = dockerInfo.ServerVersion;
-      this.capabilities.dockerContainers = dockerInfo.Containers;
-    } catch (e) {}
-    
-    console.log('✓ Capabilities detected\n');
-  }
-
-  startCapabilitiesMonitoring() {
-    this.capabilitiesInterval = setInterval(async () => {
-      await this.updateCurrentUsage();
-    }, 10000);
-  }
-
-  async updateCurrentUsage() {
-    const totalMemGb = os.totalmem() / (1024 ** 3);
-    const freeMemGb = os.freemem() / (1024 ** 3);
-    const usedMemGb = totalMemGb - freeMemGb;
-    
-    const cpuUsage = this.calculateCpuUsage();
-    
-    this.capabilities.cpuUsagePercent = cpuUsage;
-    this.capabilities.memoryUsedGb = usedMemGb.toFixed(2);
-    this.capabilities.memoryAvailableGb = freeMemGb.toFixed(2);
-    
-    try {
-      const containers = await this.docker.listContainers();
-      this.capabilities.dockerContainers = containers.length;
-    } catch (e) {}
-  }
-
-  calculateCpuUsage() {
-    const cpus = os.cpus();
-    let totalIdle = 0;
-    let totalTick = 0;
-    
-    cpus.forEach(cpu => {
-      for (let type in cpu.times) {
-        totalTick += cpu.times[type];
-      }
-      totalIdle += cpu.times.idle;
-    });
-    
-    const idle = totalIdle / cpus.length;
-    const total = totalTick / cpus.length;
-    const usage = 100 - Math.round(100 * idle / total);
-    
-    return usage;
-  }
-
-  displayCapabilities() {
-    console.log(`Worker ID: ${this.config.workerId}`);
-    console.log(`Status: Online and ready\n`);
-    console.log('📊 System Capabilities:');
-    console.log(`   CPU: ${this.capabilities.cpuCores} cores (${this.capabilities.cpuModel})`);
-    console.log(`   Memory: ${this.capabilities.memoryGb} GB`);
-    console.log(`   Storage: ${this.capabilities.storageGb} GB`);
-    console.log(`   GPU: ${this.capabilities.gpuAvailable ? this.capabilities.gpuModel : 'No'}`);
-    console.log(`   Platform: ${this.capabilities.platform} (${this.capabilities.arch})\n`);
-  }
-
-  async testDocker() {
-    console.log('🐳 Testing Docker connection...');
-    try {
-      await this.docker.ping();
-      const info = await this.docker.info();
-      console.log(`✓ Docker connected (${info.Containers} containers)\n`);
-    } catch (error) {
-      console.error('Docker connection failed:', error.message);
-      console.error('');
-      console.error('Please ensure:');
-      console.error('  1. Docker is installed and running');
-      console.error('  2. Your user has Docker permissions:');
-      console.error('     sudo usermod -aG docker $USER');
-      console.error('     newgrp docker');
-      console.error('  3. Docker daemon is running:');
-      console.error('     sudo systemctl start docker');
-      console.error('');
-      throw new Error('Docker not available. Fix the issues above and try again.');
-    }
-  }
-
-  async connect() {
-    return new Promise((resolve, reject) => {
-      console.log('🔌 Connecting to coordinator...');
-      
-      let wsUrl = this.config.coordinatorUrl;
-      
-      if (!wsUrl) {
-        wsUrl = this.config.apiUrl
-          .replace('https://distributex-api', 'wss://distributex-coordinator')
-          .replace('http://localhost:8787', 'ws://localhost:8788');
-        wsUrl += '/ws';
-      }
-      
-      console.log(`   URL: ${wsUrl}`);
-      console.log(`   Worker ID: ${this.config.workerId}`);
-      
-      this.ws = new WebSocket(wsUrl, {
-        headers: {
-          'Authorization': `Bearer ${this.config.authToken}`,
-          'X-Worker-ID': this.config.workerId,
-          'Upgrade': 'websocket',
-          'Connection': 'Upgrade'
-        }
-      });
-
-      this.ws.on('open', () => {
-        console.log('✓ Connected to coordinator\n');
-        this.reconnectAttempts = 0;
-        this.log('Connected to coordinator');
-        resolve();
-      });
-
-      this.ws.on('message', (data) => {
-        try {
-          const message = JSON.parse(data.toString());
-          this.handleMessage(message);
-        } catch (error) {
-          console.error('Error parsing message:', error);
-        }
-      });
-
-      this.ws.on('close', (code, reason) => {
-        console.log(`⚠️  Disconnected from coordinator (${code})`);
-        this.log(`Disconnected: ${code}`);
-        this.notifyDisconnect();
-        
-        if (!this.isShuttingDown) {
-          this.scheduleReconnect();
-        }
-      });
-
-      this.ws.on('error', (error) => {
-        console.error('WebSocket error:', error.message);
-        this.log('ERROR', error.message);
-      });
-
-      setTimeout(() => {
-        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
-          this.ws.close();
-          reject(new Error('Connection timeout'));
-        }
-      }, 30000);
-    });
-  }
-
-  scheduleReconnect() {
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-    
-    this.reconnectAttempts++;
-    
-    if (this.reconnectAttempts > this.maxReconnectAttempts) {
-      console.error('❌ Max reconnection attempts reached. Exiting...');
-      process.exit(1);
-    }
-    
-    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
-    
-    console.log(`⏳ Reconnecting in ${delay/1000}s...\n`);
-    
-    this.reconnectTimeout = setTimeout(async () => {
-      try {
-        await this.connect();
-        await this.sendCapabilities();
-        this.startHeartbeat();
-      } catch (error) {
-        console.error('Reconnection failed:', error.message);
-        this.scheduleReconnect();
-      }
-    }, delay);
-  }
-
-  async sendCapabilities() {
-    console.log('📤 Sending capabilities to coordinator...');
-    
-    await this.updateCurrentUsage();
-    
-    this.send({
-      type: 'capabilities',
-      capabilities: this.capabilities
-    });
-    
-    try {
-      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.authToken}`,
-          'X-Worker-ID': this.config.workerId
-        },
-        body: JSON.stringify({
-          status: 'online',
-          capabilities: this.capabilities,
-          metrics: {
-            cpuUsagePercent: this.capabilities.cpuUsagePercent,
-            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
-            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
-            activeJobs: this.activeJobs.size
-          }
-        })
-      });
-      
-      if (response.ok) {
-        console.log('✓ Capabilities registered with API\n');
-      }
-    } catch (error) {
-      console.error('⚠️  Failed to register with API:', error.message);
-    }
-    
-    this.log('Sent capabilities', JSON.stringify(this.capabilities));
-  }
-
-  startHeartbeat() {
-    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-    
-    this.heartbeatInterval = setInterval(async () => {
-      await this.sendHeartbeat();
-    }, 30000);
-  }
-
-  async sendHeartbeat() {
-    try {
-      await this.updateCurrentUsage();
-      
-      const status = this.activeJobs.size > 0 ? 'busy' : 'online';
-      
-      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.authToken}`,
-          'X-Worker-ID': this.config.workerId
-        },
-        body: JSON.stringify({
-          status: status,
-          capabilities: this.capabilities,
-          metrics: {
-            cpuUsagePercent: this.capabilities.cpuUsagePercent,
-            memoryUsedGb: parseFloat(this.capabilities.memoryUsedGb),
-            memoryAvailableGb: parseFloat(this.capabilities.memoryAvailableGb),
-            activeJobs: this.activeJobs.size,
-            dockerContainers: this.capabilities.dockerContainers
-          }
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        
-        if (data.pendingJobs && data.pendingJobs.length > 0) {
-          console.log(`📬 ${data.pendingJobs.length} pending job(s) available`);
-        }
-      }
-    } catch (error) {
-      console.error('Heartbeat failed:', error.message);
-    }
-  }
-
-  async notifyDisconnect() {
-    try {
-      await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/disconnect`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.authToken}`,
-          'X-Worker-ID': this.config.workerId
-        }
-      });
-    } catch (error) {}
-  }
-
-  handleMessage(message) {
-    switch (message.type) {
-      case 'connected':
-        console.log(`✓ Connection confirmed: ${message.workerId}\n`);
-        break;
-      
-      case 'ping':
-        this.send({ 
-          type: 'pong', 
-          timestamp: Date.now(), 
-          healthScore: this.calculateHealthScore(),
-          activeJobs: Array.from(this.activeJobs.keys())
-        });
-        break;
-      
-      case 'job_assigned':
-        this.executeJob(message.job);
-        break;
-      
-      case 'disconnect':
-        console.log('⚠️  Coordinator requested disconnect:', message.reason);
-        this.stop();
-        break;
-    }
-  }
-
-  calculateHealthScore() {
-    const cpuLoad = this.capabilities.cpuUsagePercent / 100;
-    const memUsed = parseFloat(this.capabilities.memoryUsedGb) / this.capabilities.memoryGb;
-    
-    let score = 100;
-    if (cpuLoad > 0.8) score -= 20;
-    else if (cpuLoad > 0.6) score -= 10;
-    if (memUsed > 0.9) score -= 20;
-    else if (memUsed > 0.75) score -= 10;
-    
-    return Math.max(0, score);
-  }
-
-  async executeJob(job) {
-    console.log('\n' + '='.repeat(60));
-    console.log(`📦 New Job: ${job.jobId}`);
-    console.log('='.repeat(60) + '\n');
-    
-    this.activeJobs.set(job.jobId, job);
-    
-    this.send({ type: 'status', status: 'busy' });
-    this.send({ type: 'job_update', jobId: job.jobId, status: 'running' });
-
-    try {
-      console.log('Job execution would happen here');
-      // Actual job execution logic would go here
-      
-      this.send({
-        type: 'job_update',
-        jobId: job.jobId,
-        status: 'completed'
-      });
-    } catch (error) {
-      this.send({
-        type: 'job_update',
-        jobId: job.jobId,
-        status: 'failed',
-        data: { errorMessage: error.message }
-      });
-    } finally {
-      this.activeJobs.delete(job.jobId);
-      
-      if (this.activeJobs.size === 0) {
-        this.send({ type: 'status', status: 'online' });
-      }
-    }
-  }
-
-  send(message) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    }
-  }
-
-  async log(level, message) {
-    const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] ${typeof level === 'string' && level === 'ERROR' ? 'ERROR' : 'INFO'}: ${message || level}\n`;
-    
-    try {
-      await fs.appendFile(path.join(LOGS_PATH, 'worker.log'), logMessage);
-    } catch (e) {}
-  }
-
-  setupSignalHandlers() {
-    const shutdown = async () => {
-      if (this.isShuttingDown) return;
-      this.isShuttingDown = true;
-      
-      console.log('\n⚠️  Shutting down...');
-      
-      this.send({ type: 'status', status: 'offline' });
-      await this.notifyDisconnect();
-      
-      if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-      if (this.capabilitiesInterval) clearInterval(this.capabilitiesInterval);
-      if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-      if (this.ws) this.ws.close();
-      
-      console.log('✅ Shutdown complete\n');
-      process.exit(0);
-    };
-    
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-  }
-
-  async stop() {
-    await this.setupSignalHandlers();
-  }
-}
-
-(async () => {
-  try {
-    const configData = await fs.readFile(CONFIG_PATH, 'utf-8');
-    const config = JSON.parse(configData);
-    
-    if (!config.authToken || !config.workerId) {
-      console.error('❌ Invalid configuration.');
-      process.exit(1);
-    }
-    
-    const worker = new WorkerNode(config);
-    await worker.start();
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.error('❌ Configuration not found.');
-    } else {
-      console.error('❌ Failed to start worker:', error.message);
-    }
-    process.exit(1);
-  }
-})();
-WORKER_EOF
-    
-    chmod +x "$INSTALL_DIR/bin/worker.js"
-    
-    # Install dependencies
-    cd "$INSTALL_DIR/bin"
-    cat > package.json <<'PKG'
-{
-  "name": "distributex-worker",
-  "version": "1.0.0",
-  "dependencies": {
-    "ws": "^8.18.0",
-    "dockerode": "^4.0.2"
-  }
-}
-PKG
-    
-    echo -e "${YELLOW}Installing dependencies...${NC}"
-    npm install --silent 2>&1 | grep -v "npm WARN" || true
-    cd - >/dev/null
-    
-    echo -e "${GREEN}✓ Worker installed${NC}"
+    if $COMPOSE_CMD ps | grep -q "Up"; then
+        echo -e "${GREEN}✓ Worker started successfully${NC}"
+    else
+        echo -e "${RED}✗ Worker failed to start${NC}"
+        echo "Check logs: cd $INSTALL_DIR && $COMPOSE_CMD logs"
+        exit 1
+    fi
 }
 
 show_completion() {
@@ -929,23 +362,27 @@ show_completion() {
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    if [ "$USER_ROLE" == "contributor" ] || [ "$USER_ROLE" == "both" ]; then
-        echo -e "${BOLD}Start your worker:${NC}"
-        echo -e "  ${CYAN}node $INSTALL_DIR/bin/worker.js${NC}"
-        echo ""
-        echo -e "${BOLD}Or run as service:${NC}"
-        echo -e "  ${CYAN}dxcloud worker start${NC}"
-        echo ""
-    fi
+    echo -e "${BOLD}Worker Status:${NC}"
+    echo -e "  ${GREEN}✓ Running in Docker${NC}"
+    echo -e "  Profile: ${CYAN}$GPU_PROFILE${NC}"
+    echo ""
     
-    if [ "$USER_ROLE" == "developer" ] || [ "$USER_ROLE" == "both" ]; then
-        echo -e "${BOLD}Submit a job:${NC}"
-        echo -e "  ${CYAN}dxcloud submit --image python:3.11 --command 'python -c \"print(1+1)\"'${NC}"
-        echo ""
-    fi
+    echo -e "${BOLD}Useful Commands:${NC}"
+    echo -e "  ${CYAN}dxcloud worker status${NC}  - Check worker status"
+    echo -e "  ${CYAN}dxcloud worker logs${NC}    - View worker logs"
+    echo -e "  ${CYAN}dxcloud worker stop${NC}    - Stop worker"
+    echo -e "  ${CYAN}dxcloud pool status${NC}    - View global pool"
+    echo ""
     
-    echo -e "${BOLD}Check status:${NC}"
-    echo -e "  ${CYAN}dxcloud pool status${NC}"
+    echo -e "${BOLD}Configuration:${NC}"
+    echo "  Location: $INSTALL_DIR"
+    echo "  Worker ID: $WORKER_ID"
+    echo ""
+    
+    echo -e "${BOLD}Next Steps:${NC}"
+    echo "  1. Check status: ${CYAN}dxcloud worker status${NC}"
+    echo "  2. View logs: ${CYAN}dxcloud worker logs -f${NC}"
+    echo "  3. Dashboard: ${CYAN}https://distributex.cloud/dashboard${NC}"
     echo ""
 }
 
@@ -956,11 +393,14 @@ main() {
     setup_directories
     authenticate_user
     save_config
+    create_env_file
+    download_docker_files
+    build_docker_image
     install_cli
     
-    # Only install worker if contributor/both
+    # Only start worker if contributor/both
     if [ "$USER_ROLE" == "contributor" ] || [ "$USER_ROLE" == "both" ]; then
-        install_worker
+        detect_and_start_worker
     fi
     
     show_completion
