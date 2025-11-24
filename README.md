@@ -273,6 +273,62 @@ dxcloud pool status
 
 ## Troubleshooting
 
+### GPU Not Detected
+
+If you have an NVIDIA GPU but it's not being detected:
+
+```bash
+# Run the GPU diagnostic tool
+curl -fsSL https://get.distributex.cloud/gpu-diagnostic | bash
+
+# This will check:
+# 1. nvidia-smi availability
+# 2. NVIDIA drivers
+# 3. Docker installation
+# 4. NVIDIA Container Toolkit
+# 5. Docker GPU access
+```
+
+**Common GPU issues:**
+
+1. **nvidia-smi works but Docker can't access GPU**
+   ```bash
+   # Install NVIDIA Container Toolkit
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+     sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   
+   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   
+   sudo apt-get update
+   sudo apt-get install -y nvidia-container-toolkit
+   
+   # Configure Docker to use NVIDIA runtime
+   sudo nvidia-ctk runtime configure --runtime=docker
+   sudo systemctl restart docker
+   
+   # Test GPU access
+   docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+   ```
+
+2. **Driver/library version mismatch**
+   ```bash
+   # Reboot your system to reload drivers
+   sudo reboot
+   ```
+
+3. **GPU was working but stopped**
+   ```bash
+   # Restart the worker container
+   docker restart distributex-worker
+   
+   # If that doesn't work, recreate it
+   docker stop distributex-worker
+   docker rm distributex-worker
+   curl -fsSL https://get.distributex.cloud | bash
+   ```
+
 ### Worker Not Showing Online
 
 ```bash
