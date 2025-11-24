@@ -264,41 +264,43 @@ if [ -z "$AUTH_TOKEN" ]; then
     fi
 fi
 
-# ==================== STEP 3: DETECT RESOURCES ====================
+# ==================== GPU DETECTION (FULLY PATCHED) ====================
 echo -e "\n${BOLD}Step 3: Detecting System Resources${NC}\n"
 
-# Detect GPU
 GPU_TYPE="none"
 GPU_DETECTED=false
 GPU_MODEL="None"
 
-# Check NVIDIA
 echo -e "${BLUE}Checking for NVIDIA GPU...${NC}"
+
+# Correct modern test image (CUDA 12.2 includes nvidia-smi)
+CUDA_TEST_IMAGE="nvidia/cuda:12.2.0-base-ubuntu22.04"
+
 if command -v nvidia-smi &> /dev/null; then
     if nvidia-smi &> /dev/null 2>&1; then
         GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
         echo -e "${GREEN}✓ NVIDIA GPU detected on host: $GPU_MODEL${NC}"
-        
-        # Test Docker GPU access
+
         echo -e "${BLUE}Testing Docker GPU access...${NC}"
-        
-        # Try modern --gpus flag (Docker 19.03+)
-        if docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi &> /dev/null 2>&1; then
+
+        # Primary GPU test with Docker --gpus all
+        if docker run --rm --gpus all $CUDA_TEST_IMAGE nvidia-smi &> /dev/null 2>&1; then
             echo -e "${GREEN}✓ Docker can access GPU (using --gpus)${NC}"
             GPU_TYPE="nvidia"
             GPU_DETECTED=true
-        # Try legacy --runtime=nvidia flag
-        elif docker run --rm --runtime=nvidia nvidia/cuda:11.0-base nvidia-smi &> /dev/null 2>&1; then
+        
+        # Legacy runtime test fallback
+        elif docker run --rm --runtime=nvidia $CUDA_TEST_IMAGE nvidia-smi &> /dev/null 2>&1; then
             echo -e "${GREEN}✓ Docker can access GPU (using --runtime=nvidia)${NC}"
             GPU_TYPE="nvidia"
             GPU_DETECTED=true
+
         else
             echo -e "${YELLOW}⚠ NVIDIA GPU found but Docker cannot access it${NC}"
             echo ""
             echo "This usually means NVIDIA Container Toolkit is not installed or configured."
             echo ""
             echo "To fix this, run:"
-            echo -e "${CYAN}  # Install NVIDIA Container Toolkit${NC}"
             echo -e "${CYAN}  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg${NC}"
             echo -e "${CYAN}  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list${NC}"
             echo -e "${CYAN}  sudo apt-get update${NC}"
@@ -306,6 +308,7 @@ if command -v nvidia-smi &> /dev/null; then
             echo -e "${CYAN}  sudo nvidia-ctk runtime configure --runtime=docker${NC}"
             echo -e "${CYAN}  sudo systemctl restart docker${NC}"
             echo ""
+            
             prompt_n1 "Continue without GPU support? (y/n) " gpu_continue_choice
             if [[ ! $gpu_continue_choice =~ ^[Yy]$ ]]; then
                 echo ""
@@ -317,12 +320,12 @@ if command -v nvidia-smi &> /dev/null; then
             echo -e "${YELLOW}Continuing with CPU-only mode${NC}"
         fi
     else
-        echo -e "${YELLOW}⚠ nvidia-smi found but not working${NC}"
+        echo -e "${YELLOW}⚠ nvidia-smi found but failed to run${NC}"
         GPU_TYPE="cpu"
         GPU_DETECTED=false
     fi
 else
-    echo -e "${YELLOW}⚠ nvidia-smi not found${NC}"
+    echo -e "${YELLOW}⚠ NVIDIA drivers (nvidia-smi) not installed${NC}"
     GPU_TYPE="cpu"
     GPU_DETECTED=false
 fi
