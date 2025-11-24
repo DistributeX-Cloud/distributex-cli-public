@@ -35,7 +35,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install Node.js dependencies
-RUN npm ci --only=production
+RUN npm install --omit=dev --no-package-lock
 
 # Copy worker source
 COPY distributex-worker.js ./
