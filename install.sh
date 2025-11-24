@@ -47,7 +47,10 @@ echo -e "\n${BLUE}Checking Docker...${NC}"
 if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}⚠ Docker not found${NC}"
     echo ""
+    # Fix skipped input
+    while read -r -t 0; do read -r; done
     read -p "Would you like to install Docker now? (y/n) " -n 1 -r
+
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}Installing Docker...${NC}"
