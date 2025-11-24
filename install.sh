@@ -711,6 +711,6 @@ echo -e "  Restart:       ${CYAN}docker restart distributex-worker${NC}"
 echo -e "  Remove:        ${CYAN}docker rm -f distributex-worker${NC}"
 
 echo -e "\n${BOLD}Dashboard:${NC}"
-echo -e "  ${CYAN}https://distributex.cloud${NC}"
+echo -e "  ${CYAN}https://distributex-cloud-network.pages.dev${NC}"
 
 echo -e "\n${YELLOW}Note: Your worker will automatically start on system boot${NC}\n"
