@@ -1,6 +1,6 @@
 #!/bin/bash
 # DistributeX CLI Installer - FIXED VERSION
-# Prevents infinite shell loops
+# Prevents infinite shell loops and handles permission issues
 
 set -e
 
@@ -37,11 +37,19 @@ mkdir -p "$CONFIG_DIR"
 mkdir -p "$WORKER_DIR"
 mkdir -p "$CONFIG_DIR/logs"
 
+# Handle permission for INSTALL_DIR
+if [ ! -w "$INSTALL_DIR" ]; then
+    echo -e "${YELLOW}🔑 Root access required to write to $INSTALL_DIR. Using sudo...${NC}"
+    SUDO="sudo"
+else
+    SUDO=""
+fi
+
 # Download CLI binary
 echo -e "${BLUE}→${NC} Installing CLI..."
 
 # Create the CLI executable directly (no recursive bash calls)
-cat > "$INSTALL_DIR/dxcloud" << 'DXCLOUD_EOF'
+$SUDO sh -c "cat > $INSTALL_DIR/dxcloud" << 'DXCLOUD_EOF'
 #!/usr/bin/env node
 
 /**
@@ -72,8 +80,7 @@ try {
 }
 DXCLOUD_EOF
 
-# Make executable
-chmod +x "$INSTALL_DIR/dxcloud"
+$SUDO chmod +x "$INSTALL_DIR/dxcloud"
 
 # Install Node.js CLI implementation
 CLI_DIR="$CONFIG_DIR/cli"
