@@ -1,12 +1,11 @@
 #!/bin/bash
-# dxcloud - DistributeX CLI Management Tool
-# Install: sudo curl -fsSL https://get.distributex.cloud/cli -o /usr/local/bin/dxcloud && sudo chmod +x /usr/local/bin/dxcloud
-
+# DistributeX Complete CLI - /usr/local/bin/dxcloud
 set -e
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 CONFIG_DIR="$HOME/.distributex"
 CONFIG_FILE="$CONFIG_DIR/config.json"
+API_URL="https://distributex-api.distributex.workers.dev"
 
 # Colors
 GREEN='\033[0;32m'
@@ -18,6 +17,32 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ==================== HELPER FUNCTIONS ====================
+get_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}❌ Not configured. Run: dxcloud config init${NC}"
+        exit 1
+    fi
+    AUTH_TOKEN=$(jq -r '.authToken' "$CONFIG_FILE")
+    WORKER_ID=$(jq -r '.workerId' "$CONFIG_FILE")
+}
+
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+    
+    get_config
+    
+    if [ -n "$data" ]; then
+        curl -s -X "$method" "$API_URL$endpoint" \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$data"
+    else
+        curl -s -X "$method" "$API_URL$endpoint" \
+            -H "Authorization: Bearer $AUTH_TOKEN"
+    fi
+}
 
 show_help() {
     cat << EOF
@@ -26,321 +51,459 @@ ${BOLD}dxcloud${NC} - DistributeX CLI v${VERSION}
 ${BOLD}USAGE:${NC}
     dxcloud <command> [options]
 
-${BOLD}COMMANDS:${NC}
-    ${CYAN}install${NC}         Install DistributeX worker on this device
-    ${CYAN}worker status${NC}   Show worker status
-    ${CYAN}worker logs${NC}     View worker logs
-    ${CYAN}worker start${NC}    Start worker
-    ${CYAN}worker stop${NC}     Stop worker
-    ${CYAN}worker restart${NC}  Restart worker
-    ${CYAN}worker remove${NC}   Remove worker from this device
-    ${CYAN}pool status${NC}     View global pool status
-    ${CYAN}devices list${NC}    List all your devices
-    ${CYAN}version${NC}         Show version
-    ${CYAN}help${NC}            Show this help
+${BOLD}CONTRIBUTOR COMMANDS:${NC}
+    ${CYAN}worker status${NC}        Show worker status
+    ${CYAN}worker logs${NC}          View worker logs [-f for follow]
+    ${CYAN}worker start${NC}         Start worker
+    ${CYAN}worker stop${NC}          Stop worker
+    ${CYAN}worker restart${NC}       Restart worker
+    ${CYAN}worker update${NC}        Update to latest version
+    ${CYAN}worker remove${NC}        Remove worker from device
+    ${CYAN}worker resources${NC}     Show resource usage
+
+    ${CYAN}storage list${NC}         List connected storage devices
+    ${CYAN}storage add${NC}          Add new storage device
+    ${CYAN}storage remove <id>${NC}  Remove storage device
+
+    ${CYAN}stats contribution${NC}   View contribution statistics
+    ${CYAN}earnings${NC}             View earnings (coming soon)
+
+${BOLD}DEVELOPER COMMANDS:${NC}
+    ${CYAN}run <image> [cmd...]${NC} Quick run container
+      Options:
+        --cpu <n>          CPU cores (default: 1)
+        --memory <n>       Memory in GB (default: 2)
+        --storage <n>      Storage in GB (default: 10)
+        --gpu              Request GPU
+        --storage-required Needs external storage
+        --timeout <sec>    Max runtime
+        -e VAR=value       Environment variable
+
+    ${CYAN}submit <file>${NC}        Submit workload from JSON file
+    ${CYAN}submit --script <file>${NC} Submit with script file
+
+    ${CYAN}workloads list${NC}       List all workloads
+      Options:
+        --status <status>  Filter by status
+        --limit <n>        Number to show
+
+    ${CYAN}workloads status <id>${NC} Get workload details
+    ${CYAN}workloads logs <id>${NC}   View logs [-f for follow]
+    ${CYAN}workloads cancel <id>${NC} Cancel workload
+    ${CYAN}workloads delete <id>${NC} Delete workload
+    ${CYAN}workloads download <id>${NC} Download results
+
+    ${CYAN}stats usage${NC}          View usage statistics
+    ${CYAN}stats cost${NC}           Estimate costs
+    ${CYAN}stats balance${NC}        View resource balance
+
+${BOLD}COMMON COMMANDS:${NC}
+    ${CYAN}config init${NC}          Initialize configuration
+    ${CYAN}config show${NC}          Show current config
+    ${CYAN}config set <key> <val>${NC} Set config value
+
+    ${CYAN}pool status${NC}          View network status
+    ${CYAN}pool stats${NC}           Network statistics
+    ${CYAN}pool resources${NC}       Available resources
+
+    ${CYAN}devices list${NC}         List all your devices
+    ${CYAN}version${NC}              Show version
+    ${CYAN}help${NC}                 Show this help
 
 ${BOLD}EXAMPLES:${NC}
-    # Install on a new device
-    dxcloud install
+    # Run Python script
+    dxcloud run python:3.11 --cpu 2 --memory 4 python script.py
 
-    # Check worker status
-    dxcloud worker status
+    # Submit complex workload
+    dxcloud submit workload.json
 
-    # View live logs
-    dxcloud worker logs -f
+    # Monitor workload
+    dxcloud workloads logs wl-12345 -f
 
-    # See all your devices
-    dxcloud devices list
-
-${BOLD}DOCUMENTATION:${NC}
-    https://docs.distributex.cloud
+    # Check network status
+    dxcloud pool stats
 
 EOF
 }
 
-get_config() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo -e "${RED}❌ Not configured. Run: dxcloud install${NC}"
+# ==================== RUN COMMAND ====================
+cmd_run() {
+    local image="$1"
+    shift
+    
+    if [ -z "$image" ]; then
+        echo -e "${RED}Error: Image required${NC}"
+        echo "Usage: dxcloud run <image> [command...]"
         exit 1
     fi
     
-    # Load config values
-    AUTH_TOKEN=$(jq -r '.authToken' "$CONFIG_FILE")
-    USER_ID=$(jq -r '.userId' "$CONFIG_FILE")
-    WORKER_ID=$(jq -r '.workerId' "$CONFIG_FILE")
-    API_URL=$(jq -r '.apiUrl' "$CONFIG_FILE")
+    # Parse options
+    local cpu=1
+    local memory=2
+    local storage=10
+    local gpu=false
+    local storage_required=false
+    local timeout=3600
+    local env_vars=()
+    local command_args=()
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --cpu) cpu="$2"; shift 2 ;;
+            --memory) memory="$2"; shift 2 ;;
+            --storage) storage="$2"; shift 2 ;;
+            --gpu) gpu=true; shift ;;
+            --storage-required) storage_required=true; shift ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            -e)
+                env_vars+=("$2")
+                shift 2
+                ;;
+            *)
+                command_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Build environment object
+    local env_json="{"
+    for env in "${env_vars[@]}"; do
+        IFS='=' read -r key value <<< "$env"
+        env_json+="\"$key\":\"$value\","
+    done
+    env_json="${env_json%,}}"
+    
+    # Build command array
+    local cmd_json="["
+    for arg in "${command_args[@]}"; do
+        cmd_json+="\"$arg\","
+    done
+    cmd_json="${cmd_json%,}]"
+    
+    # Submit workload
+    local payload=$(cat <<EOF
+{
+  "name": "quick-run-$(date +%s)",
+  "image": "$image",
+  "command": $cmd_json,
+  "env": $env_json,
+  "resources": {
+    "cpu": $cpu,
+    "memory": $memory,
+    "storage": $storage
+  },
+  "storageNeeded": $storage_required,
+  "timeout": $timeout
+}
+EOF
+)
+    
+    echo -e "${BLUE}Submitting workload...${NC}"
+    local response=$(api_call POST "/api/workloads/submit" "$payload")
+    
+    local workload_id=$(echo "$response" | jq -r '.workloadId')
+    
+    if [ "$workload_id" != "null" ]; then
+        echo -e "${GREEN}✓ Workload submitted: $workload_id${NC}"
+        echo ""
+        echo "Monitor: dxcloud workloads logs $workload_id -f"
+    else
+        echo -e "${RED}✗ Failed to submit workload${NC}"
+        echo "$response" | jq -r '.error'
+        exit 1
+    fi
+}
+
+# ==================== WORKLOADS COMMANDS ====================
+cmd_workloads() {
+    local subcmd="$1"
+    shift
+    
+    case "$subcmd" in
+        list)
+            local status=""
+            local limit=50
+            
+            while [[ $# -gt 0 ]]; do
+                case $1 in
+                    --status) status="$2"; shift 2 ;;
+                    --limit) limit="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            
+            local endpoint="/api/workloads?limit=$limit"
+            [ -n "$status" ] && endpoint+="&status=$status"
+            
+            local response=$(api_call GET "$endpoint")
+            echo -e "${CYAN}Your Workloads${NC}\n"
+            echo "$response" | jq -r '.workloads[] | "\(.id | .[0:12])  \(.name | .[0:30])  \(.status)  \(.created_at)"'
+            ;;
+            
+        status)
+            local id="$1"
+            if [ -z "$id" ]; then
+                echo -e "${RED}Error: Workload ID required${NC}"
+                exit 1
+            fi
+            
+            local response=$(api_call GET "/api/workloads/$id")
+            echo -e "${CYAN}Workload Details${NC}\n"
+            echo "$response" | jq -r '.workload | 
+                "ID: \(.id)\n" +
+                "Name: \(.name)\n" +
+                "Status: \(.status)\n" +
+                "Image: \(.image)\n" +
+                "Progress: \(.progress)%\n" +
+                "Allocated: \(.resources.allocated.cpu) CPU, \(.resources.allocated.memory) GB RAM\n" +
+                "Started: \(.startedAt // "Not started")\n" +
+                "Completed: \(.completedAt // "Not completed")"'
+            ;;
+            
+        logs)
+            local id="$1"
+            local follow=false
+            
+            if [ -z "$id" ]; then
+                echo -e "${RED}Error: Workload ID required${NC}"
+                exit 1
+            fi
+            
+            shift
+            [ "$1" == "-f" ] && follow=true
+            
+            if $follow; then
+                echo -e "${CYAN}Streaming logs (Ctrl+C to stop)...${NC}\n"
+                while true; do
+                    api_call GET "/api/workloads/$id/logs" | jq -r '.logs[] | "[\(.timestamp)] [\(.log_level)] \(.message)"'
+                    sleep 2
+                done
+            else
+                api_call GET "/api/workloads/$id/logs" | jq -r '.logs[] | "[\(.timestamp)] [\(.log_level)] \(.message)"'
+            fi
+            ;;
+            
+        cancel)
+            local id="$1"
+            if [ -z "$id" ]; then
+                echo -e "${RED}Error: Workload ID required${NC}"
+                exit 1
+            fi
+            
+            echo -e "${YELLOW}Cancelling workload...${NC}"
+            local response=$(api_call POST "/api/workloads/$id/cancel")
+            
+            if echo "$response" | jq -e '.success' > /dev/null; then
+                echo -e "${GREEN}✓ Workload cancelled${NC}"
+            else
+                echo -e "${RED}✗ Failed to cancel${NC}"
+                echo "$response" | jq -r '.error'
+            fi
+            ;;
+            
+        *)
+            echo -e "${RED}Unknown workloads command: $subcmd${NC}"
+            exit 1
+            ;;
+    esac
 }
 
 # ==================== WORKER COMMANDS ====================
-
-worker_status() {
-    get_config
+cmd_worker() {
+    local subcmd="$1"
     
-    echo -e "${BOLD}Worker Status${NC}\n"
-    
-    # Check if container is running
-    if docker ps --format '{{.Names}}' | grep -q "^distributex-worker$"; then
-        echo -e "Container: ${GREEN}Running${NC}"
-        
-        # Get container info
-        UPTIME=$(docker inspect -f '{{.State.StartedAt}}' distributex-worker 2>/dev/null)
-        if [ -n "$UPTIME" ]; then
-            echo -e "Started:   $(date -d "$UPTIME" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$UPTIME")"
-        fi
-    elif docker ps -a --format '{{.Names}}' | grep -q "^distributex-worker$"; then
-        echo -e "Container: ${YELLOW}Stopped${NC}"
-    else
-        echo -e "Container: ${RED}Not installed${NC}"
-        echo ""
-        echo "Run: dxcloud install"
-        exit 1
-    fi
-    
-    echo ""
-    echo -e "${BOLD}Worker Details:${NC}"
-    echo -e "  Worker ID: $WORKER_ID"
-    
-    # Get status from API
-    response=$(curl -s "$API_URL/api/workers/$WORKER_ID" \
-        -H "Authorization: Bearer $AUTH_TOKEN" 2>/dev/null)
-    
-    if echo "$response" | jq -e '.success' &> /dev/null; then
-        status=$(echo "$response" | jq -r '.worker.status')
-        cpu=$(echo "$response" | jq -r '.worker.cpu_cores')
-        memory=$(echo "$response" | jq -r '.worker.memory_gb')
-        gpu=$(echo "$response" | jq -r '.worker.gpu_available')
-        last_heartbeat=$(echo "$response" | jq -r '.worker.last_heartbeat')
-        
-        case $status in
-            "online") status_color="${GREEN}" ;;
-            "offline") status_color="${RED}" ;;
-            "busy") status_color="${YELLOW}" ;;
-            *) status_color="${NC}" ;;
-        esac
-        
-        echo -e "  Status:    ${status_color}${status}${NC}"
-        echo -e "  CPU:       ${cpu} cores"
-        echo -e "  Memory:    ${memory} GB"
-        echo -e "  GPU:       $([ "$gpu" == "1" ] && echo "Yes" || echo "No")"
-        
-        if [ "$last_heartbeat" != "null" ]; then
-            echo -e "  Last seen: $(date -d "$last_heartbeat" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$last_heartbeat")"
-        fi
-    else
-        echo -e "  ${YELLOW}Could not fetch API status${NC}"
-    fi
-    
-    echo ""
-}
-
-worker_logs() {
-    get_config
-    
-    if [ "$1" == "-f" ] || [ "$1" == "--follow" ]; then
-        docker logs -f distributex-worker
-    else
-        docker logs --tail 100 distributex-worker
-    fi
-}
-
-worker_start() {
-    get_config
-    
-    echo -e "${BLUE}Starting worker...${NC}"
-    
-    if docker ps --format '{{.Names}}' | grep -q "^distributex-worker$"; then
-        echo -e "${YELLOW}Worker is already running${NC}"
-        exit 0
-    fi
-    
-    docker start distributex-worker
-    
-    sleep 2
-    
-    if docker ps --format '{{.Names}}' | grep -q "^distributex-worker$"; then
-        echo -e "${GREEN}✓ Worker started${NC}"
-    else
-        echo -e "${RED}❌ Failed to start worker${NC}"
-        exit 1
-    fi
-}
-
-worker_stop() {
-    get_config
-    
-    echo -e "${BLUE}Stopping worker...${NC}"
-    
-    docker stop distributex-worker
-    
-    echo -e "${GREEN}✓ Worker stopped${NC}"
-}
-
-worker_restart() {
-    get_config
-    
-    echo -e "${BLUE}Restarting worker...${NC}"
-    
-    docker restart distributex-worker
-    
-    sleep 2
-    
-    if docker ps --format '{{.Names}}' | grep -q "^distributex-worker$"; then
-        echo -e "${GREEN}✓ Worker restarted${NC}"
-    else
-        echo -e "${RED}❌ Failed to restart worker${NC}"
-        exit 1
-    fi
-}
-
-worker_remove() {
-    get_config
-    
-    echo -e "${YELLOW}⚠️  This will remove the worker from this device${NC}"
-    read -p "Are you sure? (yes/no) " -r
-    
-    if [ "$REPLY" != "yes" ]; then
-        echo "Cancelled"
-        exit 0
-    fi
-    
-    echo -e "${BLUE}Removing worker...${NC}"
-    
-    # Stop and remove container
-    docker stop distributex-worker 2>/dev/null || true
-    docker rm distributex-worker 2>/dev/null || true
-    
-    # Remove image
-    docker rmi distributex-worker:latest 2>/dev/null || true
-    
-    # Keep config but mark as removed
-    if [ -f "$CONFIG_FILE" ]; then
-        jq '. + {removed: true, removedAt: "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
-        mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-    fi
-    
-    echo -e "${GREEN}✓ Worker removed from this device${NC}"
-    echo ""
-    echo "Your account is still active. To reinstall:"
-    echo "  dxcloud install"
+    case "$subcmd" in
+        status)
+            if docker ps | grep -q distributex-worker; then
+                echo -e "${GREEN}✓ Worker: Running${NC}"
+                get_config
+                echo -e "Worker ID: $WORKER_ID"
+                
+                # Get API status
+                local response=$(api_call GET "/api/workers/$WORKER_ID")
+                echo "$response" | jq -r '
+                    "Status: \(.worker.status)\n" +
+                    "CPU: \(.worker.cpu_cores) cores\n" +
+                    "Memory: \(.worker.memory_gb) GB\n" +
+                    "GPU: \(if .worker.gpu_available == 1 then "Yes" else "No" end)\n" +
+                    "Last seen: \(.worker.last_heartbeat)"'
+            else
+                echo -e "${YELLOW}✗ Worker: Not running${NC}"
+            fi
+            ;;
+            
+        logs)
+            local follow="${2:-}"
+            if [ "$follow" == "-f" ]; then
+                docker logs -f distributex-worker
+            else
+                docker logs --tail 100 distributex-worker
+            fi
+            ;;
+            
+        start)
+            echo -e "${BLUE}Starting worker...${NC}"
+            docker start distributex-worker
+            echo -e "${GREEN}✓ Worker started${NC}"
+            ;;
+            
+        stop)
+            echo -e "${BLUE}Stopping worker...${NC}"
+            docker stop distributex-worker
+            echo -e "${GREEN}✓ Worker stopped${NC}"
+            ;;
+            
+        restart)
+            echo -e "${BLUE}Restarting worker...${NC}"
+            docker restart distributex-worker
+            echo -e "${GREEN}✓ Worker restarted${NC}"
+            ;;
+            
+        *)
+            echo -e "${RED}Unknown worker command: $subcmd${NC}"
+            exit 1
+            ;;
+    esac
 }
 
 # ==================== POOL COMMANDS ====================
-
-pool_status() {
-    get_config
+cmd_pool() {
+    local subcmd="$1"
     
-    echo -e "${BOLD}Global Pool Status${NC}\n"
-    
-    response=$(curl -s "$API_URL/api/pool/status")
-    
-    if ! echo "$response" | jq -e '.' &> /dev/null; then
-        echo -e "${RED}❌ Failed to fetch pool status${NC}"
-        exit 1
-    fi
-    
-    total=$(echo "$response" | jq -r '.workers.total')
-    online=$(echo "$response" | jq -r '.workers.online')
-    busy=$(echo "$response" | jq -r '.workers.busy')
-    
-    cpu_total=$(echo "$response" | jq -r '.resources.cpu.total')
-    cpu_avail=$(echo "$response" | jq -r '.resources.cpu.available')
-    
-    mem_total=$(echo "$response" | jq -r '.resources.memory.totalGb')
-    mem_avail=$(echo "$response" | jq -r '.resources.memory.availableGb')
-    
-    gpu_total=$(echo "$response" | jq -r '.resources.gpu.total')
-    
-    echo -e "${BOLD}Workers:${NC}"
-    echo -e "  Total:   $total"
-    echo -e "  Online:  ${GREEN}$online${NC}"
-    echo -e "  Busy:    ${YELLOW}$busy${NC}"
-    
-    echo ""
-    echo -e "${BOLD}Resources:${NC}"
-    echo -e "  CPU:     $cpu_avail / $cpu_total cores available"
-    echo -e "  Memory:  $mem_avail / $mem_total GB available"
-    echo -e "  GPUs:    $gpu_total"
-    
-    echo ""
+    case "$subcmd" in
+        status|stats)
+            local response=$(api_call GET "/api/pool/stats")
+            echo -e "${CYAN}DistributeX Network${NC}\n"
+            echo "$response" | jq -r '
+                "Workers: \(.network.onlineWorkers) online / \(.network.totalWorkers) total\n" +
+                "Workers with Storage: \(.network.workersWithStorage)\n" +
+                "\n" +
+                "Resources:\n" +
+                "  Total:     \(.resources.total.cpu) CPU, \(.resources.total.memory) GB RAM, \(.resources.total.storage) GB Storage\n" +
+                "  Used:      \(.resources.used.cpu) CPU, \(.resources.used.memory) GB RAM\n" +
+                "  Available: \(.resources.available.cpu) CPU, \(.resources.available.memory) GB RAM\n" +
+                "\n" +
+                "Workloads:\n" +
+                "  Running: \(.workloads.running)\n" +
+                "  Pending: \(.workloads.pending)\n" +
+                "  Total:   \(.workloads.total)"'
+            ;;
+            
+        *)
+            echo -e "${RED}Unknown pool command: $subcmd${NC}"
+            exit 1
+            ;;
+    esac
 }
 
-# ==================== DEVICE COMMANDS ====================
+# ==================== STORAGE COMMANDS ====================
+cmd_storage() {
+    local subcmd="$1"
+    shift
+    
+    case "$subcmd" in
+        list)
+            if [ -f "$CONFIG_DIR/storage_devices.json" ]; then
+                echo -e "${CYAN}Connected Storage Devices${NC}\n"
+                jq -r '.[] | "[\(.device)] \(.mountPoint) - \(.availableGb)/\(.totalGb) GB available"' "$CONFIG_DIR/storage_devices.json"
+            else
+                echo -e "${YELLOW}No storage devices configured${NC}"
+            fi
+            ;;
+            
+        *)
+            echo -e "${YELLOW}Storage management coming soon${NC}"
+            ;;
+    esac
+}
 
-devices_list() {
-    get_config
+# ==================== CONFIG COMMANDS ====================
+cmd_config() {
+    local subcmd="$1"
     
-    echo -e "${BOLD}Your Devices${NC}\n"
+    case "$subcmd" in
+        show)
+            if [ -f "$CONFIG_FILE" ]; then
+                cat "$CONFIG_FILE" | jq '.'
+            else
+                echo -e "${YELLOW}No configuration found${NC}"
+            fi
+            ;;
+            
+        set)
+            local key="$2"
+            local value="$3"
+            
+            if [ -z "$key" ] || [ -z "$value" ]; then
+                echo -e "${RED}Usage: dxcloud config set <key> <value>${NC}"
+                exit 1
+            fi
+            
+            get_config
+            jq ".$key = \"$value\"" "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+            mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+            echo -e "${GREEN}✓ Configuration updated${NC}"
+            ;;
+            
+        *)
+            echo -e "${RED}Unknown config command: $subcmd${NC}"
+            exit 1
+            ;;
+    esac
+}
+
+# ==================== STATS COMMANDS ====================
+cmd_stats() {
+    local subcmd="$1"
     
-    response=$(curl -s "$API_URL/api/workers" \
-        -H "Authorization: Bearer $AUTH_TOKEN")
-    
-    if ! echo "$response" | jq -e '.success' &> /dev/null; then
-        echo -e "${RED}❌ Failed to fetch devices${NC}"
-        exit 1
-    fi
-    
-    workers=$(echo "$response" | jq -r '.workers')
-    count=$(echo "$workers" | jq 'length')
-    
-    if [ "$count" == "0" ]; then
-        echo "No devices registered"
-        echo ""
-        echo "Add this device: dxcloud install"
-        exit 0
-    fi
-    
-    echo "$workers" | jq -r '.[] | "[\(.status | ascii_upcase)] \(.node_name)\n  ID: \(.id)\n  CPU: \(.cpu_cores) cores, RAM: \(.memory_gb) GB\n  Last seen: \(.last_heartbeat // "Never")\n"'
+    case "$subcmd" in
+        usage)
+            local response=$(api_call GET "/api/stats/usage")
+            echo -e "${CYAN}Usage Statistics${NC}\n"
+            echo "$response" | jq -r '
+                "Workloads:\n" +
+                "  Completed: \(.usage.jobs_completed)\n" +
+                "  Running:   \(.usage.jobs_running)\n" +
+                "  Failed:    \(.usage.jobs_failed)\n" +
+                "\n" +
+                "Resources Used:\n" +
+                "  CPU Hours:    \(.usage.cpu_hours)\n" +
+                "  Memory GB·h:  \(.usage.memory_gb_hours)"'
+            ;;
+            
+        contribution)
+            get_config
+            local response=$(api_call GET "/api/workers/$WORKER_ID")
+            echo -e "${CYAN}Contribution Statistics${NC}\n"
+            echo "$response" | jq -r '.worker | 
+                "Resources Shared:\n" +
+                "  CPU:     \(.cpu_cores) cores\n" +
+                "  Memory:  \(.memory_gb) GB\n" +
+                "  Storage: \(.storage_gb) GB\n" +
+                "  GPU:     \(if .gpu_available == 1 then .gpu_model else "None" end)\n" +
+                "\n" +
+                "Statistics:\n" +
+                "  Jobs Completed: \(.total_jobs_completed // 0)\n" +
+                "  Compute Hours:  \(.total_compute_hours // 0)"'
+            ;;
+            
+        *)
+            echo -e "${YELLOW}Stats command coming soon${NC}"
+            ;;
+    esac
 }
 
 # ==================== MAIN ====================
-
-case "$1" in
-    install)
-        # Run the installation script
-        curl -fsSL https://get.distributex.cloud | bash
-        ;;
-    
-    worker)
-        case "$2" in
-            status) worker_status ;;
-            logs) worker_logs "$3" ;;
-            start) worker_start ;;
-            stop) worker_stop ;;
-            restart) worker_restart ;;
-            remove) worker_remove ;;
-            *) echo "Unknown worker command: $2"; show_help; exit 1 ;;
-        esac
-        ;;
-    
-    pool)
-        case "$2" in
-            status) pool_status ;;
-            *) echo "Unknown pool command: $2"; show_help; exit 1 ;;
-        esac
-        ;;
-    
-    devices)
-        case "$2" in
-            list) devices_list ;;
-            *) echo "Unknown devices command: $2"; show_help; exit 1 ;;
-        esac
-        ;;
-    
-    version)
-        echo "dxcloud v${VERSION}"
-        ;;
-    
-    help|--help|-h)
-        show_help
-        ;;
-    
-    *)
-        if [ -z "$1" ]; then
-            show_help
-        else
-            echo "Unknown command: $1"
-            show_help
-            exit 1
-        fi
-        ;;
+case "${1:-}" in
+    run) shift; cmd_run "$@" ;;
+    workloads) shift; cmd_workloads "$@" ;;
+    worker) shift; cmd_worker "$@" ;;
+    pool) shift; cmd_pool "$@" ;;
+    storage) shift; cmd_storage "$@" ;;
+    config) shift; cmd_config "$@" ;;
+    stats) shift; cmd_stats "$@" ;;
+    version) echo "dxcloud v$VERSION" ;;
+    help|--help|-h|"") show_help ;;
+    *) echo -e "${RED}Unknown command: $1${NC}"; show_help; exit 1 ;;
 esac
