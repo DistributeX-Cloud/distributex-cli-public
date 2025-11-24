@@ -1,342 +1,423 @@
-# DistributeX Docker Worker
+# DistributeX - Docker-First Setup Guide
 
-Run a DistributeX worker node in Docker with automatic GPU detection and support for NVIDIA, AMD, and Intel GPUs.
+## Overview
 
-## Features
-
-- ✅ **Always Active**: Runs as a Docker container with auto-restart
-- 🎮 **GPU Support**: Detects and uses NVIDIA, AMD, and Intel GPUs
-- 📊 **Accurate Detection**: Real system resource detection from inside container
-- 🔄 **Auto-Recovery**: Automatically reconnects on disconnect
-- 📦 **Docker-in-Docker**: Executes jobs in isolated containers
-- 🛡️ **Secure**: Isolated from host system
-
-## GPU Support Matrix
-
-| Vendor | Minimum Generation | Detection Method | Requirements |
-|--------|-------------------|------------------|--------------|
-| **NVIDIA** | Kepler (2012+) | `nvidia-smi` | NVIDIA Container Toolkit |
-| **AMD** | GCN 3rd Gen (2016+) | `rocm-smi` / `lspci` | ROCm (optional) |
-| **Intel** | Arc / Recent Integrated | `lspci` | Intel GPU drivers |
-| **None** | N/A | N/A | CPU-only mode |
-
-### Supported NVIDIA GPUs
-- ✅ GeForce 600 series and newer (Kepler+)
-- ✅ Quadro K-series and newer
-- ✅ Tesla K-series and newer
-- ✅ RTX 20/30/40 series
-- ✅ Compute Capability 3.0+
-
-### Supported AMD GPUs
-- ✅ Radeon RX 400 series and newer (Polaris+)
-- ✅ Radeon VII
-- ✅ RX 5000/6000/7000 series
-- ✅ Radeon Pro WX/Vega series
-
-### Intel GPUs
-- ✅ Intel Arc A-series
-- ⚠️ Integrated GPUs (limited support)
+DistributeX uses **Docker containers** for workers to ensure:
+- ✅ Always-active workers (auto-restart on failures)
+- ✅ Consistent environment across all platforms
+- ✅ Automatic resource detection and reporting
+- ✅ Real-time updates to the frontend dashboard
 
 ## Quick Start
 
-### Prerequisites
-
-1. **Docker** (20.10+)
-   ```bash
-   # Linux
-   curl -fsSL https://get.docker.com | sh
-   
-   # Mac
-   brew install --cask docker
-   ```
-
-2. **Docker Compose**
-   ```bash
-   # Usually included with Docker Desktop
-   docker compose version
-   ```
-
-3. **For NVIDIA GPUs**: [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-   ```bash
-   # Ubuntu/Debian
-   distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-   curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-   curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-   
-   sudo apt-get update
-   sudo apt-get install -y nvidia-docker2
-   sudo systemctl restart docker
-   
-   # Test
-   docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-   ```
-
-4. **For AMD GPUs**: [ROCm](https://docs.amd.com/bundle/ROCm-Installation-Guide-v5.4.3/page/How_to_Install_ROCm.html) (optional)
-
-### Installation
-
-1. **Clone or create project directory**
-   ```bash
-   mkdir distributex-worker && cd distributex-worker
-   ```
-
-2. **Download files**
-   ```bash
-   # Download all required files
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/Dockerfile
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/docker-compose.yml
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/setup-docker-worker.sh
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/gpu-detect.sh
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/packages/worker-node/distributex-worker.js
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/package.json
-   
-   chmod +x setup-docker-worker.sh gpu-detect.sh
-   ```
-
-3. **Run setup**
-   ```bash
-   ./setup-docker-worker.sh
-   ```
-
-   The script will:
-   - Detect your GPU automatically
-   - Guide you through authentication
-   - Build the Docker image
-   - Start the worker container
-
-## Manual Setup
-
-### 1. Create `.env` file
+### One-Line Installation (Recommended)
 
 ```bash
-cp .env.template .env
-# Edit .env with your credentials
+curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash
 ```
 
-### 2. Build image
+**This single command:**
+1. ✅ Checks Docker is installed and running
+2. ✅ Detects your system resources (GPU, CPU, RAM, Storage)
+3. ✅ Creates your DistributeX account (or logs in)
+4. ✅ Builds the worker Docker image
+5. ✅ Starts the container (runs forever with auto-restart)
+6. ✅ Installs `dxcloud` CLI for management
+7. ✅ Registers your worker with the coordinator
+8. ✅ Begins sending real-time updates to the dashboard
 
-```bash
-docker build -t distributex-worker:latest .
+**Time to complete:** 2-3 minutes
+
+**After installation:** Your worker is live and visible on [distributex.cloud](https://distributex.cloud)
+
+### What Gets Installed
+
+- **Docker Worker Container**: Runs 24/7, automatically restarts
+- **CLI Tool** (`dxcloud`): Manage your worker
+- **Configuration**: Stored in `~/.distributex/`
+
+## System Architecture (Docker-First Design)
+
+```
+┌─────────────────────────────────────────────────────┐
+│              User's Computer (24/7)                 │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  Docker Container (restart: unless-stopped)  │  │
+│  ├──────────────────────────────────────────────┤  │
+│  │  ✓ Auto-starts on system boot               │  │
+│  │  ✓ Detects: 8 CPU, 16GB RAM, RTX 3080       │  │
+│  │  ✓ Sends heartbeat every 30 seconds         │  │
+│  │  ✓ Executes jobs in isolated containers     │  │
+│  └──────────────────────────────────────────────┘  │
+│           ↕ WebSocket (persistent)                 │
+├─────────────────────────────────────────────────────┤
+│         Cloudflare Edge (Global CDN)                │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  Coordinator (Durable Object + WebSocket)    │  │
+│  │  ✓ Maintains connections to all workers     │  │
+│  │  ✓ Routes jobs to available workers         │  │
+│  └──────────────────────────────────────────────┘  │
+│           ↕                                         │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  API (Cloudflare Worker + D1 Database)       │  │
+│  │  ✓ Stores worker states                      │  │
+│  │  ✓ Updates every 30s from heartbeats         │  │
+│  │  ✓ Serves /api/pool/status                   │  │
+│  └──────────────────────────────────────────────┘  │
+│           ↕                                         │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  Frontend (Next.js on Cloudflare Pages)      │  │
+│  │  ✓ Polls /api/pool/status every 10s          │  │
+│  │  ✓ Shows real-time worker count              │  │
+│  │  ✓ Displays actual resources (CPU/RAM/GPU)   │  │
+│  └──────────────────────────────────────────────┘  │
+│                                                     │
+│         https://distributex.cloud                   │
+└─────────────────────────────────────────────────────┘
+
+Timeline:
+─────────────────────────────────────────────────────►
+T+0s:   User runs install script
+T+2m:   Docker container built & started
+T+3m:   Worker appears on homepage (Online Workers: 1)
+T+5m:   Resource data populates (8 CPU, 16 GB RAM)
+Forever: Automatic updates every 30s → Frontend sees changes every 10s
 ```
 
-### 3. Start worker
+## How It Works
 
-**For NVIDIA GPU:**
+### 1. Worker Registration (Once)
+
+When you run the installer:
 ```bash
-docker compose --profile nvidia up -d
+curl -fsSL https://get.distributex.cloud | bash
 ```
 
-**For AMD GPU:**
-```bash
-docker compose --profile amd up -d
+The system:
+1. **Authenticates you** → Creates account in database
+2. **Detects resources** → CPU, RAM, GPU, Storage
+3. **Registers worker** → Creates worker record in DB
+4. **Starts container** → Docker container with auto-restart
+
+### 2. Continuous Operation
+
+The Docker container:
+```yaml
+restart: unless-stopped  # Automatically restarts if it crashes
 ```
 
-**For CPU only:**
-```bash
-docker compose --profile cpu up -d
+- Starts on system boot
+- Reconnects if network drops
+- Sends heartbeat every 30 seconds
+- Updates resource usage in real-time
+
+### 3. Real-Time Updates to Frontend
+
+**Every 30 seconds**, the worker sends:
+```javascript
+{
+  workerId: "worker-abc123",
+  status: "online",
+  capabilities: {
+    cpuCores: 8,
+    memoryGb: 16,
+    storageGb: 100,
+    gpuAvailable: true,
+    gpuModel: "NVIDIA RTX 3080",
+    cpuUsagePercent: 45,      // Real-time
+    memoryUsedGb: 8.2,        // Real-time
+    dockerContainers: 3       // Real-time
+  }
+}
 ```
 
-## Usage
-
-### View logs
-```bash
-docker compose logs -f
+**Database Update**:
+```sql
+UPDATE worker_nodes 
+SET 
+  status = 'online',
+  cpu_cores = 8,
+  memory_gb = 16,
+  storage_gb = 100,
+  gpu_available = 1,
+  gpu_model = 'NVIDIA RTX 3080',
+  last_heartbeat = NOW()
+WHERE id = 'worker-abc123'
 ```
 
-### Check status
-```bash
-docker ps | grep distributex
-docker compose ps
+**Frontend Refresh** (every 10 seconds):
+```javascript
+// Frontend polls /api/pool/status
+const poolStatus = await fetch('/api/pool/status');
+// Returns REAL data from database
+{
+  workers: { online: 5, total: 8 },  // From DB
+  resources: {
+    cpu: { total: 40, available: 28 },
+    memory: { totalGb: 128, availableGb: 92 }
+  }
+}
 ```
 
-### Stop worker
-```bash
-# Stop specific profile
-docker compose --profile nvidia down
+## User Experience
 
-# Or stop all
-docker compose down
+### For Contributors (Share Resources)
+
+#### Initial Setup
+```bash
+# 1. Run installer
+curl -fsSL https://get.distributex.cloud | bash
+
+# Interactive prompts:
+Choose an option:
+  1) Create new account
+  2) Login to existing account
+
+Full Name: John Doe
+Email: john@example.com
+Password: ********
+
+Select Role:
+  1) Contributor (share resources)  ← Select this
+  2) Developer (submit jobs)
+  3) Both
+
+✓ NVIDIA GPU detected: RTX 3080 (10 GB)
+✓ Docker image built
+✓ Worker started successfully
+
+Worker Status: Running in Docker
+Profile: nvidia
 ```
 
-### Restart worker
-```bash
-docker compose --profile nvidia restart
+#### What Happens Next
+
+**Immediately**:
+- Docker container starts
+- Connects to coordinator via WebSocket
+- Sends initial capabilities
+- Shows as "online" in dashboard
+
+**Ongoing** (automatic):
+- Container runs 24/7
+- Sends heartbeat every 30s
+- Updates resource usage in real-time
+- Auto-restarts if crashed
+- Starts on system boot
+
+**Dashboard Updates**:
+```
+Homepage: https://distributex.cloud
+├─ "5 Online Workers" ← Updates every 10s
+├─ "128 GB Total RAM"  ← Real data from DB
+└─ Resource graphs    ← Shows your contribution
 ```
 
-### Update worker
-```bash
-# Pull latest code
-git pull
+### For Developers (Submit Jobs)
 
-# Rebuild and restart
-docker compose --profile nvidia up -d --build
+#### Setup
+```bash
+# Same installer, choose "Developer" or "Both"
+curl -fsSL https://get.distributex.cloud | bash
+
+# If "Both", you contribute AND submit jobs
 ```
 
-## Resource Limits
+#### Submit Jobs
+```bash
+# Via CLI
+dxcloud run python:3.11 python -c "print('Hello')"
 
-Set resource limits in `.env`:
+# Via API
+curl -X POST https://distributex-api.distributex.workers.dev/api/jobs/submit \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{
+    "jobName": "test",
+    "containerImage": "python:3.11",
+    "command": ["python", "-c", "print(\"Hello\")"],
+    "requiredCpuCores": 1,
+    "requiredMemoryGb": 2
+  }'
+```
+
+## Management Commands
 
 ```bash
-MAX_CPU_CORES=8          # Limit CPU cores
-MAX_MEMORY_GB=16         # Limit RAM (GB)
-MAX_STORAGE_GB=100       # Limit storage (GB)
+# Check worker status
+dxcloud worker status
+# Output:
+#   Worker: worker-abc123
+#   Status: Running (online)
+#   Uptime: 2 days, 5 hours
+#   Resources: 8 CPU, 16 GB RAM, RTX 3080
+
+# View live logs
+dxcloud worker logs -f
+
+# Stop worker
+dxcloud worker stop
+
+# Restart worker
+dxcloud worker restart
+
+# Update to latest version
+dxcloud worker update
+
+# View global pool
+dxcloud pool status
 ```
 
 ## Troubleshooting
 
-### GPU not detected
+### Worker Not Showing Online
 
-**NVIDIA:**
 ```bash
-# Check NVIDIA driver
-nvidia-smi
+# 1. Check Docker container
+docker ps | grep distributex
+# Should show: distributex-worker-nvidia (or cpu/amd)
 
-# Check Docker GPU access
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+# 2. Check logs
+dxcloud worker logs
 
-# If fails, reinstall NVIDIA Container Toolkit
-sudo apt-get install -y nvidia-docker2
-sudo systemctl restart docker
+# 3. Verify heartbeat
+# Logs should show:
+# ✓ Capabilities registered with API (every 30s)
+
+# 4. Check database
+# Worker should appear in worker_nodes table with:
+# - status = 'online'
+# - last_heartbeat = recent timestamp
 ```
 
-**AMD:**
-```bash
-# Check ROCm
-rocm-smi
+### Frontend Not Updating
 
-# Check GPU via lspci
-lspci | grep -i "vga\|3d\|display"
+```bash
+# Frontend polls /api/pool/status every 10 seconds
+
+# Test API manually:
+curl https://distributex-api.distributex.workers.dev/api/pool/status
+
+# Should return:
+{
+  "workers": {
+    "online": 5,  ← Should match active workers
+    "total": 8
+  },
+  "resources": {
+    "cpu": { "total": 40 },  ← Sum of all worker CPUs
+    "memory": { "totalGb": 128 }
+  }
+}
+
+# If returns 0s, workers aren't sending heartbeats
 ```
 
-### Worker not connecting
+## Key Files
 
-1. **Check logs:**
-   ```bash
-   docker compose logs
-   ```
-
-2. **Verify credentials:**
-   ```bash
-   cat .env
-   # Ensure AUTH_TOKEN and WORKER_ID are set
-   ```
-
-3. **Test API connectivity:**
-   ```bash
-   curl https://distributex-api.distributex.workers.dev/health
-   ```
-
-4. **Check coordinator:**
-   ```bash
-   curl https://distributex-coordinator.distributex.workers.dev/health
-   ```
-
-### Docker-in-Docker issues
-
-If job execution fails:
-
-1. **Verify Docker socket mount:**
-   ```bash
-   docker exec distributex-worker-nvidia ls -la /var/run/docker.sock
-   ```
-
-2. **Check permissions:**
-   ```bash
-   # On host
-   sudo chmod 666 /var/run/docker.sock
-   ```
-
-3. **Test Docker access from inside:**
-   ```bash
-   docker exec distributex-worker-nvidia docker ps
-   ```
-
-### High resource usage
-
-1. **Limit resources in docker-compose.yml:**
-   ```yaml
-   services:
-     worker-nvidia:
-       deploy:
-         resources:
-           limits:
-             cpus: '4'
-             memory: 8G
-   ```
-
-2. **Monitor usage:**
-   ```bash
-   docker stats distributex-worker-nvidia
-   ```
-
-## Advanced Configuration
-
-### Custom API URL (for development)
-```bash
-# In .env
-DISTRIBUTEX_API_URL=http://localhost:8787
-DISTRIBUTEX_COORDINATOR_URL=ws://localhost:8788/ws
+```
+~/.distributex/
+├── config.json          # Worker credentials
+├── .env                 # Docker environment
+├── docker-compose.yml   # Docker configuration
+├── Dockerfile          # Container image
+├── logs/
+│   └── worker.log      # Worker logs
+└── distributex-worker.js # Worker code
 ```
 
-### Multiple GPUs
+## Auto-Start on Boot
+
+The installer configures Docker's restart policy:
+
 ```yaml
-# In docker-compose.yml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          device_ids: ['0', '1']  # Specific GPUs
-          capabilities: [gpu]
+# docker-compose.yml
+services:
+  worker-nvidia:
+    restart: unless-stopped  # Auto-start on boot
 ```
 
-### Persistent logs
-```yaml
-# Add to docker-compose.yml volumes
-volumes:
-  - ./logs:/root/.distributex/logs
+This means:
+- ✅ Starts when system boots
+- ✅ Restarts if crashes
+- ✅ Stops only when manually stopped
+- ✅ Survives Docker daemon restarts
+
+## Database Schema
+
+### worker_nodes table
+```sql
+CREATE TABLE worker_nodes (
+    id TEXT PRIMARY KEY,           -- Worker ID
+    status TEXT,                   -- 'online', 'offline', 'busy'
+    cpu_cores INTEGER,             -- Detected CPU cores
+    memory_gb REAL,                -- Detected RAM
+    storage_gb REAL,               -- Available storage
+    gpu_available INTEGER,         -- 1 or 0
+    gpu_model TEXT,                -- GPU name
+    last_heartbeat TEXT,           -- Last update time
+    registered_at TEXT             -- First seen
+);
 ```
 
-## Architecture
-
-```
-Host Machine
-├── Docker Engine
-│   └── DistributeX Worker Container
-│       ├── Node.js Worker Process
-│       ├── GPU Detection Scripts
-│       ├── Docker Client (for jobs)
-│       └── WebSocket Connection
-│
-├── GPU Devices (/dev/nvidia*, /dev/dri)
-│   └── Passed through to container
-│
-└── Docker Socket (/var/run/docker.sock)
-    └── Mounted for job execution
+### Real-time Updates
+```sql
+-- Every 30 seconds from worker:
+UPDATE worker_nodes 
+SET 
+  status = 'online',
+  cpu_cores = 8,
+  memory_gb = 16,
+  storage_gb = 100,
+  gpu_available = 1,
+  gpu_model = 'RTX 3080',
+  last_heartbeat = datetime('now')
+WHERE id = ?
 ```
 
-## Security Considerations
+## Frontend Integration
 
-- Worker runs in `--privileged` mode for Docker-in-Docker
-- Jobs execute in isolated containers
-- GPU access controlled by device permissions
-- Host filesystem not accessible by default
-- Network isolated unless explicitly enabled
+### Homepage (/)
+```javascript
+// Polls every 10 seconds
+const { data } = useQuery({
+  queryKey: ['pool-status'],
+  queryFn: () => fetch('/api/pool/status'),
+  refetchInterval: 10000  // 10 seconds
+});
 
-## Performance Tips
+// Shows REAL data:
+<div>Online Workers: {data.workers.online}</div>
+<div>Total CPU: {data.resources.cpu.total}</div>
+```
 
-1. **SSD for storage**: Faster job I/O
-2. **Latest drivers**: Better GPU performance
-3. **Adequate RAM**: At least 2x GPU VRAM for ML tasks
-4. **Network**: Stable connection for coordinator
-5. **Cooling**: Ensure adequate cooling for sustained workloads
+### Dashboard (/dashboard)
+```javascript
+// Real-time worker list
+const { data: workers } = useQuery({
+  queryKey: ['workers'],
+  queryFn: () => fetch('/api/workers'),
+  refetchInterval: 5000  // 5 seconds
+});
 
-## Support
+// Shows each worker:
+workers.map(w => (
+  <div>
+    {w.node_name}
+    <Status online={w.status === 'online'} />
+    <Resources cpu={w.cpu_cores} ram={w.memory_gb} />
+  </div>
+))
+```
 
-- **Documentation**: https://docs.distributex.cloud
-- **Issues**: https://github.com/yourusername/distributex/issues
-- **Discord**: https://discord.gg/distributex
+## Summary
 
-## License
+1. **User installs once** → Docker container auto-starts
+2. **Container runs 24/7** → Sends heartbeat every 30s
+3. **Database stays updated** → Real resource data
+4. **Frontend polls API** → Shows live status every 10s
 
-MIT License - See LICENSE file for details
+**No manual intervention needed after setup!**
