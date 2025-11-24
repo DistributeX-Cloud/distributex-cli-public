@@ -84,7 +84,7 @@ Run a DistributeX worker node in Docker with automatic GPU detection and support
    ```bash
    # Download all required files
    curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/Dockerfile
-   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex/main/docker/docker-compose.yml
+   curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/docker-compose.yml
    curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/setup-docker-worker.sh
    curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/gpu-detect.sh
    curl -O https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/packages/worker-node/distributex-worker.js
