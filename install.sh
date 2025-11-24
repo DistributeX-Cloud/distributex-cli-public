@@ -4,6 +4,9 @@
 
 set -e
 
+# Fix piped-input issue (forces interactive input)
+exec </dev/tty
+
 # Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
