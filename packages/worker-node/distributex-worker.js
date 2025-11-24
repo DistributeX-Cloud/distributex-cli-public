@@ -28,52 +28,6 @@ healthServer.listen(3000, () => {
 });
 
 class WorkerNode {
-  constructor(config) {
-    this.config = config;
-    this.docker = new Docker();
-    this.ws = null;
-    this.activeJobs = new Map();
-    this.isShuttingDown = false;
-    this.heartbeatInterval = null;
-    this.reconnectTimeout = null;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 50; // ✅ Increased for long-term retries
-    this.capabilities = null;
-    this.capabilitiesInterval = null;
-  }
-
-  async start() {
-    console.log('═══════════════════════════════════════');
-    console.log('   DistributeX Worker Node Starting   ');
-    console.log('═══════════════════════════════════════\n');
-    
-    try {
-      await fs.mkdir(LOGS_PATH, { recursive: true });
-      console.log('✓ Logs directory ready');
-      
-      await this.testDocker();
-      await this.detectCapabilities();
-      await this.connect();
-      await this.sendCapabilities();
-      this.startHeartbeat();
-      this.startCapabilitiesMonitoring();
-      this.setupSignalHandlers();
-      
-      console.log('\n═══════════════════════════════════════');
-      console.log('   Worker Started Successfully ✓       ');
-      console.log('═══════════════════════════════════════\n');
-      this.displayCapabilities();
-    } catch (error) {
-      console.error('\n❌ STARTUP FAILED:', error.message);
-      console.error('Stack:', error.stack);
-      this.log('ERROR', `Startup failed: ${error.message}`);
-      
-      // ✅ Don't exit immediately - keep health server running and retry
-      console.log('\n⏳ Will retry connection in 30 seconds...');
-      setTimeout(() => this.start(), 30000);
-    }
-  }
-
   async detectCapabilities() {
     console.log('🔍 Detecting system capabilities...');
     
@@ -81,30 +35,20 @@ class WorkerNode {
     const totalMemGb = os.totalmem() / (1024 ** 3);
     const freeMemGb = os.freemem() / (1024 ** 3);
     
+    // CPU Detection
     const cpuCores = this.config.maxCpuCores 
       ? Math.min(this.config.maxCpuCores, cpus.length) 
       : cpus.length;
-    const cpuModel = cpus[0]?.model || 'Unknown CPU';
     
+    // Memory Detection (80% of total)
     const memoryGb = this.config.maxMemoryGb 
       ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
       : Math.round(totalMemGb * 0.8 * 10) / 10;
     
-    // Storage detection
+    // Storage Detection (50% of free space)
     let storageGb = 50;
     try {
-      if (process.platform === 'win32') {
-        const wmic = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace', { 
-          encoding: 'utf8', 
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'ignore']
-        });
-        const lines = wmic.trim().split('\n');
-        if (lines[1]) {
-          const freeBytes = parseInt(lines[1].trim());
-          storageGb = Math.round(freeBytes / (1024 ** 3) * 0.5);
-        }
-      } else {
+      if (process.platform === 'linux' || process.platform === 'darwin') {
         const output = execSync('df -BG / | tail -1 | awk \'{print $4}\'', { 
           encoding: 'utf8', 
           timeout: 3000,
@@ -116,47 +60,33 @@ class WorkerNode {
         }
       }
     } catch (e) {
-      console.log('⚠️  Storage detection failed, using default:', storageGb);
+      console.log('⚠️  Using default storage:', storageGb);
     }
     
-    storageGb = this.config.maxStorageGb 
-      ? Math.min(this.config.maxStorageGb, storageGb) 
-      : storageGb;
-    
-    // GPU detection
+    // GPU Detection
     let gpuAvailable = false;
     let gpuModel = null;
     let gpuMemoryGb = 0;
-    let gpuCount = 0;
     
-    if (this.config.enableGpu !== false) {
-      try {
-        const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total,count --format=csv,noheader', { 
-          encoding: 'utf8', 
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'ignore']
-        });
-        const lines = nvidiaSmi.trim().split('\n');
-        if (lines[0]) {
-          const parts = lines[0].split(',');
-          gpuModel = parts[0]?.trim() || 'NVIDIA GPU';
-          const memoryStr = parts[1]?.trim() || '0 MiB';
-          gpuMemoryGb = parseFloat(memoryStr) / 1024;
-          gpuCount = lines.length;
-          gpuAvailable = true;
-        }
-      } catch (e) {
-        // GPU not available
+    try {
+      const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
+        encoding: 'utf8', 
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      });
+      const lines = nvidiaSmi.trim().split('\n');
+      if (lines[0]) {
+        const [name, memory] = lines[0].split(',');
+        gpuModel = name.trim();
+        gpuMemoryGb = parseFloat(memory.trim()) / 1024;
+        gpuAvailable = true;
       }
+    } catch (e) {
+      // No GPU
     }
-    
-    const platform = os.platform();
-    const arch = os.arch();
-    const hostname = os.hostname();
     
     this.capabilities = {
       cpuCores,
-      cpuModel,
       memoryGb,
       storageGb,
       gpuAvailable,
