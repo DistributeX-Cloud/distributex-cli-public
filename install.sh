@@ -11,7 +11,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${BLUE}╔═══════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║  DistributeX Docker Worker Setup      ║${NC}"
+echo -e "${BLUE}║   DistributeX Docker Worker Setup     ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════╝${NC}"
 echo ""
 
@@ -591,9 +591,18 @@ docker build -t distributex-worker:latest . > /dev/null 2>&1
 
 echo -e "${GREEN}✓ Docker image built${NC}"
 
-# Start the worker
+# Clean up old placeholder files
+echo -e "${BLUE}→${NC} Cleaning up old files..."
+rm -f "$CONFIG_DIR/cli/index.js" 2>/dev/null || true
+rm -f "$CONFIG_DIR/bin/dxcloud-worker" 2>/dev/null || true
+
+# Start the worker (use 'docker compose' not 'docker-compose')
 echo -e "${BLUE}→${NC} Starting worker container..."
-docker-compose up -d
+if command -v docker-compose &> /dev/null; then
+    docker-compose up -d
+else
+    docker compose up -d
+fi
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
@@ -606,9 +615,10 @@ echo "Container: distributex-worker"
 echo ""
 echo "Commands:"
 echo -e "  ${BLUE}View logs:${NC}     docker logs -f distributex-worker"
-echo -e "  ${BLUE}Stop worker:${NC}   docker stop distributex-worker"
+echo -e "  ${BLUE}Stop worker:${NC}   cd $WORKER_DIR && docker compose down"
 echo -e "  ${BLUE}Restart:${NC}       docker restart distributex-worker"
 echo -e "  ${BLUE}Status:${NC}        docker ps | grep distributex"
 echo ""
 echo "Your worker is now live at https://distributex.cloud"
 echo ""
+echo -e "${YELLOW}Note: Old placeholder files have been cleaned up${NC}"
