@@ -273,35 +273,63 @@ GPU_DETECTED=false
 GPU_MODEL="None"
 
 # Check NVIDIA
-if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
-    GPU_TYPE="nvidia"
-    GPU_DETECTED=true
-    GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-    echo -e "${GREEN}✓ NVIDIA GPU detected: $GPU_MODEL${NC}"
-    
-    # Verify NVIDIA Container Toolkit
-    if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null; then
-        echo -e "${GREEN}✓ NVIDIA Container Toolkit configured${NC}"
-    else
-        echo -e "${YELLOW}⚠ NVIDIA Container Toolkit not configured${NC}"
-        echo "  Install it from: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-        prompt_n1 "Continue without GPU support? (y/n) " gpu_continue_choice
-        if [[ ! $gpu_continue_choice =~ ^[Yy]$ ]]; then
-            exit 1
+echo -e "${BLUE}Checking for NVIDIA GPU...${NC}"
+if command -v nvidia-smi &> /dev/null; then
+    if nvidia-smi &> /dev/null 2>&1; then
+        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        echo -e "${GREEN}✓ NVIDIA GPU detected on host: $GPU_MODEL${NC}"
+        
+        # Test Docker GPU access
+        echo -e "${BLUE}Testing Docker GPU access...${NC}"
+        
+        # Try modern --gpus flag (Docker 19.03+)
+        if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Docker can access GPU (using --gpus)${NC}"
+            GPU_TYPE="nvidia"
+            GPU_DETECTED=true
+        # Try legacy --runtime=nvidia flag
+        elif docker run --rm --runtime=nvidia nvidia/cuda:11.0-base nvidia-smi &> /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Docker can access GPU (using --runtime=nvidia)${NC}"
+            GPU_TYPE="nvidia"
+            GPU_DETECTED=true
+        else
+            echo -e "${YELLOW}⚠ NVIDIA GPU found but Docker cannot access it${NC}"
+            echo ""
+            echo "This usually means NVIDIA Container Toolkit is not installed or configured."
+            echo ""
+            echo "To fix this, run:"
+            echo -e "${CYAN}  # Install NVIDIA Container Toolkit${NC}"
+            echo -e "${CYAN}  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg${NC}"
+            echo -e "${CYAN}  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list${NC}"
+            echo -e "${CYAN}  sudo apt-get update${NC}"
+            echo -e "${CYAN}  sudo apt-get install -y nvidia-container-toolkit${NC}"
+            echo -e "${CYAN}  sudo nvidia-ctk runtime configure --runtime=docker${NC}"
+            echo -e "${CYAN}  sudo systemctl restart docker${NC}"
+            echo ""
+            prompt_n1 "Continue without GPU support? (y/n) " gpu_continue_choice
+            if [[ ! $gpu_continue_choice =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "Please install NVIDIA Container Toolkit and run this script again."
+                exit 1
+            fi
+            GPU_TYPE="cpu"
+            GPU_DETECTED=false
+            echo -e "${YELLOW}Continuing with CPU-only mode${NC}"
         fi
-        GPU_TYPE="none"
+    else
+        echo -e "${YELLOW}⚠ nvidia-smi found but not working${NC}"
+        GPU_TYPE="cpu"
         GPU_DETECTED=false
     fi
-elif lspci 2>/dev/null | grep -iE "vga|3d|display" | grep -qi "amd\|radeon"; then
-    GPU_TYPE="amd"
-    GPU_DETECTED=true
-    GPU_MODEL=$(lspci | grep -iE "vga|3d" | grep -i "amd" | head -1 | grep -oP ':\s*\K.*')
-    echo -e "${GREEN}✓ AMD GPU detected: $GPU_MODEL${NC}"
-    echo -e "${YELLOW}  Note: AMD GPU support requires ROCm${NC}"
 else
-    echo -e "${YELLOW}⚠ No GPU detected${NC}"
+    echo -e "${YELLOW}⚠ nvidia-smi not found${NC}"
     GPU_TYPE="cpu"
+    GPU_DETECTED=false
 fi
+
+# Check AMD GPU if no NVIDIA detected
+if [ "$GPU_DETECTED" = false ] && [ "$GPU_TYPE" != "nvidia" ]; then
+    echo -e "${BLUE}Checking for AMD GPU...${NC}"
 
 # Detect other resources
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "1")
