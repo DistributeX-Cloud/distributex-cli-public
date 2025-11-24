@@ -283,7 +283,7 @@ if command -v nvidia-smi &> /dev/null; then
         echo -e "${BLUE}Testing Docker GPU access...${NC}"
         
         # Try modern --gpus flag (Docker 19.03+)
-        if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null 2>&1; then
+        if docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi &> /dev/null 2>&1; then
             echo -e "${GREEN}✓ Docker can access GPU (using --gpus)${NC}"
             GPU_TYPE="nvidia"
             GPU_DETECTED=true
