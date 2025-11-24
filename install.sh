@@ -292,10 +292,15 @@ if [ -f "$CONFIG_DIR/storage_devices.json" ]; then
     fi
 fi
 
+# Detect docker compose command
 if command -v docker-compose &>/dev/null; then
     docker-compose up -d --build
-else
+elif docker compose version &>/dev/null; then
     docker compose up -d --build
+else
+    echo "ERROR: Docker Compose not found. Install it with:"
+    echo "  sudo apt install docker-compose-plugin"
+    exit 1
 fi
 
 echo -e "\n${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
