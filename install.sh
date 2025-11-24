@@ -1,5 +1,5 @@
 #!/bin/bash
-# DistributeX Complete Installation Script - FIXED
+# DistributeX Complete Installation Script - PATCHED
 # This script handles signup, Docker installation, and worker setup
 
 set -e
@@ -12,6 +12,48 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+# Helper input functions (read from /dev/tty when available to avoid pipe/stdin issues)
+prompt() {
+  # usage: prompt "Message: " varname
+  local __msg="$1"; local __var="$2"
+  local REPLY=""
+  if [ -e /dev/tty ]; then
+    read -r -p "$__msg" REPLY </dev/tty
+    echo -n ""  # preserve behaviour
+  else
+    read -r -p "$__msg" REPLY
+  fi
+  eval "$__var=\"\$REPLY\""
+}
+
+prompt_n1() {
+  # usage: prompt_n1 "Message (y/n): " varname
+  local __msg="$1"; local __var="$2"
+  local REPLY=""
+  if [ -e /dev/tty ]; then
+    read -n 1 -r -p "$__msg" REPLY </dev/tty
+    echo
+  else
+    read -n 1 -r -p "$__msg" REPLY
+    echo
+  fi
+  eval "$__var=\"\$REPLY\""
+}
+
+prompt_pass() {
+  # usage: prompt_pass "Password: " varname
+  local __msg="$1"; local __var="$2"
+  local REPLY=""
+  if [ -e /dev/tty ]; then
+    read -r -s -p "$__msg" REPLY </dev/tty
+    echo
+  else
+    read -r -s -p "$__msg" REPLY
+    echo
+  fi
+  eval "$__var=\"\$REPLY\""
+}
 
 # Configuration
 API_URL="${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}"
@@ -47,12 +89,8 @@ echo -e "\n${BLUE}Checking Docker...${NC}"
 if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}⚠ Docker not found${NC}"
     echo ""
-    # Fix skipped input
-    while read -r -t 0; do read -r; done
-    read -p "Would you like to install Docker now? (y/n) " -n 1 -r
-
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+    prompt_n1 "Would you like to install Docker now? (y/n) " docker_install_choice
+    if [[ $docker_install_choice =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}Installing Docker...${NC}"
         curl -fsSL https://get.docker.com | sh
         echo -e "${GREEN}✓ Docker installed${NC}"
@@ -110,12 +148,18 @@ echo -e "\n${BOLD}Step 2: Authentication${NC}\n"
 # Check if already configured
 if [ -f "$CONFIG_FILE" ]; then
     echo -e "${YELLOW}Found existing configuration${NC}"
-    read -p "Do you want to use the existing account? (y/n) " -n 1 -r
-    echo
-    
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        source <(jq -r 'to_entries | .[] | "export \(.key)=\(.value)"' "$CONFIG_FILE" 2>/dev/null || echo "")
-        
+    prompt_n1 "Do you want to use the existing account? (y/n) " use_existing_choice
+    if [[ $use_existing_choice =~ ^[Yy]$ ]]; then
+        # load config safely (jq required)
+        if command -v jq &> /dev/null; then
+          # export keys from config.json to shell variables (names as in config)
+          while IFS="=" read -r key value; do
+              # skip empty
+              [ -z "$key" ] && continue
+              eval "$key=\"$value\""
+          done < <(jq -r 'to_entries | .[] | "\(.key)=\(.value|tostring)"' "$CONFIG_FILE" 2>/dev/null || echo "")
+        fi
+
         if [ -n "$authToken" ] && [ -n "$workerId" ]; then
             echo -e "${GREEN}✓ Using existing credentials${NC}"
             AUTH_TOKEN="$authToken"
@@ -139,21 +183,19 @@ if [ -z "$AUTH_TOKEN" ]; then
     echo "  1) Create new account"
     echo "  2) Login to existing account"
     echo ""
-    read -p "Choice [1-2]: " auth_choice
+    prompt "Choice [1-2]: " auth_choice
     
     if [ "$auth_choice" == "1" ]; then
         # ==================== SIGNUP ====================
         echo -e "\n${BOLD}Create New Account${NC}\n"
         
-        read -p "Full Name: " name
-        read -p "Email: " email
+        prompt "Full Name: " name
+        prompt "Email: " email
         
         # Password with confirmation
         while true; do
-            read -sp "Password (min 8 characters): " password
-            echo
-            read -sp "Confirm Password: " password2
-            echo
+            prompt_pass "Password (min 8 characters): " password
+            prompt_pass "Confirm Password: " password2
             
             if [ "$password" != "$password2" ]; then
                 echo -e "${RED}Passwords don't match. Try again.${NC}"
@@ -169,7 +211,7 @@ if [ -z "$AUTH_TOKEN" ]; then
         echo "  1) Contributor (share resources, earn rewards)"
         echo "  2) Developer (submit jobs, use network)"
         echo "  3) Both (contribute and use)"
-        read -p "Choice [1-3]: " role_choice
+        prompt "Choice [1-3]: " role_choice
         
         case $role_choice in
             1) role="contributor" ;;
@@ -189,10 +231,10 @@ if [ -z "$AUTH_TOKEN" ]; then
         # ==================== LOGIN ====================
         echo -e "\n${BOLD}Login to Existing Account${NC}\n"
         
-        read -p "Email: " email
-        read -sp "Password: " password
-        echo ""
+        prompt "Email: " email
+        prompt_pass "Password: " password
         
+        echo ""
         echo -e "\n${BLUE}Logging in...${NC}"
         
         # Make API request
@@ -243,9 +285,8 @@ if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
     else
         echo -e "${YELLOW}⚠ NVIDIA Container Toolkit not configured${NC}"
         echo "  Install it from: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-        read -p "Continue without GPU support? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        prompt_n1 "Continue without GPU support? (y/n) " gpu_continue_choice
+        if [[ ! $gpu_continue_choice =~ ^[Yy]$ ]]; then
             exit 1
         fi
         GPU_TYPE="none"
