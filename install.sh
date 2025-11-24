@@ -49,19 +49,79 @@ check_requirements() {
     
     echo -e "${GREEN}✓ Docker installed${NC}"
     
-    # Check Docker daemon
+    # Check Docker daemon with detailed troubleshooting
     if ! docker info >/dev/null 2>&1; then
         docker_error=$(docker info 2>&1 || true)
         echo -e "${RED}✗ Docker daemon not accessible${NC}"
         echo ""
+        echo -e "${YELLOW}Attempting to fix Docker issues...${NC}"
+        echo ""
         
         if echo "$docker_error" | grep -q "permission denied"; then
             echo "Issue: Permission denied"
-            echo "Solution: sudo usermod -aG docker $USER && newgrp docker"
+            echo ""
+            echo "Fixing permissions..."
+            sudo usermod -aG docker $USER
+            echo -e "${GREEN}✓ Added $USER to docker group${NC}"
+            echo ""
+            echo -e "${YELLOW}Please run these commands to apply changes:${NC}"
+            echo "  newgrp docker"
+            echo "  # Or log out and back in"
+            echo ""
+            echo "Then re-run this installer:"
+            echo "  curl -fsSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/install.sh | bash"
+            exit 1
         else
             echo "Issue: Docker daemon not running"
-            echo "Solution: Start Docker Desktop or run: sudo systemctl start docker"
+            echo ""
+            echo "Starting Docker daemon..."
+            
+            # Try to start Docker
+            if command -v systemctl >/dev/null 2>&1; then
+                sudo systemctl start docker
+                sudo systemctl enable docker
+                echo -e "${GREEN}✓ Docker daemon started${NC}"
+                
+                # Wait a moment for Docker to start
+                sleep 2
+                
+                # Check if it's running now
+                if docker info >/dev/null 2>&1; then
+                    echo -e "${GREEN}✓ Docker is now accessible${NC}"
+                else
+                    echo -e "${RED}✗ Docker still not accessible${NC}"
+                    echo ""
+                    echo "Manual steps:"
+                    echo "  sudo systemctl start docker"
+                    echo "  sudo systemctl enable docker"
+                    echo "  sudo usermod -aG docker $USER"
+                    echo "  newgrp docker"
+                    echo "  docker ps"
+                    exit 1
+                fi
+            else
+                echo -e "${YELLOW}Please start Docker manually:${NC}"
+                echo "  Mac: Open Docker Desktop"
+                echo "  Linux: sudo systemctl start docker"
+                echo ""
+                echo "Then re-run this installer"
+                exit 1
+            fi
         fi
+    fi
+    
+    # Verify Docker works
+    if ! docker ps >/dev/null 2>&1; then
+        echo -e "${RED}✗ Cannot list Docker containers${NC}"
+        echo ""
+        echo "Please run these commands:"
+        echo "  sudo systemctl start docker"
+        echo "  sudo systemctl enable docker"
+        echo "  sudo usermod -aG docker $USER"
+        echo "  newgrp docker"
+        echo "  docker ps"
+        echo ""
+        echo "Then re-run this installer"
         exit 1
     fi
     
@@ -494,7 +554,17 @@ class WorkerNode {
       const info = await this.docker.info();
       console.log(`✓ Docker connected (${info.Containers} containers)\n`);
     } catch (error) {
-      throw new Error('Docker not available. Please ensure Docker is installed and running.');
+      console.error('Docker connection failed:', error.message);
+      console.error('');
+      console.error('Please ensure:');
+      console.error('  1. Docker is installed and running');
+      console.error('  2. Your user has Docker permissions:');
+      console.error('     sudo usermod -aG docker $USER');
+      console.error('     newgrp docker');
+      console.error('  3. Docker daemon is running:');
+      console.error('     sudo systemctl start docker');
+      console.error('');
+      throw new Error('Docker not available. Fix the issues above and try again.');
     }
   }
 
