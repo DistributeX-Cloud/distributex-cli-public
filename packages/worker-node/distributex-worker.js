@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// distributex-worker.js - COMPLETE FIXED VERSION
+// distributex-worker.js - COMPLETE FIXED VERSION WITH DEVICE TRACKING
 
 const WebSocket = require('ws');
 const Docker = require('dockerode');
@@ -61,6 +61,7 @@ class WorkerNode {
     }
   }
 
+  // ==================== COMPREHENSIVE RESOURCE DETECTION ====================
   async detectCapabilities() {
     console.log('🔍 Detecting system capabilities...');
     
@@ -71,100 +72,275 @@ class WorkerNode {
     const arch = os.arch();
     const hostname = os.hostname();
     
-    // CPU Detection
+    // ==================== CPU DETECTION ====================
+    const totalCpuCores = cpus.length;
     const cpuCores = this.config.maxCpuCores 
-      ? Math.min(this.config.maxCpuCores, cpus.length) 
-      : cpus.length;
+      ? Math.min(this.config.maxCpuCores, totalCpuCores) 
+      : totalCpuCores;
+    const cpuModel = cpus[0]?.model || 'Unknown CPU';
     
-    // Memory Detection (80% of total)
+    console.log(`   ✓ CPU: ${cpuCores}/${totalCpuCores} cores (${cpuModel})`);
+    
+    // ==================== MEMORY DETECTION ====================
     const memoryGb = this.config.maxMemoryGb 
       ? Math.min(this.config.maxMemoryGb, totalMemGb * 0.8) 
       : Math.round(totalMemGb * 0.8 * 10) / 10;
     
-    // Storage Detection (50% of free space)
+    console.log(`   ✓ RAM: ${memoryGb.toFixed(1)}/${totalMemGb.toFixed(1)} GB available`);
+    
+    // ==================== STORAGE DETECTION ====================
     let storageGb = 50;
+    let storageDetectionMethod = 'default';
+    
     try {
-      if (platform === 'linux' || platform === 'darwin') {
-        const output = execSync('df -BG / | tail -1 | awk \'{print $4}\'', { 
-          encoding: 'utf8', 
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'ignore']
-        }).trim();
-        const match = output.match(/(\d+)G/);
-        if (match) {
-          storageGb = Math.round(parseInt(match[1]) * 0.5);
+      if (platform === 'win32') {
+        try {
+          const psCommand = 'Get-PSDrive C | Select-Object -ExpandProperty Free';
+          const output = execSync(`powershell -Command "${psCommand}"`, { 
+            encoding: 'utf8', 
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          }).trim();
+          
+          const freeBytes = parseInt(output);
+          if (!isNaN(freeBytes) && freeBytes > 0) {
+            storageGb = Math.round((freeBytes / (1024 ** 3)) * 0.5);
+            storageDetectionMethod = 'powershell';
+          }
+        } catch (psError) {
+          try {
+            const wmic = execSync('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace', { 
+              encoding: 'utf8', 
+              timeout: 5000,
+              stdio: ['pipe', 'pipe', 'ignore']
+            });
+            const lines = wmic.trim().split('\n');
+            if (lines[1]) {
+              const freeBytes = parseInt(lines[1].trim());
+              if (!isNaN(freeBytes) && freeBytes > 0) {
+                storageGb = Math.round((freeBytes / (1024 ** 3)) * 0.5);
+                storageDetectionMethod = 'wmic';
+              }
+            }
+          } catch (wmicError) {
+            console.log('   ⚠️  Could not detect storage, using default: 50 GB');
+          }
+        }
+      } else {
+        try {
+          const output = execSync('df -BG / | tail -1', { 
+            encoding: 'utf8', 
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          }).trim();
+          
+          const parts = output.split(/\s+/);
+          const availStr = parts[3];
+          
+          if (availStr && availStr.endsWith('G')) {
+            const availGb = parseInt(availStr.slice(0, -1));
+            if (!isNaN(availGb) && availGb > 0) {
+              storageGb = Math.round(availGb * 0.5);
+              storageDetectionMethod = 'df';
+            }
+          }
+        } catch (dfError) {
+          console.log('   ⚠️  Could not detect storage, using default: 50 GB');
         }
       }
-    } catch (e) {
-      console.log('⚠️  Using default storage:', storageGb);
+    } catch (error) {
+      console.log('   ⚠️  Storage detection failed, using default: 50 GB');
     }
     
-    // GPU Detection
+    if (this.config.maxStorageGb) {
+      storageGb = Math.min(this.config.maxStorageGb, storageGb);
+    }
+    
+    console.log(`   ✓ Storage: ${storageGb} GB (detected via ${storageDetectionMethod})`);
+    
+    // ==================== GPU DETECTION ====================
     let gpuAvailable = false;
     let gpuModel = null;
     let gpuMemoryGb = 0;
     let gpuCount = 0;
+    let gpuVendor = 'none';
     
-    try {
-      const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
-        encoding: 'utf8', 
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'ignore']
-      });
-      const lines = nvidiaSmi.trim().split('\n');
-      if (lines[0]) {
-        const [name, memory] = lines[0].split(',');
-        gpuModel = name.trim();
-        gpuMemoryGb = parseFloat(memory.trim()) / 1024;
-        gpuAvailable = true;
-        gpuCount = lines.length;
+    if (this.config.enableGpu !== false) {
+      try {
+        const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { 
+          encoding: 'utf8', 
+          timeout: 5000,
+          stdio: ['pipe', 'pipe', 'ignore']
+        });
+        
+        const lines = nvidiaSmi.trim().split('\n').filter(line => line.trim());
+        if (lines.length > 0) {
+          const [name, memory] = lines[0].split(',');
+          gpuModel = name.trim();
+          gpuMemoryGb = parseFloat(memory.trim()) / 1024;
+          gpuAvailable = true;
+          gpuCount = lines.length;
+          gpuVendor = 'nvidia';
+          
+          console.log(`   ✓ GPU: NVIDIA ${gpuModel} (${gpuMemoryGb.toFixed(1)} GB VRAM, ${gpuCount} GPU(s))`);
+        }
+      } catch (nvidiaError) {
+        try {
+          const rocmSmi = execSync('rocm-smi --showproductname', { 
+            encoding: 'utf8', 
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'ignore']
+          });
+          
+          if (rocmSmi.includes('GPU')) {
+            gpuAvailable = true;
+            gpuVendor = 'amd';
+            gpuCount = 1;
+            
+            const lines = rocmSmi.trim().split('\n');
+            for (const line of lines) {
+              if (line.includes('GPU') && line.includes(':')) {
+                const match = line.match(/:\s*(.+)/);
+                if (match) {
+                  gpuModel = match[1].trim();
+                  break;
+                }
+              }
+            }
+            
+            if (!gpuModel) gpuModel = 'AMD GPU (ROCm)';
+            
+            try {
+              const vramInfo = execSync('rocm-smi --showmeminfo vram', { 
+                encoding: 'utf8', 
+                timeout: 3000,
+                stdio: ['pipe', 'pipe', 'ignore']
+              });
+              const vramMatch = vramInfo.match(/(\d+)\s*MB/);
+              if (vramMatch) {
+                gpuMemoryGb = parseInt(vramMatch[1]) / 1024;
+              }
+            } catch (vramError) {
+              // Continue without VRAM info
+            }
+            
+            console.log(`   ✓ GPU: AMD ${gpuModel}${gpuMemoryGb > 0 ? ` (${gpuMemoryGb.toFixed(1)} GB VRAM)` : ''}`);
+          }
+        } catch (rocmError) {
+          if (platform === 'linux') {
+            try {
+              const lspci = execSync('lspci | grep -iE "vga|3d|display"', { 
+                encoding: 'utf8', 
+                timeout: 3000,
+                stdio: ['pipe', 'pipe', 'ignore']
+              });
+              
+              if (lspci.toLowerCase().includes('amd') || lspci.toLowerCase().includes('radeon')) {
+                gpuAvailable = true;
+                gpuVendor = 'amd';
+                gpuCount = (lspci.match(/amd|radeon/gi) || []).length;
+                gpuModel = 'AMD GPU (detected via lspci)';
+                console.log(`   ✓ GPU: ${gpuModel} (${gpuCount} GPU(s))`);
+              } else if (lspci.toLowerCase().includes('intel')) {
+                gpuAvailable = true;
+                gpuVendor = 'intel';
+                gpuCount = 1;
+                gpuModel = 'Intel GPU (integrated)';
+                console.log(`   ✓ GPU: ${gpuModel}`);
+              }
+            } catch (lspciError) {
+              // No GPU detected
+            }
+          }
+        }
       }
-    } catch (e) {
-      // No GPU detected
+      
+      if (!gpuAvailable) {
+        console.log(`   ✓ GPU: None detected`);
+      }
+    } else {
+      console.log(`   ✓ GPU: Disabled by configuration`);
     }
     
+    console.log(`   ✓ Platform: ${platform} (${arch})`);
+    console.log(`   ✓ Hostname: ${hostname}`);
+    
+    // ==================== DOCKER INFO ====================
+    let dockerVersion = null;
+    let dockerContainers = 0;
+    
+    try {
+      const dockerInfo = await this.docker.info();
+      dockerVersion = dockerInfo.ServerVersion;
+      dockerContainers = dockerInfo.Containers;
+      console.log(`   ✓ Docker: v${dockerVersion} (${dockerContainers} containers)`);
+    } catch (e) {
+      console.log('   ⚠️  Docker info not available');
+    }
+    
+    // ==================== ASSEMBLE CAPABILITIES ====================
     this.capabilities = {
+      // Core resources
       cpuCores,
+      cpuModel,
       memoryGb,
       storageGb,
       gpuAvailable,
       gpuModel,
       gpuMemoryGb,
       gpuCount,
+      gpuVendor,
+      
+      // System info
       platform,
       arch,
       hostname,
       nodeName: this.config.nodeName || hostname,
-      totalSystemCpu: cpus.length,
+      
+      // Total system resources
+      totalSystemCpu: totalCpuCores,
       totalSystemMemoryGb: Math.round(totalMemGb * 10) / 10,
       freeMemoryGb: Math.round(freeMemGb * 10) / 10,
+      
+      // Current usage (updated every 10s)
       cpuUsagePercent: 0,
       memoryUsedGb: (totalMemGb - freeMemGb).toFixed(2),
       memoryAvailableGb: freeMemGb.toFixed(2),
-      dockerVersion: null,
-      dockerContainers: 0,
+      
+      // Docker info
+      dockerVersion,
+      dockerContainers,
+      
+      // Detection metadata
+      detectionTimestamp: new Date().toISOString(),
+      storageDetectionMethod,
     };
     
-    try {
-      const dockerInfo = await this.docker.info();
-      this.capabilities.dockerVersion = dockerInfo.ServerVersion;
-      this.capabilities.dockerContainers = dockerInfo.Containers;
-    } catch (e) {
-      console.log('⚠️  Docker info not available');
-    }
-    
-    console.log('✓ Capabilities detected');
+    console.log('✓ Capabilities detected\n');
   }
 
   displayCapabilities() {
-    console.log('\nWorker Configuration:');
+    console.log('Worker Configuration:');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log(`  Worker ID:    ${this.config.workerId}`);
+    console.log(`  Device ID:    ${this.config.deviceId || 'N/A'}`);
     console.log(`  Node Name:    ${this.capabilities.nodeName}`);
     console.log(`  CPU:          ${this.capabilities.cpuCores} cores`);
     console.log(`  Memory:       ${this.capabilities.memoryGb} GB`);
     console.log(`  Storage:      ${this.capabilities.storageGb} GB`);
-    console.log(`  GPU:          ${this.capabilities.gpuAvailable ? `${this.capabilities.gpuModel} (${this.capabilities.gpuMemoryGb.toFixed(1)} GB)` : 'None'}`);
+    
+    if (this.capabilities.gpuAvailable) {
+      console.log(`  GPU:          ${this.capabilities.gpuModel}`);
+      if (this.capabilities.gpuMemoryGb > 0) {
+        console.log(`  GPU Memory:   ${this.capabilities.gpuMemoryGb.toFixed(1)} GB`);
+      }
+      if (this.capabilities.gpuCount > 1) {
+        console.log(`  GPU Count:    ${this.capabilities.gpuCount}`);
+      }
+    } else {
+      console.log(`  GPU:          None`);
+    }
+    
     console.log(`  Platform:     ${this.capabilities.platform}/${this.capabilities.arch}`);
     console.log(`  Docker:       v${this.capabilities.dockerVersion || 'Unknown'}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -264,18 +440,22 @@ class WorkerNode {
     }, delay);
   }
 
+  // ==================== FIXED: SEND CAPABILITIES WITH DEVICE INFO ====================
   async sendCapabilities() {
     console.log('📤 Registering capabilities...');
     
     await this.updateCurrentUsage();
     
+    // Send to coordinator via WebSocket
     this.send({
       type: 'capabilities',
       capabilities: this.capabilities
     });
     
+    // Send to API with full device info
     try {
-      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+      const apiUrl = this.config.apiUrl || 'https://distributex-api.distributex.workers.dev';
+      const response = await fetch(`${apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -292,27 +472,36 @@ class WorkerNode {
             activeJobs: this.activeJobs.size
           },
           deviceInfo: {
-            deviceId: this.config.deviceId,
-            deviceFingerprint: this.config.deviceFingerprint,
-            userId: this.config.userId
+            deviceId: this.config.deviceId || `device-${this.config.workerId}`,
+            deviceFingerprint: this.config.deviceFingerprint || '',
+            userId: this.config.userId || 'anonymous'
           }
         })
       });
       
       if (response.ok) {
         const data = await response.json();
-        console.log('✓ Registered with API');
+        console.log('✓ Connection confirmed:', this.config.workerId);
         
         if (data.registered) {
-          console.log('✓ New device/worker registered');
+          console.log('🎉 NEW INSTALLATION DETECTED!');
+          console.log(`   Device ID: ${data.deviceId}`);
+          console.log(`   Worker ID: ${data.workerId}`);
         } else if (data.updated) {
           console.log('✓ Existing worker updated');
         }
+        
+        if (data.pendingJobs && data.pendingJobs.length > 0) {
+          console.log(`📬 ${data.pendingJobs.length} pending job(s)`);
+        }
       } else {
         console.error(`⚠️  API registration failed: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`   Error: ${errorText}`);
       }
     } catch (error) {
       console.error('⚠️  API registration error:', error.message);
+      console.error('   This is normal if the API is still initializing');
     }
   }
 
@@ -372,13 +561,15 @@ class WorkerNode {
     return Math.max(0, Math.min(100, usage));
   }
 
+  // ==================== FIXED: SEND HEARTBEAT WITH DEVICE INFO ====================
   async sendHeartbeat() {
     try {
       await this.updateCurrentUsage();
       
       const status = this.activeJobs.size > 0 ? 'busy' : 'online';
+      const apiUrl = this.config.apiUrl || 'https://distributex-api.distributex.workers.dev';
       
-      const response = await fetch(`${this.config.apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
+      const response = await fetch(`${apiUrl}/api/workers/${this.config.workerId}/heartbeat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -396,9 +587,9 @@ class WorkerNode {
             dockerContainers: this.capabilities.dockerContainers
           },
           deviceInfo: {
-            deviceId: this.config.deviceId,
-            deviceFingerprint: this.config.deviceFingerprint,
-            userId: this.config.userId
+            deviceId: this.config.deviceId || `device-${this.config.workerId}`,
+            deviceFingerprint: this.config.deviceFingerprint || '',
+            userId: this.config.userId || 'anonymous'
           }
         })
       });
@@ -408,9 +599,11 @@ class WorkerNode {
         if (data.pendingJobs && data.pendingJobs.length > 0) {
           console.log(`📬 ${data.pendingJobs.length} pending job(s)`);
         }
+      } else {
+        console.error(`Heartbeat failed: ${response.status}`);
       }
     } catch (error) {
-      console.error('Heartbeat failed:', error.message);
+      console.error('Heartbeat error:', error.message);
     }
   }
 
