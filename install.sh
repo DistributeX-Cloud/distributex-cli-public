@@ -282,6 +282,10 @@ curl -fsSL "${GITHUB_RAW_BASE}/packages/worker-node/distributex-worker.js" -o di
 echo "Downloading package.json..."
 curl -fsSL "${GITHUB_RAW_BASE}/package.json" -o package.json
 
+# Download gpu-detect.sh (optional but referenced in Dockerfile)
+echo "Downloading gpu-detect.sh..."
+curl -fsSL "${GITHUB_RAW_BASE}/gpu-detect.sh" -o gpu-detect.sh || echo "# Stub file" > gpu-detect.sh
+
 echo -e "${GREEN}✓ Files downloaded${NC}\n"
 
 # ==================== CREATE DOCKER COMPOSE FILE ====================
