@@ -16,7 +16,6 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 STORAGE_FILE="$CONFIG_DIR/storage_devices.json"
 
 # ==================== RASPBERRY PI BACKEND ====================
-# Change these to your Raspberry Pi's public IP or domain
 API_URL="${DISTRIBUTEX_API_URL:-https://eloy-wiry-carolyne.ngrok-free.dev}"
 COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-wss://eloy-wiry-carolyne.ngrok-free.dev/ws}"
 
