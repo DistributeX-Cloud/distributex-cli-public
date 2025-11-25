@@ -498,15 +498,12 @@ fi
 if [ -f "$STORAGE_FILE" ]; then
     storage_count=$(jq 'length' "$STORAGE_FILE" 2>/dev/null || echo "0")
     if [ "$storage_count" -gt 0 ]; then
-        echo "  # External Storage Mounts (added below worker service)" >> docker-compose.yml
-        # append as volumes inside service block - best-effort simple append
-        # Note: careful indentation — writing mount lines expected by compose
-        # Rebuild a mount list and append to service.volumes
+        echo "  # External Storage Mounts" >> docker-compose.yml
+
         while IFS= read -r mount; do
-            # mount is object; produce mount string
             mp=$(echo "$mount" | jq -r '.mountPoint')
-            # sanitize mount path to avoid duplicates
-            echo "      - ${mp}:/external/storage$(echo "$mp" | tr '/' '_' | sed 's/^_//')/" >> docker-compose.yml
+            safe_mp=$(echo "$mp" | tr '/' '_' | sed 's/^_//')
+            echo "      - ${mp}:/external/storage_${safe_mp}" >> docker-compose.yml
         done < <(jq -c '.[]' "$STORAGE_FILE")
     fi
 fi
