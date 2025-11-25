@@ -825,3 +825,527 @@ curl -fsSL https://distributex.cloud/worker-install.sh | bash
 - 50-100 concurrent workers
 - Unlimited requests (hardware limited)
 - ~$4/month operating cost
+
+
+
+
+
+
+
+
+
+
+---
+
+## User Scripts
+
+### For Contributors (Sharing Resources)
+
+Create `/opt/distributex/scripts/contributor-setup.sh`:
+
+```bash
+#!/bin/bash
+# Contributor Setup Script - Share Your Resources
+# Downloads from your self-hosted domain
+
+set -euo pipefail
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+DOMAIN="distributex.cloud"
+API_URL="https://api.${DOMAIN}"
+
+echo -e "${BLUE}╔═══════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  DistributeX - Contributor Setup     ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════╝${NC}"
+echo ""
+
+# Check Docker
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}✗ Docker not found${NC}"
+    echo "Install Docker: https://docs.docker.com/engine/install/"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Docker found${NC}"
+
+# Create directory
+mkdir -p ~/.distributex
+cd ~/.distributex
+
+# Download worker files
+echo -e "${YELLOW}📥 Downloading worker client...${NC}"
+curl -fsSL https://${DOMAIN}/distributex-worker.js -o distributex-worker.js
+curl -fsSL https://${DOMAIN}/worker-package.json -o package.json
+
+# Install dependencies
+npm install
+
+# Get credentials
+echo ""
+echo -e "${YELLOW}🔐 Enter your credentials:${NC}"
+read -p "Email: " email
+read -sp "Password: " password
+echo ""
+
+# Authenticate
+AUTH_RESPONSE=$(curl -s -X POST ${API_URL}/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+
+TOKEN=$(echo $AUTH_RESPONSE | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+USER_ID=$(echo $AUTH_RESPONSE | grep -o '"userId":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$TOKEN" ]; then
+    echo -e "${RED}✗ Authentication failed${NC}"
+    exit 1
+fi
+
+# Generate worker ID
+WORKER_ID="worker-$(date +%s)-$(openssl rand -hex 4)"
+
+# Create config
+cat > ~/.distributex/config.json << EOF
+{
+  "workerId": "${WORKER_ID}",
+  "authToken": "${TOKEN}",
+  "userId": "${USER_ID}",
+  "apiUrl": "${API_URL}",
+  "coordinatorUrl": "wss://coordinator.${DOMAIN}",
+  "nodeName": "$(hostname)",
+  "maxCpuCores": null,
+  "maxMemoryGb": null,
+  "maxStorageGb": null,
+  "enableGpu": true
+}
+EOF
+
+echo -e "${GREEN}✓ Configuration saved${NC}"
+
+# Start worker in Docker
+echo ""
+echo -e "${YELLOW}🚀 Starting worker container...${NC}"
+docker run -d \
+  --name distributex-worker \
+  --restart unless-stopped \
+  -v ~/.distributex:/root/.distributex \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 3000:3000 \
+  node:20-slim \
+  bash -c "cd /root/.distributex && npm install && node distributex-worker.js"
+
+sleep 3
+
+# Check status
+if docker ps | grep distributex-worker > /dev/null; then
+    echo ""
+    echo -e "${GREEN}╔═══════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✓ Worker Started Successfully!      ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Worker ID: ${WORKER_ID}"
+    echo "Dashboard: https://${DOMAIN}/dashboard"
+    echo ""
+    echo "Commands:"
+    echo "  View logs:    docker logs -f distributex-worker"
+    echo "  Restart:      docker restart distributex-worker"
+    echo "  Stop:         docker stop distributex-worker"
+    echo "  Health check: curl http://localhost:3000/health"
+else
+    echo -e "${RED}✗ Failed to start worker${NC}"
+    echo "Check logs: docker logs distributex-worker"
+    exit 1
+fi
+```
+
+### For Developers (Using Resources)
+
+Create `/opt/distributex/scripts/developer-setup.sh`:
+
+```bash
+#!/bin/bash
+# Developer Setup Script - Submit Jobs
+# Uses your self-hosted API
+
+set -euo pipefail
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+DOMAIN="distributex.cloud"
+API_URL="https://api.${DOMAIN}"
+
+echo -e "${BLUE}╔═══════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  DistributeX - Developer Setup       ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════╝${NC}"
+echo ""
+
+# Create directory
+mkdir -p ~/.distributex
+cd ~/.distributex
+
+# Get credentials
+echo -e "${YELLOW}🔐 Enter your credentials:${NC}"
+read -p "Email: " email
+read -sp "Password: " password
+echo ""
+
+# Authenticate
+AUTH_RESPONSE=$(curl -s -X POST ${API_URL}/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+
+TOKEN=$(echo $AUTH_RESPONSE | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$TOKEN" ]; then
+    echo -e "${RED}✗ Authentication failed${NC}"
+    exit 1
+fi
+
+# Save token
+echo "${TOKEN}" > ~/.distributex/token
+
+echo -e "${GREEN}✓ Authenticated successfully${NC}"
+
+# Create helper script
+cat > ~/.distributex/submit-job.sh << 'EOF'
+#!/bin/bash
+# Submit a job to DistributeX
+
+TOKEN=$(cat ~/.distributex/token)
+API_URL="DOMAIN_PLACEHOLDER"
+
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <job-name> <docker-image> [command]"
+    echo "Example: $0 my-job python:3.11 'python -c \"print(42)\"'"
+    exit 1
+fi
+
+JOB_NAME="$1"
+IMAGE="$2"
+COMMAND="${3:-}"
+
+echo "📤 Submitting job: ${JOB_NAME}"
+
+RESPONSE=$(curl -s -X POST ${API_URL}/api/workloads/submit \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d "{
+    \"name\": \"${JOB_NAME}\",
+    \"image\": \"${IMAGE}\",
+    \"command\": [\"sh\", \"-c\", \"${COMMAND}\"],
+    \"requestedCpu\": 1,
+    \"requestedMemory\": 2,
+    \"requestedStorage\": 10,
+    \"requiresStorage\": 0,
+    \"requiresGpu\": 0,
+    \"timeoutSeconds\": 3600
+  }")
+
+JOB_ID=$(echo $RESPONSE | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+
+if [ -n "$JOB_ID" ]; then
+    echo "✓ Job submitted: ${JOB_ID}"
+    echo "View status: curl ${API_URL}/api/workloads/${JOB_ID}"
+else
+    echo "✗ Submission failed:"
+    echo "$RESPONSE"
+fi
+EOF
+
+# Replace domain placeholder
+sed -i "s|DOMAIN_PLACEHOLDER|${API_URL}|g" ~/.distributex/submit-job.sh
+chmod +x ~/.distributex/submit-job.sh
+
+echo ""
+echo -e "${GREEN}╔═══════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  ✓ Developer Setup Complete!         ║${NC}"
+echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
+echo ""
+echo "Submit jobs with:"
+echo "  ~/.distributex/submit-job.sh <name> <image> <command>"
+echo ""
+echo "Example:"
+echo "  ~/.distributex/submit-job.sh hello python:3.11 'echo Hello World'"
+```
+
+Make scripts executable:
+
+```bash
+chmod +x /opt/distributex/scripts/contributor-setup.sh
+chmod +x /opt/distributex/scripts/developer-setup.sh
+```
+
+---
+
+## Cloudflare Tunnel Configuration
+
+### Understanding Your Options
+
+Since you **own `distributex.cloud`**, you have two choices:
+
+#### Option 1: Use Cloudflare Tunnel (Recommended)
+
+**What it does:**
+- Creates a secure tunnel from your Pi to Cloudflare's network
+- No need to open ports on your router
+- Automatic HTTPS with DDoS protection
+- Free tier supports your use case
+
+**When you see "Authorize Cloudflare Tunnel":**
+
+1. **Select your zone**: Choose `distributex.cloud` from the dropdown
+2. **Why it asks**: Cloudflare needs permission to route traffic to your domain
+3. **What happens**: Creates DNS records automatically pointing to the tunnel
+
+**Complete Setup:**
+
+```bash
+# 1. Login to Cloudflare (opens browser)
+cloudflared tunnel login
+
+# 2. Create tunnel
+cloudflared tunnel create distributex
+
+# This creates:
+# - ~/.cloudflared/<TUNNEL-ID>.json (credentials file)
+# - Tunnel ID in Cloudflare dashboard
+
+# 3. Get your tunnel ID
+ls ~/.cloudflared/*.json
+# Copy the filename (without .json) - this is your TUNNEL_ID
+
+# 4. Create config file
+cat > ~/.cloudflared/config.yml << EOF
+tunnel: <YOUR-TUNNEL-ID>
+credentials-file: /home/$USER/.cloudflared/<YOUR-TUNNEL-ID>.json
+
+ingress:
+  # Frontend
+  - hostname: distributex.cloud
+    service: http://localhost:80
+  
+  # API
+  - hostname: api.distributex.cloud
+    service: http://localhost:3001
+  
+  # Coordinator
+  - hostname: coordinator.distributex.cloud
+    service: http://localhost:3002
+  
+  # Catch-all
+  - service: http_status:404
+EOF
+
+# 5. Route DNS (creates CNAME records automatically)
+cloudflared tunnel route dns <YOUR-TUNNEL-ID> distributex.cloud
+cloudflared tunnel route dns <YOUR-TUNNEL-ID> api.distributex.cloud
+cloudflared tunnel route dns <YOUR-TUNNEL-ID> coordinator.distributex.cloud
+
+# 6. Install as service
+sudo cloudflared service install
+sudo systemctl start cloudflared
+sudo systemctl enable cloudflared
+
+# 7. Verify
+sudo systemctl status cloudflared
+curl https://distributex.cloud
+```
+
+**Verify DNS Records:**
+```bash
+# Check that Cloudflare created CNAME records
+nslookup distributex.cloud
+nslookup api.distributex.cloud
+nslookup coordinator.distributex.cloud
+```
+
+You should see CNAME records pointing to `<TUNNEL-ID>.cfargotunnel.com`
+
+#### Option 2: Traditional Port Forwarding (Alternative)
+
+If you prefer not to use Cloudflare Tunnel:
+
+**Requirements:**
+- Static IP or Dynamic DNS (DuckDNS, No-IP)
+- Router access for port forwarding
+- Manual SSL certificate management
+
+**Setup:**
+
+1. **Configure DNS** (in Cloudflare dashboard):
+   - `distributex.cloud` → A record → Your public IP
+   - `api.distributex.cloud` → A record → Your public IP
+   - `coordinator.distributex.cloud` → A record → Your public IP
+
+2. **Port Forwarding** (in your router):
+   - External 80 → Pi's local IP:80
+   - External 443 → Pi's local IP:443
+
+3. **Get SSL certificates**:
+```bash
+sudo certbot --nginx -d distributex.cloud \
+  -d api.distributex.cloud \
+  -d coordinator.distributex.cloud
+```
+
+4. **Auto-renewal**:
+```bash
+sudo crontab -e
+# Add: 0 3 * * * certbot renew --quiet
+```
+
+---
+
+## Making Scripts Available to Users
+
+### Host Scripts on Your Domain
+
+```bash
+# Copy scripts to frontend public directory
+cp /opt/distributex/scripts/contributor-setup.sh \
+   /opt/distributex/frontend/public/install-contributor.sh
+
+cp /opt/distributex/scripts/developer-setup.sh \
+   /opt/distributex/frontend/public/install-developer.sh
+
+# Copy worker files
+cp /opt/distributex/worker-client/distributex-worker.js \
+   /opt/distributex/frontend/public/distributex-worker.js
+
+cp /opt/distributex/worker-client/package.json \
+   /opt/distributex/frontend/public/worker-package.json
+
+# Rebuild frontend
+cd /opt/distributex/frontend
+npm run build
+
+# Restart nginx
+sudo systemctl reload nginx
+```
+
+### Update Getting Started Page
+
+Users can now install with:
+
+```bash
+# For Contributors
+curl -fsSL https://distributex.cloud/install-contributor.sh | bash
+
+# For Developers
+curl -fsSL https://distributex.cloud/install-developer.sh | bash
+```
+
+---
+
+## Testing the Complete Setup
+
+### 1. Test Frontend
+```bash
+curl https://distributex.cloud
+# Should return HTML
+```
+
+### 2. Test API
+```bash
+curl https://api.distributex.cloud/health
+# Should return: {"status":"healthy"}
+```
+
+### 3. Test Coordinator
+```bash
+wscat -c wss://coordinator.distributex.cloud/ws
+# Should connect successfully
+```
+
+### 4. Test Worker Registration
+
+On a separate machine:
+```bash
+curl -fsSL https://distributex.cloud/install-contributor.sh | bash
+```
+
+Then check the dashboard:
+```bash
+curl https://api.distributex.cloud/api/pool/status
+# Should show 1 online worker
+```
+
+---
+
+## Troubleshooting Cloudflare Tunnel
+
+### Issue: Tunnel won't authorize
+
+**Solution:**
+1. Ensure you're logged into Cloudflare with the account that owns `distributex.cloud`
+2. When prompted "Select zone", choose `distributex.cloud`
+3. Grant permission
+
+### Issue: DNS not resolving
+
+**Check:**
+```bash
+# View tunnel status
+sudo cloudflared tunnel info <TUNNEL-ID>
+
+# Check DNS
+nslookup distributex.cloud
+
+# Check Cloudflare Dashboard → DNS → Records
+# Should see CNAME records for all subdomains
+```
+
+### Issue: 502 Bad Gateway
+
+**Causes:**
+- Services not running on Pi
+- Wrong ports in tunnel config
+- Firewall blocking localhost connections
+
+**Fix:**
+```bash
+# Check services
+sudo systemctl status distributex-api
+sudo systemctl status distributex-coordinator
+sudo systemctl status nginx
+
+# Check ports
+sudo ss -tulpn | grep -E ':(80|3001|3002)'
+
+# Check tunnel logs
+sudo journalctl -u cloudflared -f
+```
+
+---
+
+## Success!
+
+Your self-hosted DistributeX is now running at:
+- **Frontend**: https://distributex.cloud
+- **API**: https://api.distributex.cloud
+- **Coordinator**: wss://coordinator.distributex.cloud
+
+**Users can:**
+- **Contributors**: `curl -fsSL https://distributex.cloud/install-contributor.sh | bash`
+- **Developers**: `curl -fsSL https://distributex.cloud/install-developer.sh | bash`
+
+**Estimated capacity:**
+- 50-100 concurrent workers
+- Unlimited requests (hardware limited)
+- ~$4/month operating cost (just electricity + internet)
+- Free Cloudflare Tunnel (no bandwidth limits)
+
+**Next Steps:**
+1. Monitor logs: `sudo journalctl -f`
+2. Set up monitoring (Grafana/Prometheus)
+3. Configure automatic backups
+4. Invite users to contribute resources
+5. Submit your first job!
