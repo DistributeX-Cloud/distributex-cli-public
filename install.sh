@@ -430,6 +430,20 @@ if [ -f "$STORAGE_FILE" ]; then
     fi
 fi
 
+# First, check if worker already exists and try to update instead
+echo "Checking if worker already exists..."
+CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$API_URL/api/workers/$WORKER_ID" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "X-Worker-ID: $WORKER_ID" 2>/dev/null || echo -e "\n000")
+
+CHECK_CODE=$(echo "$CHECK_RESPONSE" | tail -n1)
+WORKER_EXISTS=false
+
+if [ "$CHECK_CODE" = "200" ]; then
+    WORKER_EXISTS=true
+    echo -e "${CYAN}Worker already registered, will update...${NC}"
+fi
+
 # Create comprehensive heartbeat payload with device-specific metrics
 HEARTBEAT_PAYLOAD=$(jq -n \
   --arg status "online" \
@@ -447,8 +461,10 @@ HEARTBEAT_PAYLOAD=$(jq -n \
   --arg deviceFingerprint "$DEVICE_FINGERPRINT" \
   --arg userId "$USER_ID" \
   --arg workerId "$WORKER_ID" \
+  --arg workerExists "$WORKER_EXISTS" \
   '{
     status: $status,
+    workerExists: ($workerExists == "true"),
     capabilities: {
       cpuCores: $cpuCores,
       memoryGb: $memoryGb,
@@ -480,27 +496,107 @@ HEARTBEAT_PAYLOAD=$(jq -n \
     }
   }')
 
-# Register THIS specific device as a worker
-HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H "X-Worker-ID: $WORKER_ID" \
-  -H "X-Device-ID: $DEVICE_ID" \
-  -H "X-User-ID: $USER_ID" \
-  -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
+# Try to register/update THIS specific device as a worker with retry logic
+MAX_RETRIES=3
+RETRY_COUNT=0
+SUCCESS=false
 
-HB_CODE=$(echo "$HB_RESPONSE" | tail -n1)
-HB_BODY=$(echo "$HB_RESPONSE" | head -n-1)
+while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
+    if [ $RETRY_COUNT -gt 0 ]; then
+        echo "Retry attempt $RETRY_COUNT/$MAX_RETRIES..."
+        sleep 2
+    fi
+    
+    HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $AUTH_TOKEN" \
+      -H "X-Worker-ID: $WORKER_ID" \
+      -H "X-Device-ID: $DEVICE_ID" \
+      -H "X-User-ID: $USER_ID" \
+      -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
 
-if [ "$HB_CODE" = "200" ] || [ "$HB_CODE" = "201" ]; then
-    echo -e "${GREEN}✓ Worker registered successfully as separate device${NC}"
-    echo -e "${CYAN}  Device: $(hostname)${NC}"
-    echo -e "${CYAN}  Worker: ${WORKER_ID:0:32}...${NC}\n"
-else
-    echo -e "${YELLOW}⚠️ Worker heartbeat returned HTTP $HB_CODE${NC}"
-    echo "$HB_BODY" | jq '.' 2>/dev/null || echo "$HB_BODY"
+    HB_CODE=$(echo "$HB_RESPONSE" | tail -n1)
+    HB_BODY=$(echo "$HB_RESPONSE" | head -n-1)
+
+    if [ "$HB_CODE" = "200" ] || [ "$HB_CODE" = "201" ]; then
+        SUCCESS=true
+        echo -e "${GREEN}✓ Worker registered successfully as separate device${NC}"
+        echo -e "${CYAN}  Device: $(hostname)${NC}"
+        echo -e "${CYAN}  Worker: ${WORKER_ID:0:32}...${NC}\n"
+        break
+    elif [ "$HB_CODE" = "409" ]; then
+        # Conflict - worker exists, try a PUT update instead
+        echo -e "${YELLOW}Worker exists, attempting update via PUT...${NC}"
+        
+        UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$API_URL/api/workers/$WORKER_ID" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $AUTH_TOKEN" \
+          -H "X-Worker-ID: $WORKER_ID" \
+          -H "X-Device-ID: $DEVICE_ID" \
+          -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
+        
+        UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
+        UPDATE_BODY=$(echo "$UPDATE_RESPONSE" | head -n-1)
+        
+        if [ "$UPDATE_CODE" = "200" ]; then
+            SUCCESS=true
+            echo -e "${GREEN}✓ Worker updated successfully${NC}\n"
+            break
+        else
+            echo -e "${YELLOW}Update failed (HTTP $UPDATE_CODE)${NC}"
+            echo "$UPDATE_BODY" | jq '.' 2>/dev/null || echo "$UPDATE_BODY"
+        fi
+    elif echo "$HB_BODY" | grep -q "UNIQUE constraint failed"; then
+        # UNIQUE constraint error - worker might be partially registered
+        echo -e "${YELLOW}⚠️ Worker appears to be partially registered${NC}"
+        echo -e "${YELLOW}Attempting to update existing worker...${NC}"
+        
+        # Force update by directly calling the update endpoint
+        UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$API_URL/api/workers/$WORKER_ID" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $AUTH_TOKEN" \
+          -H "X-Worker-ID: $WORKER_ID" \
+          -H "X-Device-ID: $DEVICE_ID" \
+          -H "X-Force-Update: true" \
+          -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
+        
+        UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
+        UPDATE_BODY=$(echo "$UPDATE_RESPONSE" | head -n-1)
+        
+        if [ "$UPDATE_CODE" = "200" ] || [ "$UPDATE_CODE" = "201" ]; then
+            SUCCESS=true
+            echo -e "${GREEN}✓ Worker recovered and updated${NC}\n"
+            break
+        fi
+    else
+        echo -e "${YELLOW}⚠️ Worker heartbeat returned HTTP $HB_CODE${NC}"
+        echo "$HB_BODY" | jq '.' 2>/dev/null || echo "$HB_BODY"
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+done
+
+if [ "$SUCCESS" = "false" ]; then
     echo ""
-    echo -e "${YELLOW}Continuing with installation - worker will retry registration...${NC}\n"
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  Registration Issue Detected                              ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}Note: Initial registration had issues, but worker will auto-register${NC}"
+    echo -e "${YELLOW}The worker container will handle registration automatically${NC}\n"
+    
+    if echo "$HB_BODY" | grep -q "public_key"; then
+        echo -e "${CYAN}Backend Fix Required:${NC}"
+        echo -e "  The backend database has a UNIQUE constraint on 'public_key'"
+        echo -e "  that needs to be handled properly for multi-device support."
+        echo -e ""
+        echo -e "  ${BOLD}Suggested Backend Fix:${NC}"
+        echo -e "  1. Make public_key nullable or remove UNIQUE constraint"
+        echo -e "  2. Use (userId + deviceId) as composite unique key instead"
+        echo -e "  3. Or use workerId as the primary unique identifier"
+        echo -e ""
+        echo -e "  ${BOLD}For now:${NC} The worker will continue and retry registration"
+        echo -e "  automatically once the backend constraint is resolved.\n"
+    fi
 fi
 
 # Download worker files
