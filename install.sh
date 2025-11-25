@@ -288,9 +288,17 @@ if [ -z "${AUTH_TOKEN:-}" ]; then
             *) role="contributor" ;;
         esac
 
+        # Use jq to properly construct JSON payload
+        payload=$(jq -n \
+          --arg email "$email" \
+          --arg password "$password" \
+          --arg fullName "$name" \
+          --arg role "$role" \
+          '{email: $email, password: $password, fullName: $fullName, role: $role}')
+        
         response=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/auth/signup" \
             -H "Content-Type: application/json" \
-            -d "{\"email\":\"$email\",\"password\":\"$password\",\"fullName\":\"$name\",\"role\":\"$role\"}")
+            -d "$payload")
         code=$(echo "$response" | tail -n1)
         body=$(echo "$response" | head -n-1)
         if [ "$code" = "201" ] || [ "$code" = "200" ]; then
@@ -306,9 +314,16 @@ if [ -z "${AUTH_TOKEN:-}" ]; then
     else
         prompt "Email: " email
         prompt_pass "Password: " password
+        
+        # Use jq to properly construct JSON payload
+        payload=$(jq -n \
+          --arg email "$email" \
+          --arg password "$password" \
+          '{email: $email, password: $password}')
+        
         response=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/auth/login" \
             -H "Content-Type: application/json" \
-            -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+            -d "$payload")
         code=$(echo "$response" | tail -n1)
         body=$(echo "$response" | head -n-1)
         if [ "$code" = "200" ]; then
@@ -376,33 +391,43 @@ CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "4")
 TOTAL_MEM=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024/1024)}' || echo "8")
 AVAIL_MEM=$(echo "$TOTAL_MEM * 0.8" | bc | awk '{print int($1)}' || echo "$TOTAL_MEM")
 
-HEARTBEAT_PAYLOAD=$(cat <<JSON
-{
-  "status": "online",
-  "capabilities": {
-    "cpuCores": $CPU_CORES,
-    "memoryGb": $AVAIL_MEM,
-    "storageGb": 50,
-    "gpuAvailable": $( [ "$GPU_TYPE" = "nvidia" ] && echo true || echo false ),
-    "platform": "$(uname -s)",
-    "arch": "$(uname -m)",
-    "hostname": "$(hostname)",
-    "nodeName": "$(hostname)"
-  },
-  "metrics": {
-    "cpuUsagePercent": 0,
-    "memoryUsedGb": 0,
-    "memoryAvailableGb": $AVAIL_MEM,
-    "activeJobs": 0
-  },
-  "deviceInfo": {
-    "deviceId": "$DEVICE_ID",
-    "deviceFingerprint": "$DEVICE_FINGERPRINT",
-    "userId": "$USER_ID"
-  }
-}
-JSON
-)
+HEARTBEAT_PAYLOAD=$(jq -n \
+  --arg status "online" \
+  --argjson cpuCores "$CPU_CORES" \
+  --argjson memoryGb "$AVAIL_MEM" \
+  --argjson storageGb 50 \
+  --argjson gpuAvailable "$( [ "$GPU_TYPE" = "nvidia" ] && echo true || echo false )" \
+  --arg platform "$(uname -s)" \
+  --arg arch "$(uname -m)" \
+  --arg hostname "$(hostname)" \
+  --arg nodeName "$(hostname)" \
+  --arg deviceId "$DEVICE_ID" \
+  --arg deviceFingerprint "$DEVICE_FINGERPRINT" \
+  --arg userId "$USER_ID" \
+  '{
+    status: $status,
+    capabilities: {
+      cpuCores: $cpuCores,
+      memoryGb: $memoryGb,
+      storageGb: $storageGb,
+      gpuAvailable: $gpuAvailable,
+      platform: $platform,
+      arch: $arch,
+      hostname: $hostname,
+      nodeName: $nodeName
+    },
+    metrics: {
+      cpuUsagePercent: 0,
+      memoryUsedGb: 0,
+      memoryAvailableGb: $memoryGb,
+      activeJobs: 0
+    },
+    deviceInfo: {
+      deviceId: $deviceId,
+      deviceFingerprint: $deviceFingerprint,
+      userId: $userId
+    }
+  }')
 
 HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
   -H "Content-Type: application/json" \
