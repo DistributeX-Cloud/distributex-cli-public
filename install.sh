@@ -1,9 +1,9 @@
 #!/bin/bash
-# DistributeX Enhanced Installer - COMPLETE FIXED VERSION
-# - Full authentication with signup/login
-# - External storage detection (safe bash arrays)
-# - Device fingerprinting
-# - Worker registration
+# DistributeX Enhanced Installer - Multi-Device Support
+# - One account can run multiple device workers
+# - Each device = unique worker registration
+# - Proper heartbeat aggregation to prevent 505 errors
+# - Device fingerprinting ensures unique worker IDs
 # Requirements: jq, docker, docker compose, curl, sha256sum
 set -euo pipefail
 
@@ -42,6 +42,7 @@ cat << "EOF"
 ╔════════════════════════════════════════════════════════╗
 ║                                                        ║
 ║     DistributeX - Open Computing Network Installer    ║
+║          Multi-Device Worker Registration             ║
 ║                                                        ║
 ╚════════════════════════════════════════════════════════╝
 EOF
@@ -82,9 +83,11 @@ fi
 
 echo -e "${GREEN}✓ Docker Compose available${NC}\n"
 
-# Device fingerprinting
+# Enhanced device fingerprinting - includes network interfaces and disk IDs
 generate_device_fingerprint() {
     local components=""
+    
+    # CPU information
     local cpu_model="unknown"
     if [ -f /proc/cpuinfo ]; then
         cpu_model=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo | xargs || echo "unknown")
@@ -92,25 +95,39 @@ generate_device_fingerprint() {
     local cpu_cores=$(nproc 2>/dev/null || echo "1")
     components="${components}cpu:${cpu_model}:${cpu_cores}|"
 
+    # Memory
     local total_mem=$(free -b 2>/dev/null | awk '/Mem:/ {print $2}' || echo "0")
     components="${components}mem:${total_mem}|"
+    
+    # Platform info
     components="${components}platform:$(uname -s)|"
     components="${components}arch:$(uname -m)|"
 
+    # Machine ID (persistent across reboots)
     if [ -f /etc/machine-id ]; then
         components="${components}machine:$(cat /etc/machine-id)|"
     elif [ -f /var/lib/dbus/machine-id ]; then
         components="${components}machine:$(cat /var/lib/dbus/machine-id)|"
     fi
 
+    # Hostname
     components="${components}hostname:$(hostname)|"
 
+    # MAC addresses (sorted for consistency)
     if command -v ip &>/dev/null; then
         local macs
         macs=$(ip link 2>/dev/null | awk '/link\/ether/ {print $2}' | sort | tr '\n' ',' || echo "")
         components="${components}mac:${macs}|"
     fi
 
+    # Disk serial numbers for additional uniqueness
+    if command -v lsblk &>/dev/null; then
+        local disk_serials
+        disk_serials=$(lsblk -ndo SERIAL 2>/dev/null | sort | tr '\n' ',' || echo "")
+        components="${components}disk:${disk_serials}|"
+    fi
+
+    # Generate SHA256 hash of all components
     if command -v sha256sum &>/dev/null; then
         echo -n "$components" | sha256sum | awk '{print $1}'
     else
@@ -118,7 +135,7 @@ generate_device_fingerprint() {
     fi
 }
 
-# Storage detection - FIXED to avoid unbound variable
+# Storage detection
 detect_external_storage() {
     echo -e "${BOLD}Detecting External Storage Devices${NC}\n"
     mkdir -p "$CONFIG_DIR"
@@ -127,7 +144,6 @@ detect_external_storage() {
     local devices_json="["
     
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Linux: Detect removable devices
         while IFS= read -r line; do
             if [ -z "$line" ]; then continue; fi
             
@@ -159,7 +175,6 @@ detect_external_storage() {
         done < <(df -h 2>/dev/null | grep -E "^/dev/(sd|nvme|mmcblk)" || true)
         
     elif [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS: List external volumes
         for vol in /Volumes/*; do
             if [ ! -e "$vol" ]; then continue; fi
             
@@ -198,7 +213,6 @@ detect_external_storage() {
         return
     fi
     
-    # Save selected devices
     echo "$devices_json" > "$STORAGE_FILE"
     echo -e "${GREEN}✓ External storage configured${NC}\n"
 }
@@ -207,9 +221,11 @@ detect_external_storage() {
 echo -e "${BOLD}Step 1: Authentication & Device Setup${NC}\n"
 mkdir -p "$CONFIG_DIR"
 
+# Generate unique device fingerprint
 DEVICE_FINGERPRINT=$(generate_device_fingerprint)
 DEVICE_ID="device-${DEVICE_FINGERPRINT:0:32}"
-echo -e "${CYAN}Device ID: ${DEVICE_ID:0:20}...${NC}\n"
+echo -e "${CYAN}Device Fingerprint: ${DEVICE_FINGERPRINT:0:16}...${NC}"
+echo -e "${CYAN}Device ID: ${DEVICE_ID:0:24}...${NC}\n"
 
 AUTH_TOKEN=""
 USER_ID=""
@@ -217,7 +233,7 @@ WORKER_ID=""
 
 # Check for existing config
 if [ -f "$CONFIG_FILE" ]; then
-    echo -e "${YELLOW}Existing configuration found${NC}"
+    echo -e "${YELLOW}Existing configuration found for THIS device${NC}"
     prompt "Use existing account? (y/n) " use_existing
     if [[ "${use_existing:-n}" =~ ^[Yy]$ ]]; then
         AUTH_TOKEN=$(jq -r '.authToken // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
@@ -225,6 +241,7 @@ if [ -f "$CONFIG_FILE" ]; then
         API_URL=$(jq -r '.apiUrl // "'"$API_URL"'"' "$CONFIG_FILE" 2>/dev/null || echo "$API_URL")
         WORKER_ID=$(jq -r '.workerId // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
         
+        # Regenerate worker ID if missing (should be device-specific)
         if [ -z "$WORKER_ID" ] && [ -n "$USER_ID" ]; then
             USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
             DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
@@ -247,7 +264,7 @@ if [ -n "${AUTH_TOKEN:-}" ] && [ -n "${USER_ID:-}" ]; then
     if [ "$AUTH_CODE" = "200" ]; then
         echo -e "${GREEN}✓ Existing authentication valid${NC}\n"
     else
-        echo -e "${YELLOW}⚠️ Existing authentication invalid${NC}"
+        echo -e "${YELLOW}⚠️ Existing authentication invalid, need to re-authenticate${NC}"
         AUTH_TOKEN=""
         USER_ID=""
     fi
@@ -345,15 +362,18 @@ if [ -z "${USER_ID:-}" ] || [ -z "${AUTH_TOKEN:-}" ]; then
     exit 1
 fi
 
-# Generate worker ID
+# Generate UNIQUE worker ID per device
+# Format: worker-{user_hash}-{device_hash}
+# This ensures each device gets its own worker registration
 USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
 DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
-WORKER_ID=${WORKER_ID:-"worker-${USER_HASH}-${DEVICE_HASH}"}
+WORKER_ID="worker-${USER_HASH}-${DEVICE_HASH}"
 
 echo -e "${GREEN}✓ Authenticated as: ${USER_ID}${NC}"
-echo -e "${CYAN}Worker ID: ${WORKER_ID}${NC}\n"
+echo -e "${CYAN}Worker ID (device-specific): ${WORKER_ID}${NC}"
+echo -e "${YELLOW}Note: This worker ID is unique to THIS device${NC}\n"
 
-# Save config
+# Save device-specific config
 cat > "$CONFIG_FILE" << EOF
 {
   "authToken": "$AUTH_TOKEN",
@@ -363,11 +383,12 @@ cat > "$CONFIG_FILE" << EOF
   "deviceFingerprint": "$DEVICE_FINGERPRINT",
   "apiUrl": "$API_URL",
   "coordinatorUrl": "wss://distributex-coordinator.distributex.workers.dev/ws",
-  "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "deviceHostname": "$(hostname)"
 }
 EOF
 
-echo -e "${GREEN}✓ Configuration saved to $CONFIG_FILE${NC}\n"
+echo -e "${GREEN}✓ Device-specific configuration saved${NC}\n"
 
 # Detect storage
 detect_external_storage
@@ -375,11 +396,16 @@ detect_external_storage
 # GPU detection
 echo -e "${BOLD}Step 2: Detecting GPU${NC}\n"
 GPU_TYPE="cpu"
+GPU_COUNT=0
+GPU_MODEL="none"
 
 if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null 2>&1; then
     if docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi &> /dev/null 2>&1; then
         GPU_TYPE="nvidia"
-        echo -e "${GREEN}✓ NVIDIA GPU detected and accessible${NC}"
+        GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -n1 || echo "1")
+        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1 || echo "NVIDIA GPU")
+        echo -e "${GREEN}✓ NVIDIA GPU detected: ${GPU_MODEL}${NC}"
+        echo -e "${GREEN}✓ GPU accessible to Docker (${GPU_COUNT} GPU(s))${NC}"
     fi
 fi
 
@@ -388,19 +414,31 @@ if [ "$GPU_TYPE" = "cpu" ]; then
 fi
 echo ""
 
-# Worker registration heartbeat
-echo -e "${BOLD}Step 3: Registering Worker...${NC}\n"
+# Worker registration with proper device-specific data
+echo -e "${BOLD}Step 3: Registering Worker (Device: $(hostname))...${NC}\n"
 
 CPU_CORES=$(nproc 2>/dev/null || echo "4")
 TOTAL_MEM=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo "8")
 AVAIL_MEM=$(echo "$TOTAL_MEM * 0.8" | bc 2>/dev/null | awk '{print int($1)}' || echo "$TOTAL_MEM")
 
+# Calculate storage from detected devices
+TOTAL_STORAGE=50
+if [ -f "$STORAGE_FILE" ]; then
+    STORAGE_TOTAL=$(jq '[.[].totalGb] | add // 0' "$STORAGE_FILE" 2>/dev/null || echo "0")
+    if [ "$STORAGE_TOTAL" -gt 0 ]; then
+        TOTAL_STORAGE=$STORAGE_TOTAL
+    fi
+fi
+
+# Create comprehensive heartbeat payload with device-specific metrics
 HEARTBEAT_PAYLOAD=$(jq -n \
   --arg status "online" \
   --argjson cpuCores "$CPU_CORES" \
   --argjson memoryGb "$AVAIL_MEM" \
-  --argjson storageGb 50 \
+  --argjson storageGb "$TOTAL_STORAGE" \
   --argjson gpuAvailable "$( [ "$GPU_TYPE" = "nvidia" ] && echo true || echo false )" \
+  --argjson gpuCount "$GPU_COUNT" \
+  --arg gpuModel "$GPU_MODEL" \
   --arg platform "$(uname -s)" \
   --arg arch "$(uname -m)" \
   --arg hostname "$(hostname)" \
@@ -408,6 +446,7 @@ HEARTBEAT_PAYLOAD=$(jq -n \
   --arg deviceId "$DEVICE_ID" \
   --arg deviceFingerprint "$DEVICE_FINGERPRINT" \
   --arg userId "$USER_ID" \
+  --arg workerId "$WORKER_ID" \
   '{
     status: $status,
     capabilities: {
@@ -415,6 +454,8 @@ HEARTBEAT_PAYLOAD=$(jq -n \
       memoryGb: $memoryGb,
       storageGb: $storageGb,
       gpuAvailable: $gpuAvailable,
+      gpuCount: $gpuCount,
+      gpuModel: $gpuModel,
       platform: $platform,
       arch: $arch,
       hostname: $hostname,
@@ -424,30 +465,42 @@ HEARTBEAT_PAYLOAD=$(jq -n \
       cpuUsagePercent: 0,
       memoryUsedGb: 0,
       memoryAvailableGb: $memoryGb,
-      activeJobs: 0
+      storageUsedGb: 0,
+      storageAvailableGb: $storageGb,
+      activeJobs: 0,
+      completedJobs: 0,
+      failedJobs: 0,
+      uptime: 0
     },
     deviceInfo: {
       deviceId: $deviceId,
       deviceFingerprint: $deviceFingerprint,
-      userId: $userId
+      userId: $userId,
+      workerId: $workerId
     }
   }')
 
+# Register THIS specific device as a worker
 HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "X-Worker-ID: $WORKER_ID" \
+  -H "X-Device-ID: $DEVICE_ID" \
+  -H "X-User-ID: $USER_ID" \
   -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
 
 HB_CODE=$(echo "$HB_RESPONSE" | tail -n1)
 HB_BODY=$(echo "$HB_RESPONSE" | head -n-1)
 
 if [ "$HB_CODE" = "200" ] || [ "$HB_CODE" = "201" ]; then
-    echo -e "${GREEN}✓ Worker registered successfully${NC}\n"
+    echo -e "${GREEN}✓ Worker registered successfully as separate device${NC}"
+    echo -e "${CYAN}  Device: $(hostname)${NC}"
+    echo -e "${CYAN}  Worker: ${WORKER_ID:0:32}...${NC}\n"
 else
     echo -e "${YELLOW}⚠️ Worker heartbeat returned HTTP $HB_CODE${NC}"
     echo "$HB_BODY" | jq '.' 2>/dev/null || echo "$HB_BODY"
     echo ""
+    echo -e "${YELLOW}Continuing with installation - worker will retry registration...${NC}\n"
 fi
 
 # Download worker files
@@ -460,14 +513,14 @@ curl -fsSL "${GITHUB_RAW_BASE}/package.json" -o package.json 2>/dev/null || echo
 
 echo -e "${GREEN}✓ Files downloaded${NC}\n"
 
-# Container name handling
+# Container name handling - include device hash for uniqueness
 BASE_CONTAINER_NAME="distributex-worker"
-CONTAINER_NAME="$BASE_CONTAINER_NAME"
+CONTAINER_SUFFIX="${DEVICE_HASH:0:8}"
+CONTAINER_NAME="${BASE_CONTAINER_NAME}-${CONTAINER_SUFFIX}"
 
-if docker ps -a --format '{{.Names}}' | grep -qx "$BASE_CONTAINER_NAME"; then
-    SUFFIX=$(date +%s | tail -c6)
-    CONTAINER_NAME="${BASE_CONTAINER_NAME}-${SUFFIX}"
-    echo -e "${YELLOW}Using container name: ${CONTAINER_NAME}${NC}\n"
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    echo -e "${YELLOW}Container ${CONTAINER_NAME} exists, will recreate${NC}\n"
+    docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 fi
 
 # Docker Compose configuration
@@ -484,6 +537,7 @@ services:
     environment:
       - AUTH_TOKEN=\${AUTH_TOKEN}
       - WORKER_ID=\${WORKER_ID}
+      - DEVICE_ID=\${DEVICE_ID}
       - API_URL=\${API_URL}
       - COORDINATOR_URL=\${COORDINATOR_URL}
       - NODE_NAME=\${NODE_NAME}
@@ -509,10 +563,11 @@ fi
 
 echo -e "${GREEN}✓ Docker Compose file created${NC}\n"
 
-# Environment file
+# Environment file with device-specific IDs
 cat > .env <<EOF
 AUTH_TOKEN=${AUTH_TOKEN}
 WORKER_ID=${WORKER_ID}
+DEVICE_ID=${DEVICE_ID}
 API_URL=${API_URL}
 COORDINATOR_URL=wss://distributex-coordinator.distributex.workers.dev/ws
 NODE_NAME=$(hostname)
@@ -531,10 +586,20 @@ sleep 3
 
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     echo -e "\n${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
+    echo -e "Account: ${CYAN}$USER_ID${NC}"
     echo -e "Worker ID: ${CYAN}$WORKER_ID${NC}"
+    echo -e "Device: ${CYAN}$(hostname) (${DEVICE_ID:0:20}...)${NC}"
     echo -e "Container: ${CYAN}$CONTAINER_NAME${NC}"
     echo -e "Status: ${GREEN}Running${NC}\n"
+    
+    echo -e "${BOLD}${YELLOW}Multi-Device Setup:${NC}"
+    echo -e "  • Run this installer on other devices to add more workers"
+    echo -e "  • Each device will register as a separate worker"
+    echo -e "  • All workers under same account: $USER_ID"
+    echo -e "  • Metrics are aggregated across all your devices\n"
+    
     echo -e "Dashboard: ${CYAN}https://distributex.cloud${NC}\n"
+    
     echo -e "${BOLD}Useful Commands:${NC}"
     echo -e "  View logs:    ${CYAN}docker logs -f ${CONTAINER_NAME}${NC}"
     echo -e "  Stop worker:  ${CYAN}docker stop ${CONTAINER_NAME}${NC}"
@@ -547,4 +612,5 @@ else
     exit 1
 fi
 
-echo -e "${GREEN}All done! Your worker should now be online.${NC}"
+echo -e "${GREEN}All done! This device is now registered as a worker.${NC}"
+echo -e "${CYAN}To add more devices, run this installer on each device with the same account.${NC}"
