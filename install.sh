@@ -17,8 +17,8 @@ STORAGE_FILE="$CONFIG_DIR/storage_devices.json"
 
 # ==================== RASPBERRY PI BACKEND ====================
 # Change these to your Raspberry Pi's public IP or domain
-API_URL="${DISTRIBUTEX_API_URL:-http://YOUR_PI_PUBLIC_IP:3001}"
-COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-ws://YOUR_PI_PUBLIC_IP:3002/ws}"
+API_URL="${DISTRIBUTEX_API_URL:-https://eloy-wiry-carolyne.ngrok-free.dev}"
+COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-https://eloy-wiry-carolyne.ngrok-free.dev}"
 
 # For local network only, use:
 # API_URL="http://192.168.0.42:3001"
