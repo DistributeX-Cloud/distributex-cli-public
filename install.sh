@@ -18,7 +18,7 @@ NC='\033[0m'
 CONFIG_DIR="$HOME/.distributex"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 STORAGE_FILE="$CONFIG_DIR/storage_devices.json"
-API_URL="${DISTRIBUTEX_API_URL:-https://distributex-api.distributex.workers.dev}"
+API_URL="${DISTRIBUTEX_API_URL:-http://192.168.0.42:3001}"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main"
 
 # Helper input functions
