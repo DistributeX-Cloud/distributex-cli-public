@@ -1,410 +1,195 @@
-# DistributeX Self-Hosted on Raspberry Pi 4B
+# Complete Self-Hosted DistributeX Setup on Raspberry Pi 4B
 
-## Architecture Overview
+## Table of Contents
+1. [Prerequisites](#prerequisites)
+2. [Domain Setup](#domain-setup)
+3. [System Preparation](#system-preparation)
+4. [File Structure](#file-structure)
+5. [Installation Steps](#installation-steps)
+6. [Configuration](#configuration)
+7. [Worker Client Setup](#worker-client-setup)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│           Cloudflare DNS + Tunnel (Free Tier)           │
-│                 distributex.yourdomain.com               │
-└────────────────────┬────────────────────────────────────┘
-                     │ (encrypted tunnel, no port forward)
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│              Raspberry Pi 4B (4GB RAM)                   │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  Cloudflared Tunnel Client                     │    │
-│  │  - Zero Trust Access (no firewall changes)     │    │
-│  │  - Automatic HTTPS                              │    │
-│  │  - No exposed ports                             │    │
-│  └────────────────┬───────────────────────────────┘    │
-│                   ▼                                      │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  Caddy Server (Reverse Proxy)                  │    │
-│  │  - Load balancing                               │    │
-│  │  - Auto caching                                 │    │
-│  │  - Compression                                  │    │
-│  └────────────┬───────────────────┬─────────────┬─┘    │
-│               │                   │             │       │
-│  ┌────────────▼──────┐  ┌────────▼────────┐  ┌▼────┐  │
-│  │ API Server        │  │ Coordinator     │  │ Web │  │
-│  │ (Fastify/Express) │  │ (WebSocket)     │  │ UI  │  │
-│  │ Port 3001         │  │ Port 3002       │  │3000 │  │
-│  │                   │  │                 │  │     │  │
-│  │ • Auth            │  │ • Worker mgmt   │  │Next │  │
-│  │ • Job queue       │  │ • Job routing   │  │ .js │  │
-│  │ • Pool stats      │  │ • Heartbeats    │  │     │  │
-│  └────────┬──────────┘  └─────────────────┘  └─────┘  │
-│           │                                             │
-│  ┌────────▼──────────────────────────────────────┐    │
-│  │  SQLite Database (local file)                 │    │
-│  │  /var/lib/distributex/database.db             │    │
-│  │  - Users, workers, jobs, stats                │    │
-│  └───────────────────────────────────────────────┘    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+---
 
-Benefits:
-✅ Unlimited requests (no Cloudflare limits)
-✅ No port forwarding needed
-✅ Automatic HTTPS
-✅ Zero-trust security
-✅ Full control over data
-✅ No vendor lock-in
+## Prerequisites
+
+### Hardware
+- Raspberry Pi 4B (4GB RAM minimum)
+- MicroSD card (64GB+ recommended)
+- Stable internet connection
+- Power supply
+
+### Domain Requirements
+- You own `distributex.cloud`
+- Access to domain DNS settings
+
+---
+
+## Domain Setup
+
+### Option 1: Cloudflare Tunnel (Recommended - No Port Forwarding)
+
+**Advantages:**
+- No router configuration needed
+- Automatic HTTPS
+- DDoS protection
+- Free tier available
+
+**Steps:**
+
+1. **Add domain to Cloudflare** (if not already):
+   - Go to cloudflare.com and add `distributex.cloud`
+   - Update nameservers at your domain registrar
+
+2. **Install Cloudflared on Pi**:
+```bash
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+sudo dpkg -i cloudflared-linux-arm64.deb
 ```
 
-## Installation Steps
+3. **Authenticate**:
+```bash
+cloudflared tunnel login
+```
 
-### 1. Raspberry Pi Setup
+4. **Create tunnel**:
+```bash
+cloudflared tunnel create distributex
+```
+
+5. **Configure DNS**:
+```bash
+# Main domain
+cloudflared tunnel route dns distributex distributex.cloud
+
+# Subdomains
+cloudflared tunnel route dns distributex api.distributex.cloud
+cloudflared tunnel route dns distributex coordinator.distributex.cloud
+```
+
+### Option 2: Traditional Port Forwarding
+
+If you prefer not to use Cloudflare Tunnel:
+
+1. **Get a static IP** or use Dynamic DNS (DuckDNS, No-IP)
+2. **Configure router** to forward ports:
+   - Port 80 → Pi:80 (HTTP)
+   - Port 443 → Pi:443 (HTTPS)
+3. **Set up Let's Encrypt** for SSL certificates
+4. **Configure DNS A records**:
+   - `distributex.cloud` → Your public IP
+   - `api.distributex.cloud` → Your public IP
+   - `coordinator.distributex.cloud` → Your public IP
+
+---
+
+## System Preparation
+
+### 1. Update System
 
 ```bash
-# Update system
 sudo apt update && sudo apt upgrade -y
+```
 
-# Install dependencies
-sudo apt install -y \
-  git \
-  nodejs \
-  npm \
-  sqlite3 \
-  docker.io \
-  docker-compose
+### 2. Install Dependencies
 
-# Enable Docker
-sudo systemctl enable docker
-sudo usermod -aG docker $USER
-
-# Install Node.js 20 (LTS)
+```bash
+# Node.js 20 LTS
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
+
+# Essential tools
+sudo apt install -y \
+  git \
+  sqlite3 \
+  build-essential \
+  nginx \
+  certbot \
+  python3-certbot-nginx
 
 # Verify versions
 node --version   # Should be v20.x
 npm --version    # Should be 10.x
-docker --version # Should be 24.x
 ```
 
-### 2. Install Cloudflared (Tunnel Client)
+### 3. Create Directory Structure
 
 ```bash
-# Download and install cloudflared
-wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
-sudo dpkg -i cloudflared-linux-arm64.deb
-
-# Verify installation
-cloudflared --version
-```
-
-### 3. Setup Cloudflare Tunnel
-
-```bash
-# Authenticate with Cloudflare
-cloudflared tunnel login
-
-# This opens a browser to authenticate
-# Follow the prompts to authorize
-
-# Create a tunnel
-cloudflared tunnel create distributex
-
-# Note the tunnel ID from output
-# Save credentials to ~/.cloudflared/
-```
-
-### 4. Clone DistributeX
-
-```bash
-# Create directory
+# Create main directory
 sudo mkdir -p /opt/distributex
 sudo chown $USER:$USER /opt/distributex
 
-# Clone repository
+# Create data directories
+sudo mkdir -p /var/lib/distributex
+sudo mkdir -p /var/lib/distributex/logs
+sudo mkdir -p /var/backups/distributex
+sudo chown -R $USER:$USER /var/lib/distributex
+sudo chown -R $USER:$USER /var/backups/distributex
+```
+
+---
+
+## File Structure
+
+Here's the complete directory structure for your self-hosted setup:
+
+```
+/opt/distributex/
+├── api/
+│   ├── server.js           # API server (Node.js)
+│   ├── schema.sql          # Database schema
+│   └── package.json        # API dependencies
+├── coordinator/
+│   ├── server.js           # Coordinator server (WebSocket)
+│   └── package.json        # Coordinator dependencies
+├── frontend/
+│   ├── out/                # Built Next.js static files
+│   ├── src/                # Source code
+│   ├── package.json        # Frontend dependencies
+│   └── next.config.js      # Next.js config
+├── worker-client/
+│   ├── distributex-worker.js   # Worker node client
+│   ├── install.sh              # Installation script for workers
+│   └── package.json            # Worker dependencies
+├── scripts/
+│   ├── backup.sh           # Backup script
+│   ├── update.sh           # Update script
+│   └── install.sh          # Main installation script
+├── .env                    # Environment configuration
+└── README.md               # Documentation
+
+/var/lib/distributex/
+├── database.db             # SQLite database
+└── logs/                   # Application logs
+
+/etc/nginx/
+├── nginx.conf              # Main Nginx config
+└── sites-available/
+    └── distributex         # Site configuration
+```
+
+---
+
+## Installation Steps
+
+### Step 1: Clone Your Project
+
+```bash
 cd /opt/distributex
+# If you have a git repo:
 git clone https://github.com/YOUR_USERNAME/distributex.git .
 
-# Install dependencies
-npm install
+# OR manually create the structure
+mkdir -p api coordinator frontend worker-client scripts
 ```
 
-### 5. Setup Database
+### Step 2: Set Up Database
 
 ```bash
-# Create database directory
-sudo mkdir -p /var/lib/distributex
-sudo chown $USER:$USER /var/lib/distributex
+# Initialize database
+sqlite3 /var/lib/distributex/database.db < api/schema.sql
 
-# Initialize SQLite database
-sqlite3 /var/lib/distributex/database.db < packages/api/schema.sql
-```
-
-### 6. Configure Environment
-
-```bash
-# Create .env file
-cat > /opt/distributex/.env << EOF
-# Server Configuration
-NODE_ENV=production
-PORT_API=3001
-PORT_COORDINATOR=3002
-PORT_FRONTEND=3000
-
-# Database
-DATABASE_PATH=/var/lib/distributex/database.db
-
-# JWT Secret (generate: openssl rand -base64 32)
-JWT_SECRET=$(openssl rand -base64 32)
-
-# Cloudflare Tunnel
-TUNNEL_ID=your-tunnel-id-here
-TUNNEL_TOKEN=your-tunnel-token-here
-
-# Domain
-DOMAIN=distributex.yourdomain.com
-EOF
-```
-
-### 7. Setup Caddy (Reverse Proxy)
-
-```bash
-# Install Caddy
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update
-sudo apt install caddy
-
-# Create Caddyfile
-sudo tee /etc/caddy/Caddyfile << 'EOF'
-{
-    # Global options
-    admin off
-    auto_https off
-}
-
-:80 {
-    # API routes
-    handle /api/* {
-        reverse_proxy localhost:3001
-    }
-    
-    # WebSocket coordinator
-    handle /ws {
-        reverse_proxy localhost:3002
-    }
-    
-    # Health checks
-    handle /health {
-        reverse_proxy localhost:3001
-    }
-    
-    # Frontend (Next.js)
-    handle /* {
-        reverse_proxy localhost:3000
-    }
-}
-EOF
-
-# Reload Caddy
-sudo systemctl reload caddy
-```
-
-### 8. Configure Cloudflare Tunnel
-
-```bash
-# Create tunnel config
-mkdir -p ~/.cloudflared
-cat > ~/.cloudflared/config.yml << EOF
-tunnel: distributex
-credentials-file: /home/$USER/.cloudflared/<TUNNEL-ID>.json
-
-ingress:
-  # Send all traffic to Caddy
-  - hostname: distributex.yourdomain.com
-    service: http://localhost:80
-  
-  # Catch-all rule (required)
-  - service: http_status:404
-EOF
-```
-
-### 9. Create Systemd Services
-
-#### API Service
-```bash
-sudo tee /etc/systemd/system/distributex-api.service << EOF
-[Unit]
-Description=DistributeX API Server
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=/opt/distributex
-EnvironmentFile=/opt/distributex/.env
-ExecStart=/usr/bin/node packages/api/server.js
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-#### Coordinator Service
-```bash
-sudo tee /etc/systemd/system/distributex-coordinator.service << EOF
-[Unit]
-Description=DistributeX Coordinator
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=/opt/distributex
-EnvironmentFile=/opt/distributex/.env
-ExecStart=/usr/bin/node packages/coordinator/server.js
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-#### Frontend Service
-```bash
-sudo tee /etc/systemd/system/distributex-frontend.service << EOF
-[Unit]
-Description=DistributeX Frontend
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=/opt/distributex/frontend
-EnvironmentFile=/opt/distributex/.env
-ExecStart=/usr/bin/npm start
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-#### Cloudflare Tunnel Service
-```bash
-sudo tee /etc/systemd/system/cloudflared.service << EOF
-[Unit]
-Description=Cloudflare Tunnel
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### 10. Start All Services
-
-```bash
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Enable services (start on boot)
-sudo systemctl enable distributex-api
-sudo systemctl enable distributex-coordinator
-sudo systemctl enable distributex-frontend
-sudo systemctl enable cloudflared
-sudo systemctl enable caddy
-
-# Start services
-sudo systemctl start distributex-api
-sudo systemctl start distributex-coordinator
-sudo systemctl start distributex-frontend
-sudo systemctl start cloudflared
-sudo systemctl start caddy
-
-# Check status
-sudo systemctl status distributex-api
-sudo systemctl status distributex-coordinator
-sudo systemctl status distributex-frontend
-sudo systemctl status cloudflared
-sudo systemctl status caddy
-```
-
-## Monitoring
-
-### Check Logs
-```bash
-# API logs
-sudo journalctl -u distributex-api -f
-
-# Coordinator logs
-sudo journalctl -u distributex-coordinator -f
-
-# Frontend logs
-sudo journalctl -u distributex-frontend -f
-
-# Tunnel logs
-sudo journalctl -u cloudflared -f
-
-# Caddy logs
-sudo journalctl -u caddy -f
-```
-
-### Check Service Health
-```bash
-# API health
-curl http://localhost:3001/health
-
-# Coordinator health
-curl http://localhost:3002/health
-
-# Frontend health
-curl http://localhost:3000
-
-# External access (via tunnel)
-curl https://distributex.yourdomain.com/health
-```
-
-## Performance Tuning for Raspberry Pi 4B
-
-### 1. Optimize Node.js
-```bash
-# Create Node.js config
-cat > /opt/distributex/.node-options << EOF
---max-old-space-size=1024
---max-semi-space-size=16
-EOF
-
-# Update service files to use config
-# Add to [Service] section:
-# Environment="NODE_OPTIONS=--max-old-space-size=1024"
-```
-
-### 2. Enable Swap (if needed)
-```bash
-# Create 2GB swap file
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# Make permanent
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-### 3. SQLite Optimizations
-```bash
-# Add to your database initialization
+# Optimize SQLite for Pi
 sqlite3 /var/lib/distributex/database.db << EOF
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -413,24 +198,293 @@ PRAGMA temp_store = MEMORY;
 EOF
 ```
 
-### 4. Monitor Resources
+### Step 3: Configure Environment
+
 ```bash
-# Install monitoring tools
-sudo apt install -y htop iotop
+# Generate JWT secret
+JWT_SECRET=$(openssl rand -base64 32)
 
-# Watch resources
-htop
+# Create .env file
+cat > /opt/distributex/.env << EOF
+# Environment
+NODE_ENV=production
 
-# Monitor disk I/O
-sudo iotop
+# Ports
+PORT_API=3001
+PORT_COORDINATOR=3002
+PORT_FRONTEND=3000
+
+# Database
+DATABASE_PATH=/var/lib/distributex/database.db
+
+# Security
+JWT_SECRET=${JWT_SECRET}
+
+# Domain (update these with your actual domain)
+DOMAIN=distributex.cloud
+API_URL=https://api.distributex.cloud
+COORDINATOR_URL=wss://coordinator.distributex.cloud
+FRONTEND_URL=https://distributex.cloud
+
+# Cloudflare Tunnel (if using)
+TUNNEL_ID=your-tunnel-id-here
+TUNNEL_TOKEN=your-tunnel-token-here
+EOF
 ```
 
-## Backup Strategy
+### Step 4: Install Dependencies
 
-### Automated Daily Backups
 ```bash
-# Create backup script
-sudo tee /opt/distributex/backup.sh << 'EOF'
+# API
+cd /opt/distributex/api
+npm install fastify @fastify/cors @fastify/websocket better-sqlite3
+
+# Coordinator
+cd /opt/distributex/coordinator
+npm install fastify @fastify/cors @fastify/websocket better-sqlite3
+
+# Frontend (build static version)
+cd /opt/distributex/frontend
+npm install
+npm run build
+# This creates /opt/distributex/frontend/out/
+
+# Worker client
+cd /opt/distributex/worker-client
+npm install ws dockerode
+```
+
+### Step 5: Configure Nginx
+
+#### If Using Cloudflare Tunnel:
+
+Nginx only needs to route internal traffic since Cloudflare handles external access:
+
+```bash
+sudo tee /etc/nginx/sites-available/distributex << 'EOF'
+# Frontend
+server {
+    listen 80;
+    server_name localhost;
+    root /opt/distributex/frontend/out;
+    index index.html;
+    
+    location / {
+        try_files $uri $uri/ $uri.html =404;
+    }
+}
+
+# API
+server {
+    listen 3001;
+    server_name localhost;
+    
+    location / {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+
+# Coordinator
+server {
+    listen 3002;
+    server_name localhost;
+    
+    location / {
+        proxy_pass http://localhost:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+EOF
+
+# Enable site
+sudo ln -s /etc/nginx/sites-available/distributex /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+#### If Using Port Forwarding:
+
+```bash
+sudo tee /etc/nginx/sites-available/distributex << 'EOF'
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name distributex.cloud api.distributex.cloud coordinator.distributex.cloud;
+    return 301 https://$server_name$request_uri;
+}
+
+# Frontend
+server {
+    listen 443 ssl http2;
+    server_name distributex.cloud;
+    
+    ssl_certificate /etc/letsencrypt/live/distributex.cloud/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/distributex.cloud/privkey.pem;
+    
+    root /opt/distributex/frontend/out;
+    index index.html;
+    
+    location / {
+        try_files $uri $uri/ $uri.html =404;
+    }
+}
+
+# API
+server {
+    listen 443 ssl http2;
+    server_name api.distributex.cloud;
+    
+    ssl_certificate /etc/letsencrypt/live/distributex.cloud/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/distributex.cloud/privkey.pem;
+    
+    location / {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Coordinator (WebSocket)
+server {
+    listen 443 ssl http2;
+    server_name coordinator.distributex.cloud;
+    
+    ssl_certificate /etc/letsencrypt/live/distributex.cloud/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/distributex.cloud/privkey.pem;
+    
+    location / {
+        proxy_pass http://localhost:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}
+EOF
+
+# Get SSL certificates
+sudo certbot --nginx -d distributex.cloud -d api.distributex.cloud -d coordinator.distributex.cloud
+
+# Enable site
+sudo ln -s /etc/nginx/sites-available/distributex /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### Step 6: Create Systemd Services
+
+```bash
+# API Service
+sudo tee /etc/systemd/system/distributex-api.service << EOF
+[Unit]
+Description=DistributeX API Server
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=/opt/distributex/api
+EnvironmentFile=/opt/distributex/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/lib/distributex/logs/api.log
+StandardError=append:/var/lib/distributex/logs/api-error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Coordinator Service
+sudo tee /etc/systemd/system/distributex-coordinator.service << EOF
+[Unit]
+Description=DistributeX Coordinator
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=/opt/distributex/coordinator
+EnvironmentFile=/opt/distributex/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/lib/distributex/logs/coordinator.log
+StandardError=append:/var/lib/distributex/logs/coordinator-error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start services
+sudo systemctl enable distributex-api
+sudo systemctl enable distributex-coordinator
+sudo systemctl start distributex-api
+sudo systemctl start distributex-coordinator
+
+# Check status
+sudo systemctl status distributex-api
+sudo systemctl status distributex-coordinator
+```
+
+### Step 7: Configure Cloudflare Tunnel (if using)
+
+```bash
+# Create tunnel config
+mkdir -p ~/.cloudflared
+cat > ~/.cloudflared/config.yml << EOF
+tunnel: distributex
+credentials-file: /home/$USER/.cloudflared/<YOUR-TUNNEL-ID>.json
+
+ingress:
+  # Frontend
+  - hostname: distributex.cloud
+    service: http://localhost:80
+  
+  # API
+  - hostname: api.distributex.cloud
+    service: http://localhost:3001
+  
+  # Coordinator (WebSocket)
+  - hostname: coordinator.distributex.cloud
+    service: http://localhost:3002
+  
+  # Catch-all
+  - service: http_status:404
+EOF
+
+# Install as systemd service
+sudo cloudflared service install
+sudo systemctl start cloudflared
+sudo systemctl enable cloudflared
+
+# Check status
+sudo systemctl status cloudflared
+```
+
+### Step 8: Create Backup Script
+
+```bash
+cat > /opt/distributex/scripts/backup.sh << 'EOF'
 #!/bin/bash
 BACKUP_DIR=/var/backups/distributex
 DATE=$(date +%Y%m%d_%H%M%S)
@@ -446,141 +500,328 @@ cp /opt/distributex/.env $BACKUP_DIR/env_$DATE
 # Keep only last 7 days
 find $BACKUP_DIR -name "database_*.db" -mtime +7 -delete
 find $BACKUP_DIR -name "env_*" -mtime +7 -delete
+
+echo "Backup complete: $BACKUP_DIR/database_$DATE.db"
 EOF
 
-sudo chmod +x /opt/distributex/backup.sh
+chmod +x /opt/distributex/scripts/backup.sh
 
 # Add to crontab (daily at 2 AM)
-(crontab -l 2>/dev/null; echo "0 2 * * * /opt/distributex/backup.sh") | crontab -
+(crontab -l 2>/dev/null; echo "0 2 * * * /opt/distributex/scripts/backup.sh") | crontab -
 ```
 
-## Capacity Estimates
+---
 
-### Raspberry Pi 4B (4GB RAM) Can Handle:
+## Configuration
 
-| Metric | Estimate |
-|--------|----------|
-| **Concurrent Workers** | 50-100 active |
-| **Requests/Second** | ~50-100 RPS |
-| **Database Size** | Up to 10GB before slowdown |
-| **WebSocket Connections** | 500-1000 concurrent |
-| **Daily Requests** | **Unlimited** (hardware limited) |
+### Update Frontend Configuration
 
-### Scaling Tips:
+Edit `/opt/distributex/frontend/.env.production`:
 
-1. **Database**: Move to PostgreSQL on external drive if SQLite slows down
-2. **Workers**: Add more Pi devices as coordinator nodes
-3. **Frontend**: Use Cloudflare CDN for static assets
-4. **API**: Add Redis cache for hot data
-
-## Security Considerations
-
-### 1. Firewall (UFW)
 ```bash
-# No need to open ports (Cloudflare Tunnel handles it)
-# But you can restrict local access:
+# YOUR domain
+NEXT_PUBLIC_API_URL=https://api.distributex.cloud
+```
+
+Rebuild frontend:
+
+```bash
+cd /opt/distributex/frontend
+npm run build
+```
+
+### Firewall Configuration
+
+```bash
+# If using Cloudflare Tunnel (no ports needed)
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow from 127.0.0.1
+sudo ufw allow ssh
+sudo ufw enable
+
+# If using port forwarding
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow ssh
 sudo ufw enable
 ```
 
-### 2. Fail2Ban
-```bash
-# Install
-sudo apt install fail2ban
+---
 
-# Configure for API protection
-sudo tee /etc/fail2ban/jail.local << EOF
-[distributex-api]
-enabled = true
-port = 3001
-filter = distributex-api
-logpath = /var/log/syslog
-maxretry = 5
-findtime = 600
-bantime = 3600
+## Worker Client Setup
+
+### Create Installation Script for Workers
+
+Create `/opt/distributex/worker-client/install.sh`:
+
+```bash
+#!/bin/bash
+# This script will be hosted at https://distributex.cloud/worker-install.sh
+# Users will run: curl -fsSL https://distributex.cloud/worker-install.sh | bash
+
+set -euo pipefail
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  DistributeX Worker Installation     ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+echo ""
+
+# Check Docker
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ Docker not found. Please install Docker first.${NC}"
+    echo "   Visit: https://docs.docker.com/engine/install/"
+    exit 1
+fi
+
+# Download worker client
+echo -e "${YELLOW}📥 Downloading worker client...${NC}"
+mkdir -p ~/.distributex
+cd ~/.distributex
+
+curl -fsSL https://api.distributex.cloud/worker/download -o distributex-worker.js
+curl -fsSL https://api.distributex.cloud/worker/package.json -o package.json
+
+# Install dependencies
+npm install
+
+# Get user credentials
+echo ""
+echo -e "${YELLOW}🔑 Please provide your credentials:${NC}"
+read -p "Email: " email
+read -sp "Password: " password
+echo ""
+
+# Authenticate
+AUTH_RESPONSE=$(curl -s -X POST https://api.distributex.cloud/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+
+TOKEN=$(echo $AUTH_RESPONSE | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+USER_ID=$(echo $AUTH_RESPONSE | grep -o '"userId":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$TOKEN" ]; then
+    echo -e "${RED}❌ Authentication failed${NC}"
+    exit 1
+fi
+
+# Generate worker ID
+WORKER_ID="worker-$(date +%s)-$(openssl rand -hex 4)"
+
+# Create config
+cat > ~/.distributex/config.json << EOF
+{
+  "workerId": "$WORKER_ID",
+  "authToken": "$TOKEN",
+  "userId": "$USER_ID",
+  "apiUrl": "https://api.distributex.cloud",
+  "coordinatorUrl": "wss://coordinator.distributex.cloud",
+  "nodeName": "$(hostname)",
+  "maxCpuCores": null,
+  "maxMemoryGb": null,
+  "maxStorageGb": null,
+  "enableGpu": true
+}
 EOF
+
+echo -e "${GREEN}✅ Configuration saved${NC}"
+
+# Start worker
+echo ""
+echo -e "${YELLOW}🚀 Starting worker...${NC}"
+node distributex-worker.js &
+
+echo ""
+echo -e "${GREEN}✅ Worker started successfully!${NC}"
+echo ""
+echo "Your Worker ID: $WORKER_ID"
+echo "Dashboard: https://distributex.cloud/dashboard"
+echo ""
+echo "To check status:"
+echo "  curl http://localhost:3000/health"
+echo ""
+echo "To view logs:"
+echo "  tail -f ~/.distributex/logs/*.log"
+EOF
+
+chmod +x /opt/distributex/worker-client/install.sh
 ```
 
-### 3. Regular Updates
+### Host Installation Script
+
+Add to your frontend to serve the install script:
+
 ```bash
-# Create update script
-sudo tee /opt/distributex/update.sh << 'EOF'
-#!/bin/bash
-cd /opt/distributex
-git pull
-npm install
+# Copy install script to frontend public directory
+cp /opt/distributex/worker-client/install.sh /opt/distributex/frontend/public/worker-install.sh
+cp /opt/distributex/worker-client/distributex-worker.js /opt/distributex/frontend/public/distributex-worker.js
+cp /opt/distributex/worker-client/package.json /opt/distributex/frontend/public/worker-package.json
+
+# Rebuild frontend
+cd /opt/distributex/frontend
+npm run build
+```
+
+---
+
+## Verification
+
+### 1. Check All Services
+
+```bash
+# Service status
+sudo systemctl status distributex-api
+sudo systemctl status distributex-coordinator
+sudo systemctl status nginx
+sudo systemctl status cloudflared  # if using
+
+# Health checks
+curl http://localhost:3001/health
+curl http://localhost:3002/health
+
+# External access
+curl https://distributex.cloud
+curl https://api.distributex.cloud/health
+```
+
+### 2. Test Worker Installation
+
+On another machine:
+
+```bash
+curl -fsSL https://distributex.cloud/worker-install.sh | bash
+```
+
+### 3. Check Dashboard
+
+Visit `https://distributex.cloud` and verify:
+- Frontend loads
+- Can sign up/login
+- Pool status shows workers
+- Real-time updates work
+
+---
+
+## Maintenance Commands
+
+```bash
+# View logs
+sudo journalctl -u distributex-api -f
+sudo journalctl -u distributex-coordinator -f
+tail -f /var/lib/distributex/logs/*.log
+
+# Restart services
 sudo systemctl restart distributex-api
 sudo systemctl restart distributex-coordinator
-sudo systemctl restart distributex-frontend
-EOF
+sudo systemctl restart nginx
 
-sudo chmod +x /opt/distributex/update.sh
+# Run backup manually
+/opt/distributex/scripts/backup.sh
+
+# Update system
+sudo apt update && sudo apt upgrade -y
+cd /opt/distributex/frontend && npm run build
+sudo systemctl restart distributex-*
 ```
+
+---
 
 ## Troubleshooting
 
-### Issue: Tunnel not connecting
+### Workers Not Appearing
+
+1. Check coordinator logs:
 ```bash
-# Check tunnel status
-cloudflared tunnel info distributex
-
-# Test connection
-cloudflared tunnel run distributex
-
-# Check DNS
-nslookup distributex.yourdomain.com
+sudo journalctl -u distributex-coordinator -n 50
 ```
 
-### Issue: High memory usage
+2. Verify database:
 ```bash
-# Check what's using memory
-sudo ps aux --sort=-%mem | head -10
+sqlite3 /var/lib/distributex/database.db "SELECT * FROM worker_nodes;"
+```
+
+3. Test WebSocket:
+```bash
+wscat -c wss://coordinator.distributex.cloud
+```
+
+### Frontend Not Loading
+
+1. Check Nginx:
+```bash
+sudo nginx -t
+sudo systemctl status nginx
+```
+
+2. Verify build:
+```bash
+ls -la /opt/distributex/frontend/out/
+```
+
+### API Errors
+
+1. Check logs:
+```bash
+tail -f /var/lib/distributex/logs/api-error.log
+```
+
+2. Test database:
+```bash
+sqlite3 /var/lib/distributex/database.db "SELECT 1;"
+```
+
+---
+
+## Security Recommendations
+
+1. **Enable UFW firewall**
+2. **Keep system updated**: `sudo apt update && sudo apt upgrade`
+3. **Use strong JWT secret** (already generated)
+4. **Regular backups**: Automated daily at 2 AM
+5. **Monitor logs**: Check `/var/lib/distributex/logs/`
+6. **Use Cloudflare Tunnel** for DDoS protection
+7. **Enable fail2ban** for SSH protection
+
+---
+
+## Performance Tuning
+
+### For Raspberry Pi 4B:
+
+```bash
+# Increase swap
+sudo dphys-swapfile swapoff
+sudo sed -i 's/CONF_SWAPSIZE=100/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+
+# Optimize Node.js
+echo 'NODE_OPTIONS="--max-old-space-size=1024"' | sudo tee -a /opt/distributex/.env
 
 # Restart services
 sudo systemctl restart distributex-*
 ```
 
-### Issue: Slow responses
-```bash
-# Check database locks
-sqlite3 /var/lib/distributex/database.db "PRAGMA wal_checkpoint;"
+---
 
-# Monitor API performance
-curl -w "@curl-format.txt" -o /dev/null -s https://distributex.yourdomain.com/api/pool/status
+## Success!
+
+Your self-hosted DistributeX is now running at:
+- **Frontend**: https://distributex.cloud
+- **API**: https://api.distributex.cloud
+- **Coordinator**: wss://coordinator.distributex.cloud
+
+Users can connect workers via:
+```bash
+curl -fsSL https://distributex.cloud/worker-install.sh | bash
 ```
 
-## Cost Analysis
-
-### One-Time Costs:
-- Raspberry Pi 4B (4GB): $55
-- MicroSD Card (64GB): $15
-- Power Supply: $10
-- Case: $10
-- **Total: ~$90**
-
-### Monthly Costs:
-- Electricity: ~$2-3/month
-- Cloudflare: $0 (free tier)
-- Domain: ~$12/year = $1/month
-- **Total: ~$3-4/month**
-
-### Savings vs Cloudflare Paid:
-- No 100k request limit
-- No Workers usage fees
-- No D1 database charges
-- No Pages bandwidth charges
-
-## Conclusion
-
-You now have:
-✅ Self-hosted DistributeX on Raspberry Pi
-✅ Cloudflare Tunnel for secure access
-✅ No request limits
-✅ Full control over infrastructure
-✅ ~$4/month operating cost
-✅ Automatic HTTPS via Cloudflare
-✅ Zero-trust security model
-
-Your Pi 4B can easily handle 50-100 concurrent workers and unlimited requests (hardware limited)!
+**Estimated capacity:**
+- 50-100 concurrent workers
+- Unlimited requests (hardware limited)
+- ~$4/month operating cost
