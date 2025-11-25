@@ -1,10 +1,6 @@
 #!/bin/bash
-# DistributeX Enhanced Installer - Multi-Device Support
-# - One account can run multiple device workers
-# - Each device = unique worker registration
-# - Proper heartbeat aggregation to prevent 505 errors
-# - Device fingerprinting ensures unique worker IDs
-# Requirements: jq, docker, docker compose, curl, sha256sum
+# DistributeX Installer - Raspberry Pi Backend Version
+# Workers connect to YOUR Raspberry Pi instead of Cloudflare
 set -euo pipefail
 
 GREEN='\033[0;32m'
@@ -18,7 +14,20 @@ NC='\033[0m'
 CONFIG_DIR="$HOME/.distributex"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 STORAGE_FILE="$CONFIG_DIR/storage_devices.json"
-API_URL="${DISTRIBUTEX_API_URL:-http://192.168.0.42:3001}"
+
+# ==================== RASPBERRY PI BACKEND ====================
+# Change these to your Raspberry Pi's public IP or domain
+API_URL="${DISTRIBUTEX_API_URL:-http://YOUR_PI_PUBLIC_IP:3001}"
+COORDINATOR_URL="${DISTRIBUTEX_COORDINATOR_URL:-ws://YOUR_PI_PUBLIC_IP:3002/ws}"
+
+# For local network only, use:
+# API_URL="http://192.168.0.42:3001"
+# COORDINATOR_URL="ws://192.168.0.42:3002/ws"
+
+# For internet access, use ngrok URLs or your public IP:
+# API_URL="https://your-ngrok-url.ngrok-free.app"
+# COORDINATOR_URL="wss://your-ngrok-url.ngrok-free.app/ws"
+
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main"
 
 # Helper input functions
@@ -41,12 +50,17 @@ echo -e "${CYAN}${BOLD}"
 cat << "EOF"
 ╔════════════════════════════════════════════════════════╗
 ║                                                        ║
-║     DistributeX - Open Computing Network Installer    ║
-║          Multi-Device Worker Registration             ║
+║     DistributeX - Raspberry Pi Backend Edition        ║
+║          Connect to Self-Hosted Network                ║
 ║                                                        ║
 ╚════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}\n"
+
+echo -e "${CYAN}Backend Configuration:${NC}"
+echo -e "  API:         ${BLUE}$API_URL${NC}"
+echo -e "  Coordinator: ${BLUE}$COORDINATOR_URL${NC}"
+echo ""
 
 # Check prerequisites
 echo -e "${BOLD}Checking prerequisites...${NC}\n"
@@ -83,11 +97,10 @@ fi
 
 echo -e "${GREEN}✓ Docker Compose available${NC}\n"
 
-# Enhanced device fingerprinting - includes network interfaces and disk IDs
+# Generate device fingerprint
 generate_device_fingerprint() {
     local components=""
     
-    # CPU information
     local cpu_model="unknown"
     if [ -f /proc/cpuinfo ]; then
         cpu_model=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo | xargs || echo "unknown")
@@ -95,39 +108,26 @@ generate_device_fingerprint() {
     local cpu_cores=$(nproc 2>/dev/null || echo "1")
     components="${components}cpu:${cpu_model}:${cpu_cores}|"
 
-    # Memory
     local total_mem=$(free -b 2>/dev/null | awk '/Mem:/ {print $2}' || echo "0")
     components="${components}mem:${total_mem}|"
     
-    # Platform info
     components="${components}platform:$(uname -s)|"
     components="${components}arch:$(uname -m)|"
 
-    # Machine ID (persistent across reboots)
     if [ -f /etc/machine-id ]; then
         components="${components}machine:$(cat /etc/machine-id)|"
     elif [ -f /var/lib/dbus/machine-id ]; then
         components="${components}machine:$(cat /var/lib/dbus/machine-id)|"
     fi
 
-    # Hostname
     components="${components}hostname:$(hostname)|"
 
-    # MAC addresses (sorted for consistency)
     if command -v ip &>/dev/null; then
         local macs
         macs=$(ip link 2>/dev/null | awk '/link\/ether/ {print $2}' | sort | tr '\n' ',' || echo "")
         components="${components}mac:${macs}|"
     fi
 
-    # Disk serial numbers for additional uniqueness
-    if command -v lsblk &>/dev/null; then
-        local disk_serials
-        disk_serials=$(lsblk -ndo SERIAL 2>/dev/null | sort | tr '\n' ',' || echo "")
-        components="${components}disk:${disk_serials}|"
-    fi
-
-    # Generate SHA256 hash of all components
     if command -v sha256sum &>/dev/null; then
         echo -n "$components" | sha256sum | awk '{print $1}'
     else
@@ -173,26 +173,6 @@ detect_external_storage() {
                 fi
             fi
         done < <(df -h 2>/dev/null | grep -E "^/dev/(sd|nvme|mmcblk)" || true)
-        
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        for vol in /Volumes/*; do
-            if [ ! -e "$vol" ]; then continue; fi
-            
-            if [[ "$(basename "$vol")" != "Macintosh HD" ]]; then
-                dev=$(df "$vol" 2>/dev/null | tail -1 | awk '{print $1}')
-                size=$(df -h "$vol" 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/Gi*//')
-                avail=$(df -h "$vol" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/Gi*//')
-                
-                if [ "$device_count" -gt 0 ]; then
-                    devices_json+=","
-                fi
-                
-                devices_json+="{\"device\":\"$dev\",\"mountPoint\":\"$vol\",\"totalGb\":${size:-0},\"availableGb\":${avail:-0}}"
-                device_count=$((device_count + 1))
-                
-                echo "  $device_count) External Volume: $(basename "$vol") ($size GB total, $avail GB available)"
-            fi
-        done
     fi
     
     devices_json+="]"
@@ -221,7 +201,6 @@ detect_external_storage() {
 echo -e "${BOLD}Step 1: Authentication & Device Setup${NC}\n"
 mkdir -p "$CONFIG_DIR"
 
-# Generate unique device fingerprint
 DEVICE_FINGERPRINT=$(generate_device_fingerprint)
 DEVICE_ID="device-${DEVICE_FINGERPRINT:0:32}"
 echo -e "${CYAN}Device Fingerprint: ${DEVICE_FINGERPRINT:0:16}...${NC}"
@@ -238,10 +217,8 @@ if [ -f "$CONFIG_FILE" ]; then
     if [[ "${use_existing:-n}" =~ ^[Yy]$ ]]; then
         AUTH_TOKEN=$(jq -r '.authToken // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
         USER_ID=$(jq -r '.userId // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
-        API_URL=$(jq -r '.apiUrl // "'"$API_URL"'"' "$CONFIG_FILE" 2>/dev/null || echo "$API_URL")
         WORKER_ID=$(jq -r '.workerId // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
         
-        # Regenerate worker ID if missing (should be device-specific)
         if [ -z "$WORKER_ID" ] && [ -n "$USER_ID" ]; then
             USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
             DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
@@ -363,15 +340,12 @@ if [ -z "${USER_ID:-}" ] || [ -z "${AUTH_TOKEN:-}" ]; then
 fi
 
 # Generate UNIQUE worker ID per device
-# Format: worker-{user_hash}-{device_hash}
-# This ensures each device gets its own worker registration
 USER_HASH=$(echo -n "$USER_ID" | sha256sum | awk '{print $1}' | cut -c1-8)
 DEVICE_HASH="${DEVICE_FINGERPRINT:0:16}"
 WORKER_ID="worker-${USER_HASH}-${DEVICE_HASH}"
 
 echo -e "${GREEN}✓ Authenticated as: ${USER_ID}${NC}"
-echo -e "${CYAN}Worker ID (device-specific): ${WORKER_ID}${NC}"
-echo -e "${YELLOW}Note: This worker ID is unique to THIS device${NC}\n"
+echo -e "${CYAN}Worker ID (device-specific): ${WORKER_ID}${NC}\n"
 
 # Save device-specific config
 cat > "$CONFIG_FILE" << EOF
@@ -382,7 +356,7 @@ cat > "$CONFIG_FILE" << EOF
   "deviceId": "$DEVICE_ID",
   "deviceFingerprint": "$DEVICE_FINGERPRINT",
   "apiUrl": "$API_URL",
-  "coordinatorUrl": "wss://distributex-coordinator.distributex.workers.dev/ws",
+  "coordinatorUrl": "$COORDINATOR_URL",
   "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "deviceHostname": "$(hostname)"
 }
@@ -414,14 +388,13 @@ if [ "$GPU_TYPE" = "cpu" ]; then
 fi
 echo ""
 
-# Worker registration with proper device-specific data
-echo -e "${BOLD}Step 3: Registering Worker (Device: $(hostname))...${NC}\n"
+# Worker registration
+echo -e "${BOLD}Step 3: Registering Worker...${NC}\n"
 
 CPU_CORES=$(nproc 2>/dev/null || echo "4")
 TOTAL_MEM=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo "8")
 AVAIL_MEM=$(echo "$TOTAL_MEM * 0.8" | bc 2>/dev/null | awk '{print int($1)}' || echo "$TOTAL_MEM")
 
-# Calculate storage from detected devices
 TOTAL_STORAGE=50
 if [ -f "$STORAGE_FILE" ]; then
     STORAGE_TOTAL=$(jq '[.[].totalGb] | add // 0' "$STORAGE_FILE" 2>/dev/null || echo "0")
@@ -430,21 +403,6 @@ if [ -f "$STORAGE_FILE" ]; then
     fi
 fi
 
-# First, check if worker already exists and try to update instead
-echo "Checking if worker already exists..."
-CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$API_URL/api/workers/$WORKER_ID" \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H "X-Worker-ID: $WORKER_ID" 2>/dev/null || echo -e "\n000")
-
-CHECK_CODE=$(echo "$CHECK_RESPONSE" | tail -n1)
-WORKER_EXISTS=false
-
-if [ "$CHECK_CODE" = "200" ]; then
-    WORKER_EXISTS=true
-    echo -e "${CYAN}Worker already registered, will update...${NC}"
-fi
-
-# Create comprehensive heartbeat payload with device-specific metrics
 HEARTBEAT_PAYLOAD=$(jq -n \
   --arg status "online" \
   --argjson cpuCores "$CPU_CORES" \
@@ -461,10 +419,8 @@ HEARTBEAT_PAYLOAD=$(jq -n \
   --arg deviceFingerprint "$DEVICE_FINGERPRINT" \
   --arg userId "$USER_ID" \
   --arg workerId "$WORKER_ID" \
-  --arg workerExists "$WORKER_EXISTS" \
   '{
     status: $status,
-    workerExists: ($workerExists == "true"),
     capabilities: {
       cpuCores: $cpuCores,
       memoryGb: $memoryGb,
@@ -477,17 +433,6 @@ HEARTBEAT_PAYLOAD=$(jq -n \
       hostname: $hostname,
       nodeName: $nodeName
     },
-    metrics: {
-      cpuUsagePercent: 0,
-      memoryUsedGb: 0,
-      memoryAvailableGb: $memoryGb,
-      storageUsedGb: 0,
-      storageAvailableGb: $storageGb,
-      activeJobs: 0,
-      completedJobs: 0,
-      failedJobs: 0,
-      uptime: 0
-    },
     deviceInfo: {
       deviceId: $deviceId,
       deviceFingerprint: $deviceFingerprint,
@@ -496,107 +441,19 @@ HEARTBEAT_PAYLOAD=$(jq -n \
     }
   }')
 
-# Try to register/update THIS specific device as a worker with retry logic
-MAX_RETRIES=3
-RETRY_COUNT=0
-SUCCESS=false
+HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "X-Worker-ID: $WORKER_ID" \
+  -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
 
-while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
-    if [ $RETRY_COUNT -gt 0 ]; then
-        echo "Retry attempt $RETRY_COUNT/$MAX_RETRIES..."
-        sleep 2
-    fi
-    
-    HB_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/workers/$WORKER_ID/heartbeat" \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $AUTH_TOKEN" \
-      -H "X-Worker-ID: $WORKER_ID" \
-      -H "X-Device-ID: $DEVICE_ID" \
-      -H "X-User-ID: $USER_ID" \
-      -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
+HB_CODE=$(echo "$HB_RESPONSE" | tail -n1)
 
-    HB_CODE=$(echo "$HB_RESPONSE" | tail -n1)
-    HB_BODY=$(echo "$HB_RESPONSE" | head -n-1)
-
-    if [ "$HB_CODE" = "200" ] || [ "$HB_CODE" = "201" ]; then
-        SUCCESS=true
-        echo -e "${GREEN}✓ Worker registered successfully as separate device${NC}"
-        echo -e "${CYAN}  Device: $(hostname)${NC}"
-        echo -e "${CYAN}  Worker: ${WORKER_ID:0:32}...${NC}\n"
-        break
-    elif [ "$HB_CODE" = "409" ]; then
-        # Conflict - worker exists, try a PUT update instead
-        echo -e "${YELLOW}Worker exists, attempting update via PUT...${NC}"
-        
-        UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$API_URL/api/workers/$WORKER_ID" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer $AUTH_TOKEN" \
-          -H "X-Worker-ID: $WORKER_ID" \
-          -H "X-Device-ID: $DEVICE_ID" \
-          -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
-        
-        UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
-        UPDATE_BODY=$(echo "$UPDATE_RESPONSE" | head -n-1)
-        
-        if [ "$UPDATE_CODE" = "200" ]; then
-            SUCCESS=true
-            echo -e "${GREEN}✓ Worker updated successfully${NC}\n"
-            break
-        else
-            echo -e "${YELLOW}Update failed (HTTP $UPDATE_CODE)${NC}"
-            echo "$UPDATE_BODY" | jq '.' 2>/dev/null || echo "$UPDATE_BODY"
-        fi
-    elif echo "$HB_BODY" | grep -q "UNIQUE constraint failed"; then
-        # UNIQUE constraint error - worker might be partially registered
-        echo -e "${YELLOW}⚠️ Worker appears to be partially registered${NC}"
-        echo -e "${YELLOW}Attempting to update existing worker...${NC}"
-        
-        # Force update by directly calling the update endpoint
-        UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$API_URL/api/workers/$WORKER_ID" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer $AUTH_TOKEN" \
-          -H "X-Worker-ID: $WORKER_ID" \
-          -H "X-Device-ID: $DEVICE_ID" \
-          -H "X-Force-Update: true" \
-          -d "$HEARTBEAT_PAYLOAD" 2>/dev/null || echo -e "\n000")
-        
-        UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
-        UPDATE_BODY=$(echo "$UPDATE_RESPONSE" | head -n-1)
-        
-        if [ "$UPDATE_CODE" = "200" ] || [ "$UPDATE_CODE" = "201" ]; then
-            SUCCESS=true
-            echo -e "${GREEN}✓ Worker recovered and updated${NC}\n"
-            break
-        fi
-    else
-        echo -e "${YELLOW}⚠️ Worker heartbeat returned HTTP $HB_CODE${NC}"
-        echo "$HB_BODY" | jq '.' 2>/dev/null || echo "$HB_BODY"
-    fi
-    
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-done
-
-if [ "$SUCCESS" = "false" ]; then
-    echo ""
-    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║  Registration Issue Detected                              ║${NC}"
-    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "${YELLOW}Note: Initial registration had issues, but worker will auto-register${NC}"
-    echo -e "${YELLOW}The worker container will handle registration automatically${NC}\n"
-    
-    if echo "$HB_BODY" | grep -q "public_key"; then
-        echo -e "${CYAN}Backend Fix Required:${NC}"
-        echo -e "  The backend database has a UNIQUE constraint on 'public_key'"
-        echo -e "  that needs to be handled properly for multi-device support."
-        echo -e ""
-        echo -e "  ${BOLD}Suggested Backend Fix:${NC}"
-        echo -e "  1. Make public_key nullable or remove UNIQUE constraint"
-        echo -e "  2. Use (userId + deviceId) as composite unique key instead"
-        echo -e "  3. Or use workerId as the primary unique identifier"
-        echo -e ""
-        echo -e "  ${BOLD}For now:${NC} The worker will continue and retry registration"
-        echo -e "  automatically once the backend constraint is resolved.\n"
-    fi
+if [ "$HB_CODE" = "200" ] || [ "$HB_CODE" = "201" ]; then
+    echo -e "${GREEN}✓ Worker registered successfully${NC}\n"
+else
+    echo -e "${YELLOW}⚠️  Initial registration failed (HTTP $HB_CODE)${NC}"
+    echo -e "${YELLOW}Worker will auto-register on startup${NC}\n"
 fi
 
 # Download worker files
@@ -609,7 +466,7 @@ curl -fsSL "${GITHUB_RAW_BASE}/package.json" -o package.json 2>/dev/null || echo
 
 echo -e "${GREEN}✓ Files downloaded${NC}\n"
 
-# Container name handling - include device hash for uniqueness
+# Container name
 BASE_CONTAINER_NAME="distributex-worker"
 CONTAINER_SUFFIX="${DEVICE_HASH:0:8}"
 CONTAINER_NAME="${BASE_CONTAINER_NAME}-${CONTAINER_SUFFIX}"
@@ -659,13 +516,13 @@ fi
 
 echo -e "${GREEN}✓ Docker Compose file created${NC}\n"
 
-# Environment file with device-specific IDs
+# Environment file
 cat > .env <<EOF
 AUTH_TOKEN=${AUTH_TOKEN}
 WORKER_ID=${WORKER_ID}
 DEVICE_ID=${DEVICE_ID}
 API_URL=${API_URL}
-COORDINATOR_URL=wss://distributex-coordinator.distributex.workers.dev/ws
+COORDINATOR_URL=${COORDINATOR_URL}
 NODE_NAME=$(hostname)
 EOF
 
@@ -682,31 +539,17 @@ sleep 3
 
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     echo -e "\n${GREEN}${BOLD}✅ Installation Complete!${NC}\n"
-    echo -e "Account: ${CYAN}$USER_ID${NC}"
+    echo -e "Backend:   ${CYAN}$API_URL${NC}"
     echo -e "Worker ID: ${CYAN}$WORKER_ID${NC}"
-    echo -e "Device: ${CYAN}$(hostname) (${DEVICE_ID:0:20}...)${NC}"
-    echo -e "Container: ${CYAN}$CONTAINER_NAME${NC}"
-    echo -e "Status: ${GREEN}Running${NC}\n"
-    
-    echo -e "${BOLD}${YELLOW}Multi-Device Setup:${NC}"
-    echo -e "  • Run this installer on other devices to add more workers"
-    echo -e "  • Each device will register as a separate worker"
-    echo -e "  • All workers under same account: $USER_ID"
-    echo -e "  • Metrics are aggregated across all your devices\n"
-    
-    echo -e "Dashboard: ${CYAN}https://distributex.cloud${NC}\n"
+    echo -e "Status:    ${GREEN}Running${NC}\n"
     
     echo -e "${BOLD}Useful Commands:${NC}"
     echo -e "  View logs:    ${CYAN}docker logs -f ${CONTAINER_NAME}${NC}"
     echo -e "  Stop worker:  ${CYAN}docker stop ${CONTAINER_NAME}${NC}"
     echo -e "  Start worker: ${CYAN}docker start ${CONTAINER_NAME}${NC}"
-    echo -e "  Restart:      ${CYAN}docker restart ${CONTAINER_NAME}${NC}"
     echo ""
 else
     echo -e "${RED}❌ Container failed to start${NC}"
     echo "Check logs: docker logs ${CONTAINER_NAME}"
     exit 1
 fi
-
-echo -e "${GREEN}All done! This device is now registered as a worker.${NC}"
-echo -e "${CYAN}To add more devices, run this installer on each device with the same account.${NC}"
