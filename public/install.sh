@@ -1,15 +1,9 @@
 #!/bin/bash
 #
 # DistributeX Production Worker Installer
-# Usage: curl -sSL https://distributex-cloud.pages.dev/install.sh | bash
+# Usage: curl -sSL https://your-site.pages.dev/install.sh | bash
 #
-# This script:
-# 1. Handles user signup/login
-# 2. Detects all system resources (CPU, RAM, GPU, Storage)
-# 3. Discovers external storage devices
-# 4. Sets up Docker containers for isolation
-# 5. Auto-registers worker with API
-# 6. Configures auto-updates and monitoring
+# FIXED: Proper authentication flow matching frontend API
 #
 
 set -e
@@ -50,7 +44,7 @@ check_requirements() {
   fi
 }
 
-# User authentication
+# User authentication - FIXED to match frontend API
 authenticate_user() {
   section "User Authentication"
   
@@ -58,7 +52,7 @@ authenticate_user() {
   if [ -f "$CONFIG_DIR/token" ]; then
     API_TOKEN=$(cat "$CONFIG_DIR/token")
     
-    # Verify token
+    # Verify token is still valid
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
       -H "Authorization: Bearer $API_TOKEN" \
       "$DISTRIBUTEX_API_URL/api/auth/user")
@@ -92,36 +86,60 @@ authenticate_user() {
   esac
 }
 
-# Sign up new user
+# Sign up new user - FIXED error handling
 signup_user() {
   echo ""
   read -p "First Name: " first_name
   read -p "Last Name: " last_name
   read -p "Email: " email
-  read -s -p "Password (min 8 chars): " password
-  echo ""
-  read -s -p "Confirm Password: " password_confirm
-  echo ""
   
-  if [ "$password" != "$password_confirm" ]; then
-    error "Passwords do not match"
-  fi
-  
-  if [ ${#password} -lt 8 ]; then
-    error "Password must be at least 8 characters"
-  fi
+  # Password input with validation
+  while true; do
+    read -s -p "Password (min 8 chars): " password
+    echo ""
+    
+    if [ ${#password} -lt 8 ]; then
+      warn "Password must be at least 8 characters"
+      continue
+    fi
+    
+    read -s -p "Confirm Password: " password_confirm
+    echo ""
+    
+    if [ "$password" != "$password_confirm" ]; then
+      warn "Passwords do not match, try again"
+      continue
+    fi
+    
+    break
+  done
   
   info "Creating account..."
   
-  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
+  # Make signup request
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
   
-  API_TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
+  # Split response body and status code
+  HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+  HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
   
-  if [ -z "$API_TOKEN" ]; then
-    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
-    error "Signup failed: $ERROR_MSG"
+  # Debug output (remove in production)
+  # echo "Response: $HTTP_BODY"
+  # echo "Status: $HTTP_CODE"
+  
+  if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')
+    error "Signup failed (HTTP $HTTP_CODE): $ERROR_MSG"
+  fi
+  
+  # Extract token from response
+  API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token // empty')
+  
+  if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "No token received"')
+    error "Authentication failed: $ERROR_MSG"
   fi
   
   # Save token
@@ -132,7 +150,7 @@ signup_user() {
   log "Account created successfully!"
 }
 
-# Login existing user
+# Login existing user - FIXED error handling
 login_user() {
   echo ""
   read -p "Email: " email
@@ -141,15 +159,26 @@ login_user() {
   
   info "Logging in..."
   
-  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
+  # Make login request
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$password\"}")
   
-  API_TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
+  # Split response body and status code
+  HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+  HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
   
-  if [ -z "$API_TOKEN" ]; then
-    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
-    error "Login failed: $ERROR_MSG"
+  if [ "$HTTP_CODE" != "200" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')
+    error "Login failed (HTTP $HTTP_CODE): $ERROR_MSG"
+  fi
+  
+  # Extract token
+  API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token // empty')
+  
+  if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "No token received"')
+    error "Authentication failed: $ERROR_MSG"
   fi
   
   # Save token
@@ -304,12 +333,10 @@ detect_storage() {
   STORAGE_DEVICES=()
   
   if [ "$OS" = "linux" ]; then
-    # Detect all mounted filesystems
     while IFS= read -r line; do
       DEV=$(echo $line | awk '{print $1}')
       MOUNT=$(echo $line | awk '{print $7}')
       
-      # Skip if no mount or loop device
       if [ -z "$MOUNT" ] || [[ "$DEV" == loop* ]]; then
         continue
       fi
@@ -323,7 +350,6 @@ detect_storage() {
       fi
     done < <(lsblk -o NAME,MOUNTPOINT | grep "/" | grep -v "^NAME")
   else
-    # macOS
     while IFS= read -r line; do
       DEV=$(echo $line | awk '{print $1}')
       MOUNT=$(echo $line | awk '{print $9}')
@@ -346,7 +372,6 @@ select_storage() {
   for device in "${STORAGE_DEVICES[@]}"; do
     IFS='|' read -r dev mount total avail <<< "$device"
     
-    # Auto-select root
     if [ "$mount" = "/" ]; then
       log "Auto-selected: $mount (${avail}GB available)"
       SELECTED_STORAGE+=("$device")
@@ -354,7 +379,6 @@ select_storage() {
       continue
     fi
     
-    # Ask about others
     read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -364,7 +388,6 @@ select_storage() {
     fi
   done
   
-  # Calculate share
   if [ $TOTAL_STORAGE -ge 500 ]; then
     STORAGE_SHARE=20
   elif [ $TOTAL_STORAGE -ge 100 ]; then
@@ -377,7 +400,7 @@ select_storage() {
   log "Total: ${TOTAL_STORAGE}GB, Share: ${STORAGE_SHARE}% (~${STORAGE_GB_SHARED}GB)"
 }
 
-# Register worker via API
+# Register worker via API - FIXED error handling
 register_worker() {
   section "Worker Registration"
   
@@ -406,15 +429,23 @@ register_worker() {
 EOF
 )
   
-  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
     -H "Authorization: Bearer $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
   
-  WORKER_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+  HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+  HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
   
-  if [ -z "$WORKER_ID" ]; then
-    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
+  if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')
+    error "Worker registration failed (HTTP $HTTP_CODE): $ERROR_MSG"
+  fi
+  
+  WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id // empty')
+  
+  if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
+    ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "No worker ID received"')
     error "Worker registration failed: $ERROR_MSG"
   fi
   
@@ -456,24 +487,20 @@ EOF
 start_worker() {
   section "Starting Worker"
   
-  # Stop existing
   docker stop distributex-worker 2>/dev/null || true
   docker rm distributex-worker 2>/dev/null || true
   
-  # Build docker command
   DOCKER_CMD="docker run -d --name distributex-worker --restart unless-stopped"
   DOCKER_CMD="$DOCKER_CMD -v $CONFIG_DIR:/config:ro"
   DOCKER_CMD="$DOCKER_CMD --cpus=$(echo "$CPU_CORES * $CPU_SHARE / 100" | bc)"
   DOCKER_CMD="$DOCKER_CMD --memory=$(echo "$RAM_TOTAL * $RAM_SHARE / 100" | bc)m"
   
-  # Add GPU if available
   if [ "$GPU_AVAILABLE" = true ]; then
     if command -v nvidia-smi &> /dev/null; then
       DOCKER_CMD="$DOCKER_CMD --gpus all"
     fi
   fi
   
-  # Storage mounts
   for device in "${SELECTED_STORAGE[@]}"; do
     IFS='|' read -r dev mount total avail <<< "$device"
     DOCKER_CMD="$DOCKER_CMD -v $mount:/storage$(echo $mount | tr '/' '_'):rw"
@@ -500,7 +527,6 @@ start_worker() {
 setup_monitoring() {
   section "Monitoring Setup"
   
-  # Create health check script
   cat > /usr/local/bin/distributex-monitor <<'EOF'
 #!/bin/bash
 if ! docker ps | grep -q distributex-worker; then
@@ -510,7 +536,6 @@ EOF
   
   chmod +x /usr/local/bin/distributex-monitor
   
-  # Add to cron
   (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/distributex-monitor") | crontab -
   
   log "Health monitoring enabled (every 5 minutes)"
