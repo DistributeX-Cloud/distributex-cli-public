@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 # DistributeX Production Worker Installer
-# Usage: curl -sSL https://your-site.pages.dev/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 #
-# FIXED: Proper authentication flow matching frontend API
+# FIXED: Proper authentication flow and input handling
 #
 
 set -e
@@ -44,7 +44,7 @@ check_requirements() {
   fi
 }
 
-# User authentication - FIXED to match frontend API
+# User authentication - FIXED to prevent premature exit
 authenticate_user() {
   section "User Authentication"
   
@@ -66,31 +66,34 @@ authenticate_user() {
     fi
   fi
   
-echo ""
-echo "Choose an option:"
-echo "  1) Sign up for new account"
-echo "  2) Login to existing account"
-echo ""
-
-# Force valid input before continuing
-while true; do
-  read -p "Enter choice [1-2]: " auth_choice
-
-  case $auth_choice in
-    1)
-      signup_user
-      break
-      ;;
-    2)
-      login_user
-      break
-      ;;
-    *)
-      echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
-      ;;
-  esac
-done
-
+  echo ""
+  echo "Choose an option:"
+  echo "  1) Sign up for new account"
+  echo "  2) Login to existing account"
+  echo ""
+  
+  # Force valid input before continuing - FIXED
+  local auth_choice=""
+  while true; do
+    read -p "Enter choice [1-2]: " auth_choice
+    
+    # Remove any whitespace
+    auth_choice=$(echo "$auth_choice" | tr -d '[:space:]')
+    
+    case "$auth_choice" in
+      1)
+        signup_user
+        break
+        ;;
+      2)
+        login_user
+        break
+        ;;
+      *)
+        echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+        ;;
+    esac
+  done
 } 
 
 # Sign up new user - FIXED error handling
@@ -131,10 +134,6 @@ signup_user() {
   # Split response body and status code
   HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
   HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
-  
-  # Debug output (remove in production)
-  # echo "Response: $HTTP_BODY"
-  # echo "Status: $HTTP_CODE"
   
   if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
     ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')
@@ -579,7 +578,7 @@ ${GREEN}🎉 Your device is now contributing to the network!${NC}
 EOF
 }
 
-# Main
+# Main execution
 main() {
   clear
   
@@ -609,4 +608,5 @@ EOF
   show_summary
 }
 
+# Run main function
 main
