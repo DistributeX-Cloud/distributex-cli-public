@@ -1,0 +1,26 @@
+# DistributeX Worker Container
+FROM node:20-alpine
+
+# Install system tools
+RUN apk add --no-cache \
+    curl \
+    bash \
+    docker-cli
+
+WORKDIR /worker
+
+# Copy worker script
+COPY worker.js .
+
+# Create config mount point
+RUN mkdir -p /config
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
+
+# Expose health port
+EXPOSE 3001
+
+# Run worker
+CMD ["node", "worker.js"]
