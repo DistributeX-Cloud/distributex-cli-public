@@ -1,0 +1,34 @@
+{
+  "name": "@distributex/cli",
+  "version": "1.0.0",
+  "description": "Developer SDK for DistributeX distributed computing platform",
+  "main": "distributex-cli.js",
+  "bin": {
+    "distributex": "./distributex-cli.js"
+  },
+  "scripts": {
+    "test": "echo \"Tests coming soon\""
+  },
+  "keywords": [
+    "distributed-computing",
+    "cloud",
+    "parallel",
+    "docker",
+    "gpu",
+    "ml",
+    "distributex"
+  ],
+  "author": "DistributeX Team",
+  "license": "MIT",
+  "dependencies": {
+    "tar": "^6.2.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/distributex-sdk"
+  },
+  "homepage": "https://distributex.io",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
