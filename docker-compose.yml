@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  distributex-worker:
+    image: distributex/worker:latest
+    container_name: distributex-worker
+    restart: unless-stopped
+    
+    # Set your API key here or via .env file
+    command: 
+      - --api-key
+      - ${DISTRIBUTEX_API_KEY}
+      - --url
+      - ${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}
+    
+    # Resource limits (these will be auto-detected and configured)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'  # Will be overridden by installer
+          memory: 4G   # Will be overridden by installer
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Optional: GPU support (uncomment for NVIDIA GPUs)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    
+    # Mount config directory
+    volumes:
+      - ${HOME}/.distributex:/config:ro
+      # Optional: Add storage volumes
+      # - /path/to/storage:/storage:rw
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('ok')"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # Network
+    network_mode: bridge
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
