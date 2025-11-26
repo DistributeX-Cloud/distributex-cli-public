@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Agent - Docker Optimized
+ * DistributeX Worker Agent - Advanced Version
  * 
- * Optimized for running inside Docker containers
+ * Features:
+ * - Device fingerprinting for tracking same device across restarts
+ * - Multiple GPU device detection and tracking
+ * - Proper disconnection handling
+ * - CUDA version detection
  */
 
 const os = require('os');
@@ -11,6 +15,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 const execAsync = promisify(exec);
 
@@ -29,6 +34,7 @@ class DistributeXWorker {
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl || CONFIG.API_BASE_URL;
     this.workerId = null;
+    this.deviceFingerprint = null;
     this.heartbeatInterval = null;
     this.isRunning = false;
     this.metrics = {
@@ -39,7 +45,157 @@ class DistributeXWorker {
   }
 
   /**
-   * Detect system capabilities (Docker-aware)
+   * Generate unique device fingerprint
+   */
+  async generateDeviceFingerprint() {
+    const hostname = os.hostname();
+    const cpuModel = os.cpus()[0]?.model || 'unknown';
+    const platform = os.platform();
+    const arch = os.arch();
+    
+    // Try to get MAC address
+    let macAddress = 'unknown';
+    try {
+      const networkInterfaces = os.networkInterfaces();
+      for (const [name, interfaces] of Object.entries(networkInterfaces)) {
+        for (const iface of interfaces) {
+          if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
+            macAddress = iface.mac;
+            break;
+          }
+        }
+        if (macAddress !== 'unknown') break;
+      }
+    } catch (e) {
+      console.warn('Could not get MAC address');
+    }
+    
+    // Create fingerprint
+    const fingerprintData = `${hostname}-${macAddress}-${cpuModel}-${platform}-${arch}`;
+    const fingerprint = crypto.createHash('sha256').update(fingerprintData).digest('hex').substring(0, 32);
+    
+    console.log('📌 Device Fingerprint:', fingerprint);
+    return fingerprint;
+  }
+
+  /**
+   * Detect GPU devices and capabilities
+   */
+  async detectGPU() {
+    let gpuInfo = { 
+      available: false, 
+      model: null, 
+      memory: null,
+      count: 0,
+      driverVersion: null,
+      cudaVersion: null
+    };
+    
+    try {
+      const platform = os.platform();
+      
+      if (platform === 'linux') {
+        // Try NVIDIA first
+        try {
+          const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version,count --format=csv,noheader');
+          const lines = stdout.trim().split('\n');
+          
+          if (lines.length > 0 && lines[0]) {
+            // Parse first GPU info
+            const [name, memory, driverVersion] = lines[0].split(',').map(s => s.trim());
+            gpuInfo.available = true;
+            gpuInfo.model = name;
+            gpuInfo.memory = parseInt(memory);
+            gpuInfo.driverVersion = driverVersion;
+            gpuInfo.count = lines.length; // Count of GPU devices
+            
+            // Try to get CUDA version
+            try {
+              const { stdout: cudaOut } = await execAsync('nvcc --version 2>/dev/null || nvidia-smi | grep "CUDA Version"');
+              const cudaMatch = cudaOut.match(/CUDA Version[:\s]+(\d+\.\d+)/i);
+              if (cudaMatch) {
+                gpuInfo.cudaVersion = cudaMatch[1];
+              }
+            } catch (e) {
+              console.log('Could not detect CUDA version');
+            }
+            
+            console.log(`✓ Detected ${gpuInfo.count} NVIDIA GPU(s): ${gpuInfo.model}`);
+          }
+        } catch (e) {
+          // Try AMD ROCm
+          try {
+            const { stdout } = await execAsync('rocm-smi --showproductname 2>/dev/null');
+            const gpuMatches = stdout.match(/GPU\[(\d+)\].*:\s*(.+)/g);
+            if (gpuMatches && gpuMatches.length > 0) {
+              gpuInfo.available = true;
+              gpuInfo.model = gpuMatches[0].split(':')[1].trim();
+              gpuInfo.count = gpuMatches.length;
+              
+              // Try to get memory
+              const { stdout: memOut } = await execAsync('rocm-smi --showmeminfo vram 2>/dev/null');
+              const memMatch = memOut.match(/Total.*?(\d+)/);
+              if (memMatch) {
+                gpuInfo.memory = parseInt(memMatch[1]);
+              }
+              
+              console.log(`✓ Detected ${gpuInfo.count} AMD GPU(s): ${gpuInfo.model}`);
+            }
+          } catch (e) {
+            // No AMD GPU found
+          }
+        }
+      } else if (platform === 'darwin') {
+        // macOS Metal detection
+        try {
+          const { stdout } = await execAsync('system_profiler SPDisplaysDataType 2>/dev/null');
+          const gpuMatch = stdout.match(/Chipset Model:\s*(.+)/);
+          if (gpuMatch) {
+            gpuInfo.available = true;
+            gpuInfo.model = gpuMatch[1].trim();
+            gpuInfo.count = 1; // macOS typically has 1 integrated GPU
+            
+            // Estimate memory from total RAM
+            const totalRam = os.totalmem();
+            gpuInfo.memory = Math.floor(totalRam / (1024 * 1024) * 0.5); // Estimate 50% of RAM
+            
+            console.log(`✓ Detected Metal GPU: ${gpuInfo.model}`);
+          }
+        } catch (e) {
+          // No GPU detection on macOS
+        }
+      } else if (platform === 'win32') {
+        // Windows GPU detection
+        try {
+          const { stdout } = await execAsync('wmic path win32_VideoController get name,AdapterRAM');
+          const lines = stdout.trim().split('\n').slice(1).filter(l => l.trim());
+          
+          if (lines.length > 0) {
+            const firstGpu = lines[0].trim().split(/\s{2,}/);
+            gpuInfo.available = true;
+            gpuInfo.model = firstGpu[1] || 'Unknown GPU';
+            gpuInfo.memory = firstGpu[0] ? Math.floor(parseInt(firstGpu[0]) / (1024 * 1024)) : null;
+            gpuInfo.count = lines.length;
+            
+            console.log(`✓ Detected ${gpuInfo.count} GPU(s): ${gpuInfo.model}`);
+          }
+        } catch (e) {
+          // No GPU detection on Windows
+        }
+      }
+    } catch (error) {
+      console.log('GPU detection failed:', error.message);
+    }
+    
+    if (!gpuInfo.available) {
+      console.log('ℹ No GPU detected or GPU tools not installed');
+    }
+    
+    return gpuInfo;
+  }
+
+  /**
+   * Detect system capabilities with advanced GPU info
    */
   async detectSystemCapabilities() {
     console.log('🔍 Detecting system capabilities...');
@@ -54,7 +210,10 @@ class DistributeXWorker {
     // Storage Detection  
     let storageInfo = await this.detectStorage();
 
-    // In Docker, use more conservative sharing percentages
+    // Generate device fingerprint
+    this.deviceFingerprint = await this.generateDeviceFingerprint();
+
+    // Calculate sharing percentages
     const cpuSharePercent = CONFIG.IS_DOCKER ? 80 : (cpus.length >= 8 ? 50 : cpus.length >= 4 ? 40 : 30);
     const ramSharePercent = CONFIG.IS_DOCKER ? 80 : (totalRam >= 16384 ? 30 : totalRam >= 8192 ? 25 : 20);
     const gpuSharePercent = gpuInfo.available ? (CONFIG.IS_DOCKER ? 90 : 50) : 0;
@@ -72,49 +231,25 @@ class DistributeXWorker {
       gpuAvailable: gpuInfo.available,
       gpuModel: gpuInfo.model,
       gpuMemory: gpuInfo.memory,
+      gpuCount: gpuInfo.count,
+      gpuDriverVersion: gpuInfo.driverVersion,
+      gpuCudaVersion: gpuInfo.cudaVersion,
       storageTotal: storageInfo.total,
       storageAvailable: storageInfo.available,
       cpuSharePercent,
       ramSharePercent,
       gpuSharePercent,
       storageSharePercent,
+      isDocker: CONFIG.IS_DOCKER,
+      dockerContainerId: process.env.HOSTNAME || null,
+      deviceFingerprint: this.deviceFingerprint
     };
 
     return capabilities;
   }
 
   /**
-   * Detect GPU
-   */
-  async detectGPU() {
-    let gpuInfo = { available: false, model: null, memory: null };
-    
-    try {
-      const platform = os.platform();
-      
-      if (platform === 'linux') {
-        try {
-          const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader');
-          const lines = stdout.trim().split('\n');
-          if (lines.length > 0) {
-            const [name, memory] = lines[0].split(',');
-            gpuInfo.available = true;
-            gpuInfo.model = name.trim();
-            gpuInfo.memory = parseInt(memory.trim());
-          }
-        } catch (e) {
-          // No GPU or drivers not installed
-        }
-      }
-    } catch (error) {
-      // GPU detection failed
-    }
-
-    return gpuInfo;
-  }
-
-  /**
-   * Detect storage
+   * Detect storage (unchanged)
    */
   async detectStorage() {
     let storageInfo = { total: 100, available: 50 }; // Defaults in GB
@@ -136,7 +271,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Make HTTP request with retry logic
+   * Make HTTP request with retry logic (unchanged)
    */
   async makeRequest(method, path, data = null, retries = CONFIG.RETRY_ATTEMPTS) {
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -153,7 +288,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Single HTTP request attempt
+   * Single HTTP request attempt (unchanged)
    */
   async _makeRequestOnce(method, path, data = null) {
     return new Promise((resolve, reject) => {
@@ -163,7 +298,7 @@ class DistributeXWorker {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker-Docker/2.0'
+          'User-Agent': 'DistributeX-Worker-Advanced/3.0'
         },
         timeout: 30000
       };
@@ -198,7 +333,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Register worker with network
+   * Register worker with advanced capabilities
    */
   async register() {
     console.log('🔍 Detecting system capabilities...');
@@ -206,34 +341,38 @@ class DistributeXWorker {
     
     console.log('\n📊 System Information:');
     console.log(`  Environment: ${CONFIG.IS_DOCKER ? 'Docker Container' : 'Native'}`);
+    console.log(`  Device ID: ${capabilities.deviceFingerprint}`);
     console.log(`  CPU: ${capabilities.cpuCores} cores (${capabilities.cpuModel})`);
     console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)} GB total`);
-    console.log(`  GPU: ${capabilities.gpuAvailable ? capabilities.gpuModel : 'Not available'}`);
+    
+    if (capabilities.gpuAvailable) {
+      console.log(`  GPU: ${capabilities.gpuCount}x ${capabilities.gpuModel}`);
+      if (capabilities.gpuMemory) {
+        console.log(`       ${Math.floor(capabilities.gpuMemory / 1024)} GB VRAM per GPU`);
+      }
+      if (capabilities.gpuDriverVersion) {
+        console.log(`       Driver: ${capabilities.gpuDriverVersion}`);
+      }
+      if (capabilities.gpuCudaVersion) {
+        console.log(`       CUDA: ${capabilities.gpuCudaVersion}`);
+      }
+    } else {
+      console.log(`  GPU: Not available`);
+    }
+    
     console.log(`  Storage: ${capabilities.storageTotal} GB total`);
     
     console.log('\n📤 Sharing Configuration:');
     console.log(`  CPU: ${capabilities.cpuSharePercent}% (${Math.floor(capabilities.cpuCores * capabilities.cpuSharePercent / 100)} cores)`);
     console.log(`  RAM: ${capabilities.ramSharePercent}% (~${Math.floor(capabilities.ramAvailable * capabilities.ramSharePercent / 100 / 1024)} GB)`);
-    console.log(`  GPU: ${capabilities.gpuSharePercent}%`);
+    console.log(`  GPU: ${capabilities.gpuSharePercent}% (${Math.ceil(capabilities.gpuCount * capabilities.gpuSharePercent / 100)} devices)`);
     console.log(`  Storage: ${capabilities.storageSharePercent}% (~${Math.floor(capabilities.storageTotal * capabilities.storageSharePercent / 100)} GB)`);
 
     console.log('\n🚀 Registering worker...');
     const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
     this.workerId = worker.id;
     
-    // Save worker ID to file
-    try {
-      const configDir = CONFIG.IS_DOCKER ? '/config' : path.join(os.homedir(), '.distributex');
-      await fs.mkdir(configDir, { recursive: true });
-      await fs.writeFile(
-        path.join(configDir, 'worker-id'),
-        this.workerId
-      );
-    } catch (e) {
-      console.warn('Could not save worker ID:', e.message);
-    }
-    
-    console.log(`✅ Worker registered! ID: ${this.workerId}`);
+    console.log(`✅ Worker ${worker.isNew ? 'registered' : 'reconnected'}! ID: ${this.workerId}`);
     return worker;
   }
 
@@ -308,7 +447,8 @@ class DistributeXWorker {
         console.log('\n📊 Worker Stats:');
         console.log(`  Successful heartbeats: ${this.metrics.successfulHeartbeats}`);
         console.log(`  Last heartbeat: ${this.metrics.lastHeartbeat?.toLocaleString() || 'Never'}`);
-        console.log(`  Worker ID: ${this.workerId}\n`);
+        console.log(`  Worker ID: ${this.workerId}`);
+        console.log(`  Device ID: ${this.deviceFingerprint}\n`);
       }, 3600000);
 
     } catch (error) {
@@ -318,7 +458,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Stop worker gracefully
+   * Stop worker gracefully with proper disconnection
    */
   async stop() {
     console.log('\n🛑 Stopping worker...');
@@ -330,16 +470,13 @@ class DistributeXWorker {
 
     if (this.workerId) {
       try {
-        await this.makeRequest('POST', `/api/workers/${this.workerId}/heartbeat`, {
-          ramAvailable: 0,
-          storageAvailable: 0,
-          status: 'offline',
-        }, 1);
+        // Send disconnect request
+        await this.makeRequest('DELETE', `/api/workers/${this.workerId}`, null, 1);
         
-        console.log('✅ Worker stopped gracefully');
+        console.log('✅ Worker disconnected gracefully');
         console.log(`📊 Total heartbeats sent: ${this.metrics.successfulHeartbeats}`);
       } catch (error) {
-        console.warn('Warning: Failed to send offline status');
+        console.warn('Warning: Failed to send disconnect signal');
       }
     }
     
@@ -367,8 +504,9 @@ if (require.main === module) {
 
   // Banner
   console.log('\n╔═════════════════════════════════════════════════════════════════════════════════╗');
-  console.log('  ║                           DistributeX Worker Agent v2.0                         ║');
+  console.log('  ║                        DistributeX Worker Agent v3.0                            ║');
   console.log(`  ║      ${CONFIG.IS_DOCKER ? 'Docker Container Mode 🐳' : 'Native Mode 💻'}        ║`);
+  console.log('  ║                   Advanced GPU & Device Tracking                                ║');
   console.log('  ╚═════════════════════════════════════════════════════════════════════════════════╝\n');
 
   const worker = new DistributeXWorker(config);
