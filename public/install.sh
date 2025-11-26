@@ -1,15 +1,15 @@
 #!/bin/bash
 #
 # DistributeX Production Worker Installer
-# Downloads automatically from: curl -sSL https://your-site.pages.dev/install.sh | bash
+# Usage: curl -sSL https://distributex-cloud.pages.dev/install.sh | bash
 #
 # This script:
-# - Detects all system resources (CPU, RAM, GPU, Storage)
-# - Offers to mount additional storage devices
-# - Sets up Docker containers for isolation
-# - Auto-registers with the DistributeX network
-# - Configures auto-updates and health monitoring
-# - Reports real-time metrics to the API
+# 1. Handles user signup/login
+# 2. Detects all system resources (CPU, RAM, GPU, Storage)
+# 3. Discovers external storage devices
+# 4. Sets up Docker containers for isolation
+# 5. Auto-registers worker with API
+# 6. Configures auto-updates and monitoring
 #
 
 set -e
@@ -17,28 +17,28 @@ set -e
 # Configuration
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud.pages.dev}"
 WORKER_IMAGE="distributex/worker:latest"
-AGENT_VERSION="1.0.0"
+AGENT_VERSION="2.0.0"
+CONFIG_DIR="$HOME/.distributex"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Logging functions
+# Logging
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
-section() { echo -e "\n${MAGENTA}▶ $1${NC}\n"; }
+section() { echo -e "\n${MAGENTA}━━━ $1 ━━━${NC}\n"; }
 
-# Check for required commands
+# Check requirements
 check_requirements() {
   local missing=()
-  
   for cmd in curl jq bc; do
     if ! command -v $cmd &> /dev/null; then
       missing+=($cmd)
@@ -46,49 +46,151 @@ check_requirements() {
   done
   
   if [ ${#missing[@]} -gt 0 ]; then
-    error "Missing required commands: ${missing[*]}. Please install them first."
+    error "Missing required commands: ${missing[*]}. Install with: sudo apt install ${missing[*]}"
   fi
 }
 
-# Check permissions
-check_permissions() {
-  if [ "$EUID" -ne 0 ]; then
-    warn "Running without root privileges. Some features may be limited."
-    SUDO="sudo"
-    # Check if user has sudo access
-    if ! sudo -n true 2>/dev/null; then
-      warn "This script may prompt for your password to install system components."
+# User authentication
+authenticate_user() {
+  section "User Authentication"
+  
+  # Check for existing token
+  if [ -f "$CONFIG_DIR/token" ]; then
+    API_TOKEN=$(cat "$CONFIG_DIR/token")
+    
+    # Verify token
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -H "Authorization: Bearer $API_TOKEN" \
+      "$DISTRIBUTEX_API_URL/api/auth/user")
+    
+    if [ "$HTTP_CODE" = "200" ]; then
+      log "Using existing authentication"
+      return 0
+    else
+      warn "Existing token expired, need to login again"
+      rm -f "$CONFIG_DIR/token"
     fi
-  else
-    SUDO=""
   fi
+  
+  echo ""
+  echo "Choose an option:"
+  echo "  1) Sign up for new account"
+  echo "  2) Login to existing account"
+  echo ""
+  read -p "Enter choice [1-2]: " auth_choice
+  
+  case $auth_choice in
+    1)
+      signup_user
+      ;;
+    2)
+      login_user
+      ;;
+    *)
+      error "Invalid choice"
+      ;;
+  esac
+}
+
+# Sign up new user
+signup_user() {
+  echo ""
+  read -p "First Name: " first_name
+  read -p "Last Name: " last_name
+  read -p "Email: " email
+  read -s -p "Password (min 8 chars): " password
+  echo ""
+  read -s -p "Confirm Password: " password_confirm
+  echo ""
+  
+  if [ "$password" != "$password_confirm" ]; then
+    error "Passwords do not match"
+  fi
+  
+  if [ ${#password} -lt 8 ]; then
+    error "Password must be at least 8 characters"
+  fi
+  
+  info "Creating account..."
+  
+  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
+  
+  API_TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
+  
+  if [ -z "$API_TOKEN" ]; then
+    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
+    error "Signup failed: $ERROR_MSG"
+  fi
+  
+  # Save token
+  mkdir -p "$CONFIG_DIR"
+  echo "$API_TOKEN" > "$CONFIG_DIR/token"
+  chmod 600 "$CONFIG_DIR/token"
+  
+  log "Account created successfully!"
+}
+
+# Login existing user
+login_user() {
+  echo ""
+  read -p "Email: " email
+  read -s -p "Password: " password
+  echo ""
+  
+  info "Logging in..."
+  
+  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+  
+  API_TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
+  
+  if [ -z "$API_TOKEN" ]; then
+    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
+    error "Login failed: $ERROR_MSG"
+  fi
+  
+  # Save token
+  mkdir -p "$CONFIG_DIR"
+  echo "$API_TOKEN" > "$CONFIG_DIR/token"
+  chmod 600 "$CONFIG_DIR/token"
+  
+  log "Logged in successfully!"
 }
 
 # Detect operating system
 detect_os() {
-  section "Detecting Operating System"
+  section "System Detection"
   
-  if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    OS="linux"
-    if [ -f /etc/os-release ]; then
-      . /etc/os-release
-      DISTRO=$ID
-      DISTRO_VERSION=$VERSION_ID
-    fi
-  elif [[ "$OSTYPE" == "darwin"* ]]; then
-    OS="macos"
-    DISTRO="macos"
-    DISTRO_VERSION=$(sw_vers -productVersion)
-  else
-    error "Unsupported OS: $OSTYPE"
-  fi
+  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+  ARCH=$(uname -m)
   
-  log "Operating System: $OS"
-  log "Distribution: $DISTRO $DISTRO_VERSION"
-  log "Architecture: $(uname -m)"
+  case "$OS" in
+    linux*)
+      OS="linux"
+      if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO=$ID
+        DISTRO_VERSION=$VERSION_ID
+      fi
+      ;;
+    darwin*)
+      OS="darwin"
+      DISTRO="macos"
+      DISTRO_VERSION=$(sw_vers -productVersion)
+      ;;
+    *)
+      error "Unsupported OS: $OS"
+      ;;
+  esac
+  
+  log "OS: $OS ($DISTRO $DISTRO_VERSION)"
+  log "Architecture: $ARCH"
 }
 
-# Install Docker
+# Install Docker if needed
 install_docker() {
   if command -v docker &> /dev/null; then
     log "Docker already installed: $(docker --version)"
@@ -97,55 +199,27 @@ install_docker() {
 
   section "Installing Docker"
   
-  if [[ "$OS" == "linux" ]]; then
-    info "Installing Docker via official script..."
-    curl -fsSL https://get.docker.com | $SUDO sh
-    
-    # Add current user to docker group
-    $SUDO usermod -aG docker $USER || true
-    
-    # Start Docker service
-    $SUDO systemctl start docker || true
-    $SUDO systemctl enable docker || true
-    
-    log "Docker installed successfully"
-    warn "Note: You may need to log out and back in for group changes to take effect"
-  elif [[ "$OS" == "macos" ]]; then
+  if [ "$OS" = "linux" ]; then
+    info "Installing Docker..."
+    curl -fsSL https://get.docker.com | sudo sh
+    sudo usermod -aG docker $USER || true
+    sudo systemctl start docker || true
+    sudo systemctl enable docker || true
+    log "Docker installed"
+    warn "You may need to log out and back in for group changes"
+  else
     error "Please install Docker Desktop manually: https://www.docker.com/products/docker-desktop"
   fi
 }
 
-# Detect CPU capabilities
+# Detect CPU
 detect_cpu() {
-  section "Detecting CPU"
+  section "CPU Detection"
   
-  if [[ "$OS" == "linux" ]]; then
-    CPU_CORES=$(nproc)
-    CPU_MODEL=$(lscpu | grep "^Model name:" | cut -d: -f2 | xargs)
-    CPU_ARCH=$(uname -m)
-    CPU_FREQ=$(lscpu | grep "^CPU MHz:" | cut -d: -f2 | xargs | cut -d. -f1)
-    
-    # Check for virtualization support
-    if grep -q "vmx\|svm" /proc/cpuinfo; then
-      CPU_VIRT="enabled"
-    else
-      CPU_VIRT="disabled"
-    fi
-  elif [[ "$OS" == "macos" ]]; then
-    CPU_CORES=$(sysctl -n hw.ncpu)
-    CPU_MODEL=$(sysctl -n machdep.cpu.brand_string)
-    CPU_ARCH=$(uname -m)
-    CPU_FREQ=$(sysctl -n hw.cpufrequency | awk '{print int($1/1000000)}')
-    CPU_VIRT="unknown"
-  fi
+  CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
   
-  log "CPU Model: $CPU_MODEL"
-  log "CPU Cores: $CPU_CORES"
-  log "CPU Architecture: $CPU_ARCH"
-  log "CPU Frequency: ~${CPU_FREQ}MHz"
-  log "Virtualization: $CPU_VIRT"
-  
-  # Calculate safe CPU share (30-50% based on core count)
+  # Calculate share percentage
   if [ $CPU_CORES -ge 8 ]; then
     CPU_SHARE=50
   elif [ $CPU_CORES -ge 4 ]; then
@@ -154,32 +228,26 @@ detect_cpu() {
     CPU_SHARE=30
   fi
   
-  CPU_CORES_SHARED=$(echo "scale=1; $CPU_CORES * $CPU_SHARE / 100" | bc)
-  info "Will share: ${CPU_SHARE}% (~${CPU_CORES_SHARED} cores)"
+  log "CPU: $CPU_MODEL"
+  log "Cores: $CPU_CORES"
+  log "Share: ${CPU_SHARE}% (~$(echo "$CPU_CORES * $CPU_SHARE / 100" | bc) cores)"
 }
 
 # Detect RAM
 detect_ram() {
-  section "Detecting RAM"
+  section "RAM Detection"
   
-  if [[ "$OS" == "linux" ]]; then
+  if [ "$OS" = "linux" ]; then
     RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
     RAM_AVAILABLE=$(free -m | awk '/^Mem:/{print $7}')
-    RAM_TYPE=$(dmidecode -t memory 2>/dev/null | grep "Type:" | head -1 | awk '{print $2}' || echo "Unknown")
-  elif [[ "$OS" == "macos" ]]; then
+  else
     RAM_TOTAL=$(( $(sysctl -n hw.memsize) / 1024 / 1024 ))
     RAM_AVAILABLE=$(( $(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//') * 4096 / 1024 / 1024 ))
-    RAM_TYPE="Unknown"
   fi
   
   RAM_TOTAL_GB=$(echo "scale=2; $RAM_TOTAL / 1024" | bc)
-  RAM_AVAILABLE_GB=$(echo "scale=2; $RAM_AVAILABLE / 1024" | bc)
   
-  log "Total RAM: ${RAM_TOTAL_GB}GB (${RAM_TOTAL}MB)"
-  log "Available RAM: ${RAM_AVAILABLE_GB}GB (${RAM_AVAILABLE}MB)"
-  log "Memory Type: $RAM_TYPE"
-  
-  # Calculate safe RAM share (20-30% of available)
+  # Calculate share
   if [ $RAM_TOTAL -ge 16384 ]; then
     RAM_SHARE=30
   elif [ $RAM_TOTAL -ge 8192 ]; then
@@ -188,569 +256,313 @@ detect_ram() {
     RAM_SHARE=20
   fi
   
-  RAM_MB_SHARED=$(echo "$RAM_AVAILABLE * $RAM_SHARE / 100" | bc)
-  RAM_GB_SHARED=$(echo "scale=2; $RAM_MB_SHARED / 1024" | bc)
-  info "Will share: ${RAM_SHARE}% (~${RAM_GB_SHARED}GB)"
+  log "Total RAM: ${RAM_TOTAL_GB}GB"
+  log "Share: ${RAM_SHARE}%"
 }
 
 # Detect GPU
 detect_gpu() {
-  section "Detecting GPU"
+  section "GPU Detection"
   
   GPU_AVAILABLE=false
   GPU_MODEL="none"
   GPU_MEMORY=0
-  GPU_DRIVER=""
+  GPU_SHARE=0
   
-  # NVIDIA GPU Detection
+  # NVIDIA
   if command -v nvidia-smi &> /dev/null; then
     GPU_AVAILABLE=true
     GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
     GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
-    GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-    GPU_TYPE="NVIDIA"
-    
-    log "NVIDIA GPU Detected: $GPU_MODEL"
-    log "GPU Memory: ${GPU_MEMORY}MB"
-    log "Driver Version: $GPU_DRIVER"
-    
-  # AMD GPU Detection (Linux)
-  elif [[ "$OS" == "linux" ]] && lspci | grep -i "vga\|3d\|display" | grep -i "amd\|radeon" &> /dev/null; then
+    GPU_SHARE=50
+    log "NVIDIA GPU: $GPU_MODEL (${GPU_MEMORY}MB)"
+  # AMD
+  elif command -v rocm-smi &> /dev/null; then
     GPU_AVAILABLE=true
-    GPU_MODEL=$(lspci | grep -i "vga\|3d" | grep -i "amd\|radeon" | head -n1 | cut -d: -f3 | xargs)
-    GPU_TYPE="AMD"
-    
-    # Try to detect VRAM
-    if command -v rocm-smi &> /dev/null; then
-      GPU_MEMORY=$(rocm-smi --showmeminfo vram --json | jq -r '.card0."VRAM Total Memory (B)"' | awk '{print int($1/1024/1024)}')
-    fi
-    
-    log "AMD GPU Detected: $GPU_MODEL"
-    if [ $GPU_MEMORY -gt 0 ]; then
-      log "GPU Memory: ${GPU_MEMORY}MB"
-    fi
-    
-  # Apple Silicon GPU (macOS)
-  elif [[ "$OS" == "macos" ]] && [[ $(uname -m) == "arm64" ]]; then
+    GPU_MODEL="AMD GPU"
+    GPU_SHARE=50
+    log "AMD GPU detected"
+  # Apple Silicon
+  elif [ "$OS" = "darwin" ] && [[ "$ARCH" == "arm64" ]]; then
     GPU_AVAILABLE=true
     GPU_MODEL="Apple Silicon GPU"
-    GPU_TYPE="Apple"
-    
-    # Apple Silicon shares system RAM
-    GPU_MEMORY=$(echo "$RAM_TOTAL / 2" | bc)
-    
-    log "Apple Silicon GPU Detected"
-    log "Unified Memory: ${GPU_MEMORY}MB available for GPU"
-  
-  # Intel Integrated Graphics
-  elif [[ "$OS" == "linux" ]] && lspci | grep -i "vga\|3d\|display" | grep -i "intel" &> /dev/null; then
-    GPU_MODEL=$(lspci | grep -i "vga\|3d" | grep -i "intel" | head -n1 | cut -d: -f3 | xargs)
-    GPU_TYPE="Intel"
-    
-    info "Intel Integrated Graphics detected: $GPU_MODEL"
-    info "Note: Integrated graphics have limited compute capability"
-    
-    # Ask if user wants to share integrated GPU
-    read -p "Enable Intel GPU sharing? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      GPU_AVAILABLE=true
-      log "Intel GPU enabled for sharing"
-    else
-      warn "Intel GPU disabled for sharing"
-    fi
+    GPU_SHARE=50
+    log "Apple Silicon GPU detected"
   else
-    warn "No compatible GPU detected"
+    warn "No compatible GPU found"
   fi
   
-  # GPU share percentage
   if [ "$GPU_AVAILABLE" = true ]; then
-    GPU_SHARE=50
-    info "Will share: ${GPU_SHARE}% of GPU when idle"
-  else
-    GPU_SHARE=0
+    log "GPU Share: ${GPU_SHARE}%"
   fi
 }
 
-# Detect storage
+# Detect storage devices
 detect_storage() {
-  section "Detecting Storage Devices"
+  section "Storage Detection"
   
   STORAGE_DEVICES=()
   
-  if [[ "$OS" == "linux" ]]; then
-    # Get all block devices
+  if [ "$OS" = "linux" ]; then
+    # Detect all mounted filesystems
     while IFS= read -r line; do
-      DEVICE=$(echo $line | awk '{print $1}')
-      SIZE=$(echo $line | awk '{print $4}')
-      MOUNTPOINT=$(echo $line | awk '{print $7}')
-      TYPE=$(echo $line | awk '{print $6}')
+      DEV=$(echo $line | awk '{print $1}')
+      MOUNT=$(echo $line | awk '{print $7}')
       
-      # Skip if no mountpoint or if it's a loop device
-      if [ -z "$MOUNTPOINT" ] || [[ "$DEVICE" == loop* ]]; then
+      # Skip if no mount or loop device
+      if [ -z "$MOUNT" ] || [[ "$DEV" == loop* ]]; then
         continue
       fi
       
-      # Get available space
-      AVAIL=$(df -BG "$MOUNTPOINT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
-      USED=$(df -BG "$MOUNTPOINT" 2>/dev/null | tail -1 | awk '{print $3}' | sed 's/G//')
+      TOTAL=$(df -BG "$MOUNT" 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//')
+      AVAIL=$(df -BG "$MOUNT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
       
-      if [ ! -z "$AVAIL" ]; then
-        STORAGE_DEVICES+=("$DEVICE|$SIZE|$MOUNTPOINT|$AVAIL|$USED|$TYPE")
+      if [ ! -z "$AVAIL" ] && [ $AVAIL -gt 0 ]; then
+        STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL|$AVAIL")
+        log "Found: $DEV at $MOUNT (${TOTAL}GB total, ${AVAIL}GB free)"
       fi
-    done < <(lsblk -o NAME,SIZE,MOUNTPOINT,FSTYPE | grep -v "^NAME" | grep -E "/$|/home|/mnt|/media")
-    
-  elif [[ "$OS" == "macos" ]]; then
-    # macOS storage detection
-    MOUNT_OUTPUT=$(df -H | grep "^/dev/")
+    done < <(lsblk -o NAME,MOUNTPOINT | grep "/" | grep -v "^NAME")
+  else
+    # macOS
     while IFS= read -r line; do
-      DEVICE=$(echo $line | awk '{print $1}')
-      SIZE=$(echo $line | awk '{print $2}')
-      AVAIL=$(echo $line | awk '{print $4}' | sed 's/G//')
-      USED=$(echo $line | awk '{print $3}' | sed 's/G//')
-      MOUNTPOINT=$(echo $line | awk '{print $9}')
-      TYPE="apfs"
+      DEV=$(echo $line | awk '{print $1}')
+      MOUNT=$(echo $line | awk '{print $9}')
+      TOTAL=$(echo $line | awk '{print $2}' | sed 's/Gi//')
+      AVAIL=$(echo $line | awk '{print $4}' | sed 's/Gi//')
       
-      STORAGE_DEVICES+=("$DEVICE|$SIZE|$MOUNTPOINT|$AVAIL|$USED|$TYPE")
-    done <<< "$MOUNT_OUTPUT"
+      STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL|$AVAIL")
+      log "Found: $DEV at $MOUNT (${TOTAL}GB total, ${AVAIL}GB free)"
+    done < <(df -H | grep "^/dev/")
   fi
-  
-  log "Found ${#STORAGE_DEVICES[@]} storage device(s):"
-  for i in "${!STORAGE_DEVICES[@]}"; do
-    IFS='|' read -r dev size mount avail used type <<< "${STORAGE_DEVICES[$i]}"
-    log "  [$((i+1))] $dev ($type) - $size total, ${avail}GB available - $mount"
-  done
 }
 
-# Select storage devices
+# Select storage
 select_storage() {
   section "Storage Configuration"
   
-  echo "Which storage devices would you like to contribute?"
-  echo ""
-  
   SELECTED_STORAGE=()
   TOTAL_STORAGE=0
-  TOTAL_AVAILABLE=0
   
-  for i in "${!STORAGE_DEVICES[@]}"; do
-    IFS='|' read -r dev size mount avail used type <<< "${STORAGE_DEVICES[$i]}"
+  for device in "${STORAGE_DEVICES[@]}"; do
+    IFS='|' read -r dev mount total avail <<< "$device"
     
-    # Auto-select main system drive
-    if [[ "$mount" == "/" ]]; then
-      echo -e "${GREEN}[✓]${NC} Auto-selected: $dev ($mount) - ${avail}GB available"
-      SELECTED_STORAGE+=("${STORAGE_DEVICES[$i]}")
-      TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + avail))
+    # Auto-select root
+    if [ "$mount" = "/" ]; then
+      log "Auto-selected: $mount (${avail}GB available)"
+      SELECTED_STORAGE+=("$device")
+      TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
       continue
     fi
     
-    # Ask about other drives
-    read -p "  Include $dev ($mount) with ${avail}GB available? (y/N): " -n 1 -r
+    # Ask about others
+    read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-      SELECTED_STORAGE+=("${STORAGE_DEVICES[$i]}")
-      TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + avail))
-      log "Added $dev to sharing pool"
+      SELECTED_STORAGE+=("$device")
+      TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
+      log "Added: $mount"
     fi
   done
   
-  if [ ${#SELECTED_STORAGE[@]} -eq 0 ]; then
-    error "No storage devices selected. Cannot proceed."
-  fi
-  
-  log "Total available storage: ${TOTAL_AVAILABLE}GB across ${#SELECTED_STORAGE[@]} device(s)"
-  
-  # Calculate safe storage share (10-20% of available)
-  if [ $TOTAL_AVAILABLE -ge 500 ]; then
+  # Calculate share
+  if [ $TOTAL_STORAGE -ge 500 ]; then
     STORAGE_SHARE=20
-  elif [ $TOTAL_AVAILABLE -ge 100 ]; then
+  elif [ $TOTAL_STORAGE -ge 100 ]; then
     STORAGE_SHARE=15
   else
     STORAGE_SHARE=10
   fi
   
-  STORAGE_GB_SHARED=$(echo "$TOTAL_AVAILABLE * $STORAGE_SHARE / 100" | bc)
-  info "Will share: ${STORAGE_SHARE}% (~${STORAGE_GB_SHARED}GB)"
-  
-  # Store storage configuration
-  STORAGE_TOTAL=$TOTAL_AVAILABLE
-  STORAGE_AVAILABLE=$TOTAL_AVAILABLE
+  STORAGE_GB_SHARED=$(echo "$TOTAL_STORAGE * $STORAGE_SHARE / 100" | bc)
+  log "Total: ${TOTAL_STORAGE}GB, Share: ${STORAGE_SHARE}% (~${STORAGE_GB_SHARED}GB)"
 }
 
-# Get API key
-get_api_key() {
-  section "API Configuration"
+# Register worker via API
+register_worker() {
+  section "Worker Registration"
   
-  if [ -z "$DISTRIBUTEX_API_KEY" ]; then
-    echo ""
-    echo "Enter your DistributeX API key:"
-    echo "(Get one from: ${DISTRIBUTEX_API_URL}/dashboard)"
-    echo ""
-    read -r DISTRIBUTEX_API_KEY
-    
-    if [ -z "$DISTRIBUTEX_API_KEY" ]; then
-      error "API key is required"
-    fi
-  fi
+  info "Registering worker with API..."
   
-  # Verify API key
-  info "Verifying API key..."
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "Authorization: Bearer $DISTRIBUTEX_API_KEY" \
-    "${DISTRIBUTEX_API_URL}/api/auth/user")
-  
-  if [ "$HTTP_CODE" != "200" ]; then
-    error "Invalid API key. Please check and try again."
-  fi
-  
-  log "API key verified successfully"
+  PAYLOAD=$(cat <<EOF
+{
+  "name": "$(hostname)",
+  "hostname": "$(hostname)",
+  "platform": "$OS",
+  "architecture": "$ARCH",
+  "cpuCores": $CPU_CORES,
+  "cpuModel": "$CPU_MODEL",
+  "ramTotal": $RAM_TOTAL,
+  "ramAvailable": $RAM_AVAILABLE,
+  "gpuAvailable": $GPU_AVAILABLE,
+  "gpuModel": "$GPU_MODEL",
+  "gpuMemory": $GPU_MEMORY,
+  "storageTotal": $TOTAL_STORAGE,
+  "storageAvailable": $TOTAL_STORAGE,
+  "cpuSharePercent": $CPU_SHARE,
+  "ramSharePercent": $RAM_SHARE,
+  "gpuSharePercent": $GPU_SHARE,
+  "storageSharePercent": $STORAGE_SHARE
 }
-
-# Configure auto-updates
-setup_auto_updates() {
-  section "Configuring Auto-Updates"
-  
-  # Create update script
-  cat > /tmp/distributex-update.sh <<'UPDATEEOF'
-#!/bin/bash
-# DistributeX Auto-Update Script
-
-DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud.pages.dev}"
-WORKER_IMAGE="distributex/worker:latest"
-
-# Pull latest image
-docker pull $WORKER_IMAGE
-
-# Restart worker with new image
-docker restart distributex-worker
-
-# Send notification
-WORKER_ID=$(docker exec distributex-worker cat /config/worker-id 2>/dev/null || echo "unknown")
-echo "Worker $WORKER_ID updated to $(docker inspect --format='{{.Config.Image}}' distributex-worker)"
-UPDATEEOF
-  
-  chmod +x /tmp/distributex-update.sh
-  $SUDO mv /tmp/distributex-update.sh /usr/local/bin/distributex-update
-  
-  # Create systemd timer for auto-updates (Linux)
-  if [[ "$OS" == "linux" ]] && command -v systemctl &> /dev/null; then
-    cat > /tmp/distributex-update.timer <<EOF
-[Unit]
-Description=DistributeX Worker Auto-Update Timer
-Requires=distributex-update.service
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=3600
-Persistent=true
-
-[Install]
-WantedBy=timers.target
 EOF
-
-    cat > /tmp/distributex-update.service <<EOF
-[Unit]
-Description=DistributeX Worker Auto-Update
-After=network.target docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/distributex-update
-StandardOutput=journal
-StandardError=journal
-EOF
-
-    $SUDO mv /tmp/distributex-update.timer /etc/systemd/system/
-    $SUDO mv /tmp/distributex-update.service /etc/systemd/system/
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl enable distributex-update.timer
-    $SUDO systemctl start distributex-update.timer
-    
-    log "Auto-updates configured (daily checks)"
-  else
-    # Fallback to cron (macOS or non-systemd Linux)
-    CRON_CMD="0 2 * * * /usr/local/bin/distributex-update"
-    (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
-    log "Auto-updates configured (daily at 2 AM)"
-  fi
-}
-
-# Create monitoring script
-setup_monitoring() {
-  section "Setting Up Health Monitoring"
+)
   
-  cat > /tmp/distributex-monitor.sh <<'MONEOF'
-#!/bin/bash
-# DistributeX Health Monitor
-
-check_worker() {
-  if ! docker ps | grep -q distributex-worker; then
-    echo "Worker container not running, attempting restart..."
-    docker start distributex-worker || docker run -d --name distributex-worker --restart unless-stopped -v ~/.distributex:/config:ro distributex/worker:latest
+  RESPONSE=$(curl -s -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD")
+  
+  WORKER_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+  
+  if [ -z "$WORKER_ID" ]; then
+    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Unknown error"')
+    error "Worker registration failed: $ERROR_MSG"
   fi
   
-  # Check if worker is responsive
-  if ! docker exec distributex-worker curl -f http://localhost:8080/health &>/dev/null; then
-    echo "Worker not responding, restarting..."
-    docker restart distributex-worker
-  fi
-}
-
-check_worker
-MONEOF
-  
-  chmod +x /tmp/distributex-monitor.sh
-  $SUDO mv /tmp/distributex-monitor.sh /usr/local/bin/distributex-monitor
-  
-  # Create monitoring service/cron
-  if [[ "$OS" == "linux" ]] && command -v systemctl &> /dev/null; then
-    cat > /tmp/distributex-monitor.timer <<EOF
-[Unit]
-Description=DistributeX Worker Health Monitor
-Requires=distributex-monitor.service
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-    cat > /tmp/distributex-monitor.service <<EOF
-[Unit]
-Description=DistributeX Worker Health Check
-After=network.target docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/distributex-monitor
-StandardOutput=journal
-StandardError=journal
-EOF
-
-    $SUDO mv /tmp/distributex-monitor.timer /etc/systemd/system/
-    $SUDO mv /tmp/distributex-monitor.service /etc/systemd/system/
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl enable distributex-monitor.timer
-    $SUDO systemctl start distributex-monitor.timer
-    
-    log "Health monitoring configured (every 5 minutes)"
-  else
-    CRON_CMD="*/5 * * * * /usr/local/bin/distributex-monitor"
-    (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
-    log "Health monitoring configured (every 5 minutes)"
-  fi
+  echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
+  log "Worker registered! ID: $WORKER_ID"
 }
 
 # Create configuration
 create_config() {
-  section "Creating Configuration"
+  section "Configuration"
   
-  mkdir -p ~/.distributex
+  mkdir -p "$CONFIG_DIR"
   
-  # Generate storage mounts JSON
-  STORAGE_MOUNTS="["
-  for i in "${!SELECTED_STORAGE[@]}"; do
-    IFS='|' read -r dev size mount avail used type <<< "${SELECTED_STORAGE[$i]}"
-    
-    if [ $i -gt 0 ]; then
-      STORAGE_MOUNTS="$STORAGE_MOUNTS,"
-    fi
-    
-    STORAGE_MOUNTS="$STORAGE_MOUNTS{\"device\":\"$dev\",\"mount\":\"$mount\",\"size\":\"$size\",\"available\":\"$avail\",\"type\":\"$type\"}"
-  done
-  STORAGE_MOUNTS="$STORAGE_MOUNTS]"
-  
-  # Create config file
-  cat > ~/.distributex/config.json <<EOF
+  cat > "$CONFIG_DIR/config.json" <<EOF
 {
   "version": "$AGENT_VERSION",
   "apiUrl": "$DISTRIBUTEX_API_URL",
-  "apiKey": "$DISTRIBUTEX_API_KEY",
+  "workerId": "$WORKER_ID",
   "worker": {
     "name": "$(hostname)",
-    "hostname": "$(hostname)",
-    "platform": "$OS",
-    "architecture": "$(uname -m)",
     "cpuCores": $CPU_CORES,
-    "cpuModel": "$CPU_MODEL",
-    "cpuFreq": $CPU_FREQ,
+    "cpuShare": $CPU_SHARE,
     "ramTotal": $RAM_TOTAL,
-    "ramAvailable": $RAM_AVAILABLE,
+    "ramShare": $RAM_SHARE,
     "gpuAvailable": $GPU_AVAILABLE,
-    "gpuModel": "$GPU_MODEL",
-    "gpuMemory": $GPU_MEMORY,
-    "gpuDriver": "$GPU_DRIVER",
-    "gpuType": "$GPU_TYPE",
-    "storageTotal": $STORAGE_TOTAL,
-    "storageAvailable": $STORAGE_AVAILABLE,
-    "storageMounts": $STORAGE_MOUNTS,
-    "cpuSharePercent": $CPU_SHARE,
-    "ramSharePercent": $RAM_SHARE,
-    "gpuSharePercent": $GPU_SHARE,
-    "storageSharePercent": $STORAGE_SHARE
-  },
-  "features": {
-    "autoUpdate": true,
-    "healthMonitoring": true,
-    "telemetry": true
+    "gpuShare": $GPU_SHARE,
+    "storageTotal": $TOTAL_STORAGE,
+    "storageShare": $STORAGE_SHARE
   },
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
   
-  chmod 600 ~/.distributex/config.json
-  log "Configuration saved to ~/.distributex/config.json"
+  chmod 600 "$CONFIG_DIR/config.json"
+  log "Configuration saved"
 }
 
 # Start worker container
 start_worker() {
-  section "Starting DistributeX Worker"
+  section "Starting Worker"
   
-  # Stop and remove existing container
-  $SUDO docker stop distributex-worker 2>/dev/null || true
-  $SUDO docker rm distributex-worker 2>/dev/null || true
+  # Stop existing
+  docker stop distributex-worker 2>/dev/null || true
+  docker rm distributex-worker 2>/dev/null || true
   
-  # Pull latest image
-  info "Pulling worker image..."
-  $SUDO docker pull $WORKER_IMAGE
+  # Build docker command
+  DOCKER_CMD="docker run -d --name distributex-worker --restart unless-stopped"
+  DOCKER_CMD="$DOCKER_CMD -v $CONFIG_DIR:/config:ro"
+  DOCKER_CMD="$DOCKER_CMD --cpus=$(echo "$CPU_CORES * $CPU_SHARE / 100" | bc)"
+  DOCKER_CMD="$DOCKER_CMD --memory=$(echo "$RAM_TOTAL * $RAM_SHARE / 100" | bc)m"
   
-  # Build docker run command
-  DOCKER_CMD="docker run -d"
-  DOCKER_CMD="$DOCKER_CMD --name distributex-worker"
-  DOCKER_CMD="$DOCKER_CMD --restart unless-stopped"
-  
-  # Mount configuration
-  DOCKER_CMD="$DOCKER_CMD -v ~/.distributex:/config:ro"
-  
-  # Mount storage devices
-  for storage in "${SELECTED_STORAGE[@]}"; do
-    IFS='|' read -r dev size mount avail used type <<< "$storage"
-    DOCKER_CMD="$DOCKER_CMD -v $mount:/storage$(echo $mount | tr '/' '_'):rw"
-  done
-  
-  # Resource limits (CPU)
-  DOCKER_CMD="$DOCKER_CMD --cpus=$CPU_CORES_SHARED"
-  
-  # Resource limits (RAM)
-  DOCKER_CMD="$DOCKER_CMD --memory=${RAM_MB_SHARED}m"
-  
-  # GPU support
+  # Add GPU if available
   if [ "$GPU_AVAILABLE" = true ]; then
-    if [ "$GPU_TYPE" = "NVIDIA" ]; then
+    if command -v nvidia-smi &> /dev/null; then
       DOCKER_CMD="$DOCKER_CMD --gpus all"
-    elif [ "$GPU_TYPE" = "AMD" ]; then
-      DOCKER_CMD="$DOCKER_CMD --device=/dev/kfd --device=/dev/dri"
     fi
   fi
   
-  # Monitoring port (internal)
-  DOCKER_CMD="$DOCKER_CMD -p 127.0.0.1:8080:8080"
+  # Storage mounts
+  for device in "${SELECTED_STORAGE[@]}"; do
+    IFS='|' read -r dev mount total avail <<< "$device"
+    DOCKER_CMD="$DOCKER_CMD -v $mount:/storage$(echo $mount | tr '/' '_'):rw"
+  done
   
-  # Health check
-  DOCKER_CMD="$DOCKER_CMD --health-cmd='curl -f http://localhost:8080/health || exit 1'"
-  DOCKER_CMD="$DOCKER_CMD --health-interval=30s"
-  DOCKER_CMD="$DOCKER_CMD --health-timeout=10s"
-  DOCKER_CMD="$DOCKER_CMD --health-retries=3"
-  
-  # Image
   DOCKER_CMD="$DOCKER_CMD $WORKER_IMAGE"
   
-  # Execute
-  info "Starting worker container..."
-  $SUDO eval $DOCKER_CMD
+  info "Pulling image..."
+  docker pull $WORKER_IMAGE
   
-  # Wait for container to start
-  sleep 3
+  info "Starting container..."
+  eval $DOCKER_CMD
   
-  # Check if running
-  if $SUDO docker ps | grep -q distributex-worker; then
-    log "Worker container started successfully"
-    
-    # Get worker ID from API response
-    sleep 2
-    WORKER_ID=$($SUDO docker logs distributex-worker 2>&1 | grep "Worker ID:" | awk '{print $NF}' || echo "pending")
-    echo "$WORKER_ID" > ~/.distributex/worker-id
-    
-    log "Worker ID: $WORKER_ID"
+  sleep 2
+  
+  if docker ps | grep -q distributex-worker; then
+    log "Worker container started!"
   else
-    error "Failed to start worker container"
+    error "Failed to start container"
   fi
 }
 
-# Display summary
+# Setup monitoring
+setup_monitoring() {
+  section "Monitoring Setup"
+  
+  # Create health check script
+  cat > /usr/local/bin/distributex-monitor <<'EOF'
+#!/bin/bash
+if ! docker ps | grep -q distributex-worker; then
+  docker start distributex-worker || exit 1
+fi
+EOF
+  
+  chmod +x /usr/local/bin/distributex-monitor
+  
+  # Add to cron
+  (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/distributex-monitor") | crontab -
+  
+  log "Health monitoring enabled (every 5 minutes)"
+}
+
+# Show summary
 show_summary() {
   section "Installation Complete!"
   
   cat <<EOF
 
 ${GREEN}╔═══════════════════════════════════════════════════════════╗
-        ║                 Installation Successful!                  ║
-        ╚═══════════════════════════════════════════════════════════╝${NC}
+║                 ✨ Successfully Installed! ✨              ║
+╚═══════════════════════════════════════════════════════════╝${NC}
 
-${CYAN}Worker Configuration:${NC}
-  • CPU: ${CPU_CORES} cores (sharing ${CPU_SHARE}% = ~${CPU_CORES_SHARED} cores)
-  • RAM: ${RAM_TOTAL_GB}GB (sharing ${RAM_SHARE}% = ~${RAM_GB_SHARED}GB)
-  • GPU: ${GPU_MODEL} (sharing ${GPU_SHARE}%)
-  • Storage: ${STORAGE_TOTAL}GB (sharing ${STORAGE_SHARE}% = ~${STORAGE_GB_SHARED}GB)
+${CYAN}Worker Details:${NC}
+  • ID: $WORKER_ID
+  • CPU: ${CPU_CORES} cores (${CPU_SHARE}% shared)
+  • RAM: ${RAM_TOTAL_GB}GB (${RAM_SHARE}% shared)
+  • GPU: $GPU_MODEL (${GPU_SHARE}% shared)
+  • Storage: ${TOTAL_STORAGE}GB (${STORAGE_SHARE}% shared)
 
-${CYAN}Features Enabled:${NC}
-  ✓ Automatic updates (daily)
-  ✓ Health monitoring (every 5 minutes)
-  ✓ Real-time metrics reporting
-  ✓ Docker isolation
-
-${CYAN}Management Commands:${NC}
-  • View status:    docker ps | grep distributex-worker
-  • View logs:      docker logs -f distributex-worker
-  • Stop worker:    docker stop distributex-worker
-  • Start worker:   docker start distributex-worker
-  • Restart worker: docker restart distributex-worker
-  • Uninstall:      curl -sSL ${DISTRIBUTEX_API_URL}/uninstall.sh | bash
+${CYAN}Management:${NC}
+  • Status:  docker ps | grep distributex
+  • Logs:    docker logs -f distributex-worker
+  • Stop:    docker stop distributex-worker
+  • Restart: docker restart distributex-worker
 
 ${CYAN}Dashboard:${NC}
   ${DISTRIBUTEX_API_URL}/dashboard
 
-${CYAN}Configuration:${NC}
-  ~/.distributex/config.json
-
-${GREEN}Your worker is now contributing to the DistributeX network!${NC}
+${GREEN}🎉 Your device is now contributing to the network!${NC}
 
 EOF
 }
 
-# Main installation flow
+# Main
 main() {
   clear
   
   cat <<'EOF'
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
-║         ████████▄   ███                                  ║
-║         ██      ██                                       ║
-║         ██       █   █    ▒██████▒   ▐███▄               ║
-║         ██       █   █   ▓█▀    ▀█▌       ██             ║
-║         ██       █   █   ██       ▓  ▐██████▓            ║
-║         ██       █   █   ██▌          █                  ║
-║         ██      ██   █    ██▄    ▄█  ▐█                  ║
-║         ████████▀   ███    ▀██████▀   ▀████▌             ║
-║                                                          ║
-║               DistributeX Cloud Network                  ║
-║            Production Worker Installer v1.0              ║
+║              DistributeX Cloud Network                   ║
+║           Production Installer v2.0                      ║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
 
 EOF
 
-  info "This installer will set up your device as a DistributeX worker."
-  info "You'll contribute unused computing resources to the global network."
-  echo ""
-  
-  # Run installation steps
   check_requirements
-  check_permissions
+  authenticate_user
   detect_os
   install_docker
   detect_cpu
@@ -758,13 +570,11 @@ EOF
   detect_gpu
   detect_storage
   select_storage
-  get_api_key
+  register_worker
   create_config
-  setup_auto_updates
-  setup_monitoring
   start_worker
+  setup_monitoring
   show_summary
 }
 
-# Run main installation
 main
