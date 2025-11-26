@@ -66,25 +66,30 @@ authenticate_user() {
     fi
   fi
   
-  echo ""
-  echo "Choose an option:"
-  echo "  1) Sign up for new account"
-  echo "  2) Login to existing account"
-  echo ""
+echo ""
+echo "Choose an option:"
+echo "  1) Sign up for new account"
+echo "  2) Login to existing account"
+echo ""
+
+# Force valid input before continuing
+while true; do
   read -p "Enter choice [1-2]: " auth_choice
-  
+
   case $auth_choice in
     1)
       signup_user
+      break
       ;;
     2)
       login_user
+      break
       ;;
     *)
-      error "Invalid choice"
+      echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
       ;;
   esac
-}
+done
 
 # Sign up new user - FIXED error handling
 signup_user() {
