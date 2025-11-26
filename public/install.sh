@@ -427,9 +427,12 @@ pull_docker_image() {
         info "Building image locally..."
         
         mkdir -p "$CONFIG_DIR/docker-build"
+
+        # Download required files
         curl -sSL "$LOCAL_DOCKERFILE_URL" -o "$CONFIG_DIR/docker-build/Dockerfile"
         curl -sSL "$LOCAL_WORKER_JS_URL" -o "$CONFIG_DIR/docker-build/worker-agent.js"
-        
+        curl -sSL "https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/package.json" -o "$CONFIG_DIR/docker-build/package.json"
+
         docker build -t $DOCKER_IMAGE "$CONFIG_DIR/docker-build" || error "Failed to build Docker image"
         log "Docker image built locally"
     fi
