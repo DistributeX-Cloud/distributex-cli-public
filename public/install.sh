@@ -86,8 +86,21 @@ check_requirements() {
         error "Missing required commands: ${missing[*]}"
     fi
     
+    # Check for GPU tools (informational only)
+    local gpu_tools=()
+    if command -v nvidia-smi &> /dev/null; then
+        gpu_tools+=("NVIDIA GPU detected")
+    fi
+    if command -v rocm-smi &> /dev/null; then
+        gpu_tools+=("AMD GPU detected")
+    fi
+    
     log "All requirements satisfied"
     log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
+    
+    if [ ${#gpu_tools[@]} -gt 0 ]; then
+        log "GPU tools: ${gpu_tools[*]}"
+    fi
 }
 
 # --------------------------
@@ -297,6 +310,68 @@ EOF
 }
 
 # --------------------------
+# GPU Detection
+# --------------------------
+detect_gpu() {
+    GPU_AVAILABLE=false
+    GPU_MODEL="null"
+    GPU_MEMORY="null"
+    GPU_SHARE_PERCENT=0
+    
+    # NVIDIA GPU Detection (Linux)
+    if command -v nvidia-smi &> /dev/null; then
+        info "Detecting NVIDIA GPU..."
+        GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)
+        if [ ! -z "$GPU_INFO" ]; then
+            GPU_AVAILABLE=true
+            GPU_MODEL=$(echo "$GPU_INFO" | cut -d',' -f1 | xargs)
+            GPU_MEMORY=$(echo "$GPU_INFO" | cut -d',' -f2 | grep -oE '[0-9]+')
+            GPU_SHARE_PERCENT=50
+            log "NVIDIA GPU detected: $GPU_MODEL (${GPU_MEMORY}MB)"
+        fi
+    # AMD GPU Detection (Linux)
+    elif command -v rocm-smi &> /dev/null; then
+        info "Detecting AMD GPU..."
+        GPU_INFO=$(rocm-smi --showproductname 2>/dev/null | grep "GPU" | head -1)
+        if [ ! -z "$GPU_INFO" ]; then
+            GPU_AVAILABLE=true
+            GPU_MODEL=$(echo "$GPU_INFO" | cut -d':' -f2 | xargs)
+            GPU_MEMORY=$(rocm-smi --showmeminfo vram 2>/dev/null | grep "Total" | grep -oE '[0-9]+' | head -1)
+            GPU_SHARE_PERCENT=50
+            log "AMD GPU detected: $GPU_MODEL"
+        fi
+    # Metal GPU Detection (macOS)
+    elif [ "$OS" = "darwin" ]; then
+        info "Detecting Metal GPU (macOS)..."
+        GPU_INFO=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -1)
+        if [ ! -z "$GPU_INFO" ]; then
+            GPU_AVAILABLE=true
+            GPU_MODEL=$(echo "$GPU_INFO" | cut -d':' -f2 | xargs)
+            # macOS GPU memory is harder to detect, estimate from total RAM
+            GPU_MEMORY=$(echo "scale=0; $RAM_TOTAL * 0.5" | bc)
+            GPU_SHARE_PERCENT=30
+            log "Metal GPU detected: $GPU_MODEL"
+        fi
+    # Intel GPU Detection (Linux)
+    elif command -v intel_gpu_top &> /dev/null; then
+        info "Detecting Intel GPU..."
+        GPU_INFO=$(lspci | grep -i "vga.*intel" | head -1)
+        if [ ! -z "$GPU_INFO" ]; then
+            GPU_AVAILABLE=true
+            GPU_MODEL="Intel Integrated Graphics"
+            GPU_MEMORY=2048  # Estimate
+            GPU_SHARE_PERCENT=40
+            log "Intel GPU detected"
+        fi
+    fi
+    
+    if [ "$GPU_AVAILABLE" = false ]; then
+        info "No GPU detected or GPU tools not installed"
+        info "If you have a GPU, install nvidia-smi (NVIDIA) or rocm-smi (AMD)"
+    fi
+}
+
+# --------------------------
 # System Detection
 # --------------------------
 detect_system() {
@@ -314,6 +389,9 @@ detect_system() {
     
     STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
     
+    # Detect GPU
+    detect_gpu
+    
     # Calculate Docker resource limits (more conservative)
     DOCKER_CPU_LIMIT=$(echo "scale=1; $CPU_CORES * 0.5" | bc)
     DOCKER_RAM_LIMIT=$(echo "scale=0; $RAM_TOTAL * 0.3 / 1024" | bc)
@@ -330,6 +408,9 @@ detect_system() {
     log "CPU: $CPU_CORES cores (Docker limit: ${DOCKER_CPU_LIMIT} cores)"
     log "RAM: ${RAM_TOTAL}MB (Docker limit: ${DOCKER_RAM_LIMIT}GB)"
     log "Storage: ${STORAGE_TOTAL}GB"
+    if [ "$GPU_AVAILABLE" = true ]; then
+        log "GPU: $GPU_MODEL (Sharing: ${GPU_SHARE_PERCENT}%)"
+    fi
 }
 
 # --------------------------
@@ -351,6 +432,21 @@ pull_docker_image() {
         
         docker build -t $DOCKER_IMAGE "$CONFIG_DIR/docker-build" || error "Failed to build Docker image"
         log "Docker image built locally"
+    fi
+    
+    # Check for GPU runtime support
+    if [ "$GPU_AVAILABLE" = true ]; then
+        if command -v nvidia-smi &> /dev/null; then
+            # Check if nvidia-docker is installed
+            if docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi &> /dev/null; then
+                log "NVIDIA Docker runtime verified"
+            else
+                warn "NVIDIA GPU detected but Docker GPU runtime not available"
+                warn "Install nvidia-docker for GPU support: https://github.com/NVIDIA/nvidia-docker"
+                warn "Worker will run without GPU acceleration"
+                GPU_AVAILABLE=false
+            fi
+        fi
     fi
 }
 
@@ -379,7 +475,23 @@ register_worker() {
     # Get hostname for worker name
     WORKER_NAME="${HOSTNAME:-$(hostname)}"
     
+    # Get CPU model
+    if [ "$OS" = "linux" ]; then
+        CPU_MODEL=$(cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 | cut -d: -f2 | xargs || echo "Unknown CPU")
+    elif [ "$OS" = "darwin" ]; then
+        CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
+    else
+        CPU_MODEL="Unknown CPU"
+    fi
+    
     info "Registering device: $WORKER_NAME"
+    
+    # Prepare GPU data for JSON
+    if [ "$GPU_AVAILABLE" = true ]; then
+        GPU_JSON="\"gpuAvailable\": true, \"gpuModel\": \"$GPU_MODEL\", \"gpuMemory\": $GPU_MEMORY, \"gpuSharePercent\": $GPU_SHARE_PERCENT,"
+    else
+        GPU_JSON="\"gpuAvailable\": false, \"gpuSharePercent\": 0,"
+    fi
     
     # Prepare registration data
     REGISTER_DATA=$(cat <<EOF
@@ -389,15 +501,14 @@ register_worker() {
   "platform": "$OS",
   "architecture": "$ARCH",
   "cpuCores": $CPU_CORES,
-  "cpuModel": "$(cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 | cut -d: -f2 | xargs || echo "Unknown CPU")",
+  "cpuModel": "$CPU_MODEL",
   "ramTotal": $RAM_TOTAL,
   "ramAvailable": $RAM_TOTAL,
-  "gpuAvailable": false,
+  $GPU_JSON
   "storageTotal": $STORAGE_TOTAL,
   "storageAvailable": $STORAGE_TOTAL,
   "cpuSharePercent": 40,
   "ramSharePercent": 30,
-  "gpuSharePercent": 0,
   "storageSharePercent": 20
 }
 EOF
@@ -416,6 +527,16 @@ EOF
         WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id')
         log "Worker registered successfully! ID: $WORKER_ID"
         echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
+        
+        # Show what was registered
+        echo ""
+        info "Registered Resources:"
+        echo "  • CPU: $CPU_CORES cores ($CPU_MODEL)"
+        echo "  • RAM: ${RAM_TOTAL}MB"
+        echo "  • Storage: ${STORAGE_TOTAL}GB"
+        if [ "$GPU_AVAILABLE" = true ]; then
+            echo "  • GPU: $GPU_MODEL (${GPU_MEMORY}MB)"
+        fi
     else
         error "Failed to register worker ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
     fi
@@ -429,21 +550,44 @@ start_container() {
     
     info "Starting container with auto-restart enabled..."
     
-    docker run -d \
+    # Base docker run command
+    DOCKER_CMD="docker run -d \
         --name $CONTAINER_NAME \
         --restart unless-stopped \
-        --cpus="$DOCKER_CPU_LIMIT" \
-        --memory="${DOCKER_RAM_LIMIT}g" \
-        -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
-        -v "$CONFIG_DIR:/config:ro" \
+        --cpus=\"$DOCKER_CPU_LIMIT\" \
+        --memory=\"${DOCKER_RAM_LIMIT}g\" \
+        -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
+        -v \"$CONFIG_DIR:/config:ro\""
+    
+    # Add GPU support if available
+    if [ "$GPU_AVAILABLE" = true ]; then
+        # NVIDIA GPU support
+        if command -v nvidia-smi &> /dev/null; then
+            info "Enabling NVIDIA GPU support..."
+            DOCKER_CMD="$DOCKER_CMD --gpus all"
+        # AMD GPU support (rocm)
+        elif command -v rocm-smi &> /dev/null; then
+            info "Enabling AMD GPU support..."
+            DOCKER_CMD="$DOCKER_CMD --device=/dev/kfd --device=/dev/dri"
+        fi
+    fi
+    
+    # Complete the command
+    DOCKER_CMD="$DOCKER_CMD \
         $DOCKER_IMAGE \
-        --api-key "$API_TOKEN" \
-        --url "$DISTRIBUTEX_API_URL" || error "Failed to start container"
+        --api-key \"$API_TOKEN\" \
+        --url \"$DISTRIBUTEX_API_URL\""
+    
+    # Execute
+    eval $DOCKER_CMD || error "Failed to start container"
 
     sleep 3
     
     if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         log "Container started successfully"
+        if [ "$GPU_AVAILABLE" = true ]; then
+            log "GPU passthrough enabled"
+        fi
     else
         error "Container failed to start. Check logs: docker logs $CONTAINER_NAME"
     fi
@@ -529,12 +673,22 @@ save_config() {
     "os": "$OS",
     "arch": "$ARCH",
     "cpuCores": $CPU_CORES,
+    "cpuModel": "$(echo $CPU_MODEL | sed 's/"/\\"/g')",
     "ramTotal": $RAM_TOTAL,
-    "storageTotal": $STORAGE_TOTAL
+    "storageTotal": $STORAGE_TOTAL,
+    "gpuAvailable": $GPU_AVAILABLE,
+    "gpuModel": "$(echo $GPU_MODEL | sed 's/"/\\"/g')",
+    "gpuMemory": $GPU_MEMORY
   },
   "resourceLimits": {
     "cpuLimit": "$DOCKER_CPU_LIMIT",
     "memoryLimit": "${DOCKER_RAM_LIMIT}G"
+  },
+  "sharing": {
+    "cpuPercent": 40,
+    "ramPercent": 30,
+    "gpuPercent": $GPU_SHARE_PERCENT,
+    "storagePercent": 20
   },
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
