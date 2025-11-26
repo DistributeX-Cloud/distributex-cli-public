@@ -14,8 +14,8 @@ DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pa
 DOCKER_IMAGE="distributex/worker:latest"
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
-LOCAL_DOCKERFILE_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-worker/main/Dockerfile"
-LOCAL_WORKER_JS_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-worker/main/worker-agent.js"
+LOCAL_DOCKERFILE_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/Dockerfile"
+LOCAL_WORKER_JS_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/worker-agent.js"
 
 # Colors
 RED='\033[0;31m'
