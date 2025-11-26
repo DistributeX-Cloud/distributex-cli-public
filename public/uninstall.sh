@@ -86,10 +86,10 @@ echo ""
 log "Worker has been removed from your system"
 
 if [ -d "$CONFIG_DIR" ]; then
-    info "To reinstall: curl -sSL https://distributex.io/install.sh | bash"
+    info "To reinstall: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash"
     info "Your authentication will be preserved"
 else
-    info "To reinstall: curl -sSL https://distributex.io/install.sh | bash"
+    info "To reinstall: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash"
     info "You will need to authenticate again"
 fi
 
