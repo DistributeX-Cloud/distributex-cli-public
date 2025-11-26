@@ -1,4 +1,17 @@
-#!/bin/bash
+# Start worker (Docker or Node.js)
+start_worker() {
+  section "Starting Worker"
+  
+  if [ "$USE_DOCKER" = "true" ]; then
+    start_worker_docker
+  else
+    start_worker_nodejs
+  fi
+}
+
+# Start worker via Docker
+start_worker_docker() {
+  WORKER_IMAGE#!/bin/bash
 #
 # DistributeX Production Worker Installer
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
@@ -10,9 +23,9 @@ set -e
 
 # Configuration
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
-WORKER_IMAGE="distributex/worker:latest"
 AGENT_VERSION="2.0.0"
 CONFIG_DIR="$HOME/.distributex"
+USE_DOCKER="${USE_DOCKER:-false}"  # Set to true once Docker image is available
 
 # Colors
 RED='\033[0;31m'
@@ -228,6 +241,11 @@ detect_os() {
 
 # Install Docker if needed
 install_docker() {
+  if [ "$USE_DOCKER" = "false" ]; then
+    info "Skipping Docker installation (using Node.js agent)"
+    return 0
+  fi
+  
   if command -v docker &> /dev/null; then
     log "Docker already installed: $(docker --version)"
     return 0
@@ -560,9 +578,50 @@ EOF
   log "Configuration saved"
 }
 
-# Start worker container
-start_worker() {
-  section "Starting Worker"
+# Install Node.js if not present
+install_nodejs() {
+  section "Node.js Setup"
+  
+  if command -v node &> /dev/null; then
+    NODE_VERSION=$(node -v)
+    log "Node.js already installed: $NODE_VERSION"
+    return 0
+  fi
+  
+  info "Installing Node.js..."
+  
+  if [ "$OS" = "linux" ]; then
+    # Install Node.js via NodeSource
+    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+  elif [ "$OS" = "darwin" ]; then
+    # Install via Homebrew if available
+    if command -v brew &> /dev/null; then
+      brew install node
+    else
+      error "Please install Node.js manually from https://nodejs.org/"
+    fi
+  else
+    error "Please install Node.js manually from https://nodejs.org/"
+  fi
+  
+  log "Node.js installed: $(node -v)"
+}
+
+# Download and install worker agent
+install_worker_agent() {
+  section "Installing Worker Agent"
+  
+  info "Downloading worker agent..."
+  
+  # Download the worker agent script
+  curl -fsSL "https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/worker-agent.js" \
+    -o "$CONFIG_DIR/worker-agent.js"
+  
+  chmod +x "$CONFIG_DIR/worker-agent.js"
+  
+  log "Worker agent installed"
+}
   
   docker stop distributex-worker 2>/dev/null || true
   docker rm distributex-worker 2>/dev/null || true
