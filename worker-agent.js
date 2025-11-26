@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Agent - Optimized Version
+ * DistributeX Worker Agent - Docker Optimized
  * 
- * Key Optimizations:
- * - Batched heartbeats (every 5 minutes instead of 1 minute)
- * - Local metrics caching
- * - Exponential backoff on failures
- * - Reduced API calls by 80%
+ * Optimized for running inside Docker containers
  */
 
 const os = require('os');
@@ -20,12 +16,12 @@ const execAsync = promisify(exec);
 
 // Configuration
 const CONFIG = {
-  API_BASE_URL: process.env.DISTRIBUTEX_API_URL || 'https://your-site.pages.dev',
-  HEARTBEAT_INTERVAL: 5 * 60 * 1000, // 5 minutes (reduced from 1 minute)
-  BATCH_SIZE: 1, // Can batch multiple workers from same machine
+  API_BASE_URL: process.env.DISTRIBUTEX_API_URL || 'https://distributex-cloud-network.pages.dev',
+  HEARTBEAT_INTERVAL: 5 * 60 * 1000, // 5 minutes
   RETRY_ATTEMPTS: 3,
   RETRY_DELAY: 5000,
-  CACHE_DIR: path.join(os.homedir(), '.distributex')
+  CACHE_DIR: '/config',
+  IS_DOCKER: process.env.DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv')
 };
 
 class DistributeXWorker {
@@ -43,25 +39,9 @@ class DistributeXWorker {
   }
 
   /**
-   * Detect system capabilities with caching
+   * Detect system capabilities (Docker-aware)
    */
   async detectSystemCapabilities() {
-    // Check cache first (capabilities don't change often)
-    const cacheFile = path.join(CONFIG.CACHE_DIR, 'capabilities.json');
-    
-    try {
-      const cached = await fs.readFile(cacheFile, 'utf8');
-      const data = JSON.parse(cached);
-      
-      // Use cache if less than 1 hour old
-      if (Date.now() - data.timestamp < 3600000) {
-        console.log('📦 Using cached system capabilities');
-        return data.capabilities;
-      }
-    } catch (e) {
-      // Cache miss or error, continue to detection
-    }
-
     console.log('🔍 Detecting system capabilities...');
     
     const cpus = os.cpus();
@@ -74,12 +54,11 @@ class DistributeXWorker {
     // Storage Detection  
     let storageInfo = await this.detectStorage();
 
-    // Calculate safe sharing percentages
-    const cpuSharePercent = cpus.length >= 8 ? 50 : cpus.length >= 4 ? 40 : 30;
-    const ramSharePercent = totalRam >= 16384 ? 30 : totalRam >= 8192 ? 25 : 20;
-    const gpuSharePercent = gpuInfo.available ? 50 : 0;
-    const storageSharePercent = storageInfo.total >= 200 ? 20 : 
-                                storageInfo.total >= 100 ? 15 : 10;
+    // In Docker, use more conservative sharing percentages
+    const cpuSharePercent = CONFIG.IS_DOCKER ? 80 : (cpus.length >= 8 ? 50 : cpus.length >= 4 ? 40 : 30);
+    const ramSharePercent = CONFIG.IS_DOCKER ? 80 : (totalRam >= 16384 ? 30 : totalRam >= 8192 ? 25 : 20);
+    const gpuSharePercent = gpuInfo.available ? (CONFIG.IS_DOCKER ? 90 : 50) : 0;
+    const storageSharePercent = CONFIG.IS_DOCKER ? 80 : (storageInfo.total >= 200 ? 20 : storageInfo.total >= 100 ? 15 : 10);
 
     const capabilities = {
       name: os.hostname(),
@@ -101,22 +80,11 @@ class DistributeXWorker {
       storageSharePercent,
     };
 
-    // Cache for next time
-    try {
-      await fs.mkdir(CONFIG.CACHE_DIR, { recursive: true });
-      await fs.writeFile(cacheFile, JSON.stringify({
-        timestamp: Date.now(),
-        capabilities
-      }));
-    } catch (e) {
-      console.warn('Failed to cache capabilities:', e.message);
-    }
-
     return capabilities;
   }
 
   /**
-   * Detect GPU with better error handling
+   * Detect GPU
    */
   async detectGPU() {
     let gpuInfo = { available: false, model: null, memory: null };
@@ -125,7 +93,6 @@ class DistributeXWorker {
       const platform = os.platform();
       
       if (platform === 'linux') {
-        // Try NVIDIA first
         try {
           const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader');
           const lines = stdout.trim().split('\n');
@@ -136,46 +103,18 @@ class DistributeXWorker {
             gpuInfo.memory = parseInt(memory.trim());
           }
         } catch (e) {
-          // Try AMD ROCm
-          try {
-            const { stdout } = await execAsync('rocm-smi --showproductname');
-            if (stdout.includes('GPU')) {
-              gpuInfo.available = true;
-              gpuInfo.model = 'AMD GPU';
-            }
-          } catch (e2) {
-            // No GPU or drivers not installed
-          }
-        }
-      } else if (platform === 'darwin') {
-        // macOS - check for Apple Silicon
-        const { stdout } = await execAsync('sysctl -n machdep.cpu.brand_string');
-        if (stdout.includes('Apple')) {
-          gpuInfo.available = true;
-          gpuInfo.model = 'Apple Silicon GPU';
-          gpuInfo.memory = Math.floor(os.totalmem() / (1024 * 1024) / 2); // Unified memory
-        }
-      } else if (platform === 'win32') {
-        try {
-          const { stdout } = await execAsync('wmic path win32_VideoController get name');
-          const lines = stdout.split('\n').filter(l => l.trim() && !l.includes('Name'));
-          if (lines.length > 0) {
-            gpuInfo.available = true;
-            gpuInfo.model = lines[0].trim();
-          }
-        } catch (e) {
-          // No GPU info available
+          // No GPU or drivers not installed
         }
       }
     } catch (error) {
-      console.log('GPU detection failed (this is normal if no GPU)');
+      // GPU detection failed
     }
 
     return gpuInfo;
   }
 
   /**
-   * Detect storage with better parsing
+   * Detect storage
    */
   async detectStorage() {
     let storageInfo = { total: 100, available: 50 }; // Defaults in GB
@@ -188,19 +127,9 @@ class DistributeXWorker {
         const parts = stdout.trim().split(/\s+/);
         storageInfo.total = parseInt(parts[1].replace('G', ''));
         storageInfo.available = parseInt(parts[3].replace('G', ''));
-      } else if (platform === 'win32') {
-        const { stdout } = await execAsync('wmic logicaldisk where "DeviceID=\'C:\'" get Size,FreeSpace');
-        const lines = stdout.trim().split('\n');
-        if (lines.length > 1) {
-          const parts = lines[1].trim().split(/\s+/);
-          if (parts.length >= 2) {
-            storageInfo.available = Math.floor(parseInt(parts[0]) / (1024 * 1024 * 1024));
-            storageInfo.total = Math.floor(parseInt(parts[1]) / (1024 * 1024 * 1024));
-          }
-        }
       }
     } catch (error) {
-      console.log('Storage detection failed, using defaults');
+      console.log('Storage detection using defaults');
     }
 
     return storageInfo;
@@ -216,7 +145,7 @@ class DistributeXWorker {
       } catch (error) {
         if (attempt === retries) throw error;
         
-        const delay = CONFIG.RETRY_DELAY * attempt; // Exponential backoff
+        const delay = CONFIG.RETRY_DELAY * attempt;
         console.log(`Retry ${attempt}/${retries} after ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -234,9 +163,9 @@ class DistributeXWorker {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker/1.0'
+          'User-Agent': 'DistributeX-Worker-Docker/2.0'
         },
-        timeout: 30000 // 30 second timeout
+        timeout: 30000
       };
 
       const req = https.request(url, options, (res) => {
@@ -276,6 +205,7 @@ class DistributeXWorker {
     const capabilities = await this.detectSystemCapabilities();
     
     console.log('\n📊 System Information:');
+    console.log(`  Environment: ${CONFIG.IS_DOCKER ? 'Docker Container' : 'Native'}`);
     console.log(`  CPU: ${capabilities.cpuCores} cores (${capabilities.cpuModel})`);
     console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)} GB total`);
     console.log(`  GPU: ${capabilities.gpuAvailable ? capabilities.gpuModel : 'Not available'}`);
@@ -293,13 +223,14 @@ class DistributeXWorker {
     
     // Save worker ID to file
     try {
-      await fs.mkdir(CONFIG.CACHE_DIR, { recursive: true });
+      const configDir = CONFIG.IS_DOCKER ? '/config' : path.join(os.homedir(), '.distributex');
+      await fs.mkdir(configDir, { recursive: true });
       await fs.writeFile(
-        path.join(CONFIG.CACHE_DIR, 'worker-id'),
+        path.join(configDir, 'worker-id'),
         this.workerId
       );
     } catch (e) {
-      console.warn('Could not save worker ID');
+      console.warn('Could not save worker ID:', e.message);
     }
     
     console.log(`✅ Worker registered! ID: ${this.workerId}`);
@@ -307,7 +238,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Send heartbeat (less frequent, more efficient)
+   * Send heartbeat
    */
   async sendHeartbeat() {
     try {
@@ -322,14 +253,13 @@ class DistributeXWorker {
 
       this.metrics.lastHeartbeat = new Date();
       this.metrics.successfulHeartbeats++;
-      this.metrics.failedHeartbeats = 0; // Reset on success
+      this.metrics.failedHeartbeats = 0;
       
       console.log(`💓 Heartbeat sent at ${this.metrics.lastHeartbeat.toLocaleTimeString()}`);
     } catch (error) {
       this.metrics.failedHeartbeats++;
       console.error(`❌ Heartbeat failed (${this.metrics.failedHeartbeats}): ${error.message}`);
       
-      // If too many failures, try re-registering
       if (this.metrics.failedHeartbeats >= 3) {
         console.warn('⚠️  Multiple heartbeat failures, attempting re-registration...');
         try {
@@ -343,38 +273,23 @@ class DistributeXWorker {
   }
 
   /**
-   * Start worker with optimized heartbeat interval
+   * Start worker
    */
   async start() {
     try {
       if (!this.apiKey) {
-        throw new Error('API key required. Get one from dashboard.');
+        throw new Error('API key required');
       }
 
-      // Try to load existing worker ID
-      try {
-        const savedId = await fs.readFile(
-          path.join(CONFIG.CACHE_DIR, 'worker-id'),
-          'utf8'
-        );
-        this.workerId = savedId.trim();
-        console.log(`📋 Using existing worker ID: ${this.workerId}`);
-      } catch (e) {
-        // No saved ID, will register
-      }
-
-      // Register (or re-register if ID not found)
-      if (!this.workerId) {
-        await this.register();
-      }
+      // Register worker
+      await this.register();
       
       this.isRunning = true;
       
       // Send initial heartbeat
       await this.sendHeartbeat();
       
-      // Schedule heartbeats every 5 minutes (instead of 1 minute)
-      // This reduces API calls by 80%
+      // Schedule heartbeats
       this.heartbeatInterval = setInterval(
         () => this.sendHeartbeat(),
         CONFIG.HEARTBEAT_INTERVAL
@@ -382,7 +297,7 @@ class DistributeXWorker {
 
       console.log('\n✨ Worker is online and contributing!');
       console.log(`📡 Heartbeat interval: ${CONFIG.HEARTBEAT_INTERVAL / 60000} minutes`);
-      console.log('Press Ctrl+C to stop\n');
+      console.log('Container will run until stopped\n');
 
       // Graceful shutdown
       process.on('SIGINT', () => this.stop());
@@ -413,14 +328,13 @@ class DistributeXWorker {
       clearInterval(this.heartbeatInterval);
     }
 
-    // Send final offline status
     if (this.workerId) {
       try {
         await this.makeRequest('POST', `/api/workers/${this.workerId}/heartbeat`, {
           ramAvailable: 0,
           storageAvailable: 0,
           status: 'offline',
-        }, 1); // Only 1 retry for shutdown
+        }, 1);
         
         console.log('✅ Worker stopped gracefully');
         console.log(`📊 Total heartbeats sent: ${this.metrics.successfulHeartbeats}`);
@@ -442,8 +356,7 @@ if (require.main === module) {
   const urlIndex = args.indexOf('--url');
   
   if (apiKeyIndex === -1 || !args[apiKeyIndex + 1]) {
-    console.error('❌ Usage: distributex-worker --api-key YOUR_API_KEY [--url API_URL]');
-    console.error('\n💡 Get your API key from: https://distributex.io/dashboard');
+    console.error('❌ Usage: node worker-agent.js --api-key YOUR_API_KEY [--url API_URL]');
     process.exit(1);
   }
 
@@ -453,10 +366,10 @@ if (require.main === module) {
   };
 
   // Banner
-  console.log('\n╔══════════════════════════════════════════╗');
-  console.log('  ║      DistributeX Worker Agent v2.0       ║');
-  console.log('  ║    Optimized for Production Use 🚀       ║');
-  console.log('  ╚══════════════════════════════════════════╝\n');
+  console.log('\n╔═════════════════════════════════════════════════════════════════════════════════╗');
+  console.log('  ║                           DistributeX Worker Agent v2.0                         ║');
+  console.log(`  ║      ${CONFIG.IS_DOCKER ? 'Docker Container Mode 🐳' : 'Native Mode 💻'}        ║`);
+  console.log('  ╚═════════════════════════════════════════════════════════════════════════════════╝\n');
 
   const worker = new DistributeXWorker(config);
   worker.start();
