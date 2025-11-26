@@ -333,39 +333,89 @@ detect_gpu() {
   fi
 }
 
-# Detect storage devices
+# Detect storage devices - IMPROVED
 detect_storage() {
   section "Storage Detection"
   
   STORAGE_DEVICES=()
   
   if [ "$OS" = "linux" ]; then
+    # Use df to get mounted filesystems
     while IFS= read -r line; do
-      DEV=$(echo $line | awk '{print $1}')
-      MOUNT=$(echo $line | awk '{print $7}')
-      
-      if [ -z "$MOUNT" ] || [[ "$DEV" == loop* ]]; then
+      # Skip header and special filesystems
+      if [[ "$line" =~ ^Filesystem ]] || [[ "$line" =~ ^tmpfs ]] || [[ "$line" =~ ^devtmpfs ]] || [[ "$line" =~ ^udev ]]; then
         continue
       fi
       
-      TOTAL=$(df -BG "$MOUNT" 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//')
-      AVAIL=$(df -BG "$MOUNT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
+      DEV=$(echo "$line" | awk '{print $1}')
+      MOUNT=$(echo "$line" | awk '{print $6}')
+      TOTAL=$(echo "$line" | awk '{print $2}')
+      AVAIL=$(echo "$line" | awk '{print $4}')
       
-      if [ ! -z "$AVAIL" ] && [ $AVAIL -gt 0 ]; then
-        STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL|$AVAIL")
-        log "Found: $DEV at $MOUNT (${TOTAL}GB total, ${AVAIL}GB free)"
+      # Convert to GB (df shows in KB by default with -k)
+      TOTAL_GB=$((TOTAL / 1024 / 1024))
+      AVAIL_GB=$((AVAIL / 1024 / 1024))
+      
+      # Only include if we have meaningful storage (> 1GB available)
+      if [ $AVAIL_GB -gt 1 ]; then
+        STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL_GB|$AVAIL_GB")
+        log "Found: $DEV at $MOUNT (${TOTAL_GB}GB total, ${AVAIL_GB}GB free)"
       fi
-    done < <(lsblk -o NAME,MOUNTPOINT | grep "/" | grep -v "^NAME")
-  else
+    done < <(df -k | grep "^/dev/")
+    
+    # If no devices found, fall back to root
+    if [ ${#STORAGE_DEVICES[@]} -eq 0 ]; then
+      ROOT_INFO=$(df -k / | tail -1)
+      DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
+      TOTAL=$(($(echo "$ROOT_INFO" | awk '{print $2}') / 1024 / 1024))
+      AVAIL=$(($(echo "$ROOT_INFO" | awk '{print $4}') / 1024 / 1024))
+      STORAGE_DEVICES+=("$DEV|/|$TOTAL|$AVAIL")
+      log "Using root filesystem: $DEV (${TOTAL}GB total, ${AVAIL}GB free)"
+    fi
+    
+  elif [ "$OS" = "darwin" ]; then
+    # macOS storage detection
     while IFS= read -r line; do
-      DEV=$(echo $line | awk '{print $1}')
-      MOUNT=$(echo $line | awk '{print $9}')
-      TOTAL=$(echo $line | awk '{print $2}' | sed 's/Gi//')
-      AVAIL=$(echo $line | awk '{print $4}' | sed 's/Gi//')
+      if [[ "$line" =~ ^Filesystem ]] || [[ "$line" =~ ^map ]] || [[ "$line" =~ ^devfs ]]; then
+        continue
+      fi
       
-      STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL|$AVAIL")
-      log "Found: $DEV at $MOUNT (${TOTAL}GB total, ${AVAIL}GB free)"
-    done < <(df -H | grep "^/dev/")
+      DEV=$(echo "$line" | awk '{print $1}')
+      MOUNT=$(echo "$line" | awk '{print $9}')
+      TOTAL=$(echo "$line" | awk '{print $2}')
+      AVAIL=$(echo "$line" | awk '{print $4}')
+      
+      # Convert from 512-byte blocks to GB
+      TOTAL_GB=$((TOTAL / 2 / 1024 / 1024))
+      AVAIL_GB=$((AVAIL / 2 / 1024 / 1024))
+      
+      if [ $AVAIL_GB -gt 1 ]; then
+        STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL_GB|$AVAIL_GB")
+        log "Found: $DEV at $MOUNT (${TOTAL_GB}GB total, ${AVAIL_GB}GB free)"
+      fi
+    done < <(df -k | grep "^/dev/")
+    
+    # Fall back to root if nothing found
+    if [ ${#STORAGE_DEVICES[@]} -eq 0 ]; then
+      ROOT_INFO=$(df -k / | tail -1)
+      DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
+      TOTAL=$(($(echo "$ROOT_INFO" | awk '{print $2}') / 2 / 1024 / 1024))
+      AVAIL=$(($(echo "$ROOT_INFO" | awk '{print $4}') / 2 / 1024 / 1024))
+      STORAGE_DEVICES+=("$DEV|/|$TOTAL|$AVAIL")
+      log "Using root filesystem: $DEV (${TOTAL}GB total, ${AVAIL}GB free)"
+    fi
+  else
+    # Generic fallback
+    ROOT_INFO=$(df / | tail -1)
+    DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
+    TOTAL=100
+    AVAIL=50
+    STORAGE_DEVICES+=("$DEV|/|$TOTAL|$AVAIL")
+    warn "Could not detect storage, using defaults"
+  fi
+  
+  if [ ${#STORAGE_DEVICES[@]} -eq 0 ]; then
+    error "No storage devices detected"
   fi
 }
 
@@ -376,25 +426,36 @@ select_storage() {
   SELECTED_STORAGE=()
   TOTAL_STORAGE=0
   
-  for device in "${STORAGE_DEVICES[@]}"; do
+  # If only one device (usually just /), auto-select it
+  if [ ${#STORAGE_DEVICES[@]} -eq 1 ]; then
+    device="${STORAGE_DEVICES[0]}"
     IFS='|' read -r dev mount total avail <<< "$device"
-    
-    if [ "$mount" = "/" ]; then
-      log "Auto-selected: $mount (${avail}GB available)"
-      SELECTED_STORAGE+=("$device")
-      TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
-      continue
-    fi
-    
-    read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r REPLY < /dev/tty
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-      SELECTED_STORAGE+=("$device")
-      TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
-      log "Added: $mount"
-    fi
-  done
+    log "Auto-selected: $mount (${avail}GB available)"
+    SELECTED_STORAGE+=("$device")
+    TOTAL_STORAGE=$avail
+  else
+    # Multiple devices, let user choose
+    for device in "${STORAGE_DEVICES[@]}"; do
+      IFS='|' read -r dev mount total avail <<< "$device"
+      
+      if [ "$mount" = "/" ]; then
+        log "Auto-selected: $mount (${avail}GB available)"
+        SELECTED_STORAGE+=("$device")
+        TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
+        continue
+      fi
+      
+      read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r REPLY < /dev/tty
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        SELECTED_STORAGE+=("$device")
+        TOTAL_STORAGE=$((TOTAL_STORAGE + avail))
+        log "Added: $mount"
+      fi
+    done
+  fi
   
+  # Calculate share percentage based on total available storage
   if [ $TOTAL_STORAGE -ge 500 ]; then
     STORAGE_SHARE=20
   elif [ $TOTAL_STORAGE -ge 100 ]; then
@@ -464,7 +525,16 @@ EOF
 create_config() {
   section "Configuration"
   
+  # Ensure config directory exists and is not a file
+  if [ -f "$CONFIG_DIR" ]; then
+    rm -f "$CONFIG_DIR"
+  fi
   mkdir -p "$CONFIG_DIR"
+  
+  # Remove existing config if it's a directory
+  if [ -d "$CONFIG_DIR/config.json" ]; then
+    rm -rf "$CONFIG_DIR/config.json"
+  fi
   
   cat > "$CONFIG_DIR/config.json" <<EOF
 {
