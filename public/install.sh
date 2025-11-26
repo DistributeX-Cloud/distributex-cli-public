@@ -1,22 +1,7 @@
-# Start worker (Docker or Node.js)
-start_worker() {
-  section "Starting Worker"
-  
-  if [ "$USE_DOCKER" = "true" ]; then
-    start_worker_docker
-  else
-    start_worker_nodejs
-  fi
-}
-
-# Start worker via Docker
-start_worker_docker() {
-  WORKER_IMAGE#!/bin/bash
+#!/bin/bash
 #
-# DistributeX Production Worker Installer
+# DistributeX Production Worker Installer - FIXED VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
-#
-# FIXED: Proper authentication flow and input handling
 #
 
 set -e
@@ -25,7 +10,7 @@ set -e
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
 AGENT_VERSION="2.0.0"
 CONFIG_DIR="$HOME/.distributex"
-USE_DOCKER="${USE_DOCKER:-false}"  # Set to true once Docker image is available
+USE_DOCKER="${USE_DOCKER:-false}"
 
 # Colors
 RED='\033[0;31m'
@@ -36,7 +21,7 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Logging
+# Logging functions
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
@@ -45,6 +30,7 @@ section() { echo -e "\n${MAGENTA}━━━ $1 ━━━${NC}\n"; }
 
 # Check requirements
 check_requirements() {
+  section "Checking Requirements"
   local missing=()
   for cmd in curl jq bc; do
     if ! command -v $cmd &> /dev/null; then
@@ -55,9 +41,10 @@ check_requirements() {
   if [ ${#missing[@]} -gt 0 ]; then
     error "Missing required commands: ${missing[*]}. Install with: sudo apt install ${missing[*]}"
   fi
+  log "All requirements satisfied"
 }
 
-# User authentication - FIXED to prevent premature exit
+# User authentication
 authenticate_user() {
   section "User Authentication"
   
@@ -85,13 +72,9 @@ authenticate_user() {
   echo "  2) Login to existing account"
   echo ""
   
-  # Force valid input before continuing - FIXED to work with piped input
   local auth_choice=""
   while true; do
-    # Redirect from /dev/tty to read from terminal even when piped
     read -p "Enter choice [1-2]: " auth_choice < /dev/tty
-    
-    # Remove any whitespace
     auth_choice=$(echo "$auth_choice" | tr -d '[:space:]')
     
     case "$auth_choice" in
@@ -110,14 +93,13 @@ authenticate_user() {
   done
 } 
 
-# Sign up new user - FIXED for piped input
+# Sign up new user
 signup_user() {
   echo ""
   read -p "First Name: " first_name < /dev/tty
   read -p "Last Name: " last_name < /dev/tty
   read -p "Email: " email < /dev/tty
   
-  # Password input with validation
   while true; do
     read -s -p "Password (min 8 chars): " password < /dev/tty
     echo ""
@@ -140,12 +122,10 @@ signup_user() {
   
   info "Creating account..."
   
-  # Make signup request
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
   
-  # Split response body and status code
   HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
   HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
   
@@ -154,7 +134,6 @@ signup_user() {
     error "Signup failed (HTTP $HTTP_CODE): $ERROR_MSG"
   fi
   
-  # Extract token from response
   API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token // empty')
   
   if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
@@ -162,7 +141,6 @@ signup_user() {
     error "Authentication failed: $ERROR_MSG"
   fi
   
-  # Save token
   mkdir -p "$CONFIG_DIR"
   echo "$API_TOKEN" > "$CONFIG_DIR/token"
   chmod 600 "$CONFIG_DIR/token"
@@ -170,7 +148,7 @@ signup_user() {
   log "Account created successfully!"
 }
 
-# Login existing user - FIXED for piped input
+# Login existing user
 login_user() {
   echo ""
   read -p "Email: " email < /dev/tty
@@ -179,12 +157,10 @@ login_user() {
   
   info "Logging in..."
   
-  # Make login request
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$password\"}")
   
-  # Split response body and status code
   HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
   HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
   
@@ -193,7 +169,6 @@ login_user() {
     error "Login failed (HTTP $HTTP_CODE): $ERROR_MSG"
   fi
   
-  # Extract token
   API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token // empty')
   
   if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
@@ -201,7 +176,6 @@ login_user() {
     error "Authentication failed: $ERROR_MSG"
   fi
   
-  # Save token
   mkdir -p "$CONFIG_DIR"
   echo "$API_TOKEN" > "$CONFIG_DIR/token"
   chmod 600 "$CONFIG_DIR/token"
@@ -239,7 +213,7 @@ detect_os() {
   log "Architecture: $ARCH"
 }
 
-# Install Docker if needed
+# Install Docker
 install_docker() {
   if [ "$USE_DOCKER" = "false" ]; then
     info "Skipping Docker installation (using Node.js agent)"
@@ -273,7 +247,6 @@ detect_cpu() {
   CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
   CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
   
-  # Calculate share percentage
   if [ $CPU_CORES -ge 8 ]; then
     CPU_SHARE=50
   elif [ $CPU_CORES -ge 4 ]; then
@@ -301,7 +274,6 @@ detect_ram() {
   
   RAM_TOTAL_GB=$(echo "scale=2; $RAM_TOTAL / 1024" | bc)
   
-  # Calculate share
   if [ $RAM_TOTAL -ge 16384 ]; then
     RAM_SHARE=30
   elif [ $RAM_TOTAL -ge 8192 ]; then
@@ -323,20 +295,17 @@ detect_gpu() {
   GPU_MEMORY=0
   GPU_SHARE=0
   
-  # NVIDIA
   if command -v nvidia-smi &> /dev/null; then
     GPU_AVAILABLE=true
     GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
     GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
     GPU_SHARE=50
     log "NVIDIA GPU: $GPU_MODEL (${GPU_MEMORY}MB)"
-  # AMD
   elif command -v rocm-smi &> /dev/null; then
     GPU_AVAILABLE=true
     GPU_MODEL="AMD GPU"
     GPU_SHARE=50
     log "AMD GPU detected"
-  # Apple Silicon
   elif [ "$OS" = "darwin" ] && [[ "$ARCH" == "arm64" ]]; then
     GPU_AVAILABLE=true
     GPU_MODEL="Apple Silicon GPU"
@@ -351,16 +320,14 @@ detect_gpu() {
   fi
 }
 
-# Detect storage devices - IMPROVED
+# Detect storage
 detect_storage() {
   section "Storage Detection"
   
   STORAGE_DEVICES=()
   
   if [ "$OS" = "linux" ]; then
-    # Use df to get mounted filesystems
     while IFS= read -r line; do
-      # Skip header and special filesystems
       if [[ "$line" =~ ^Filesystem ]] || [[ "$line" =~ ^tmpfs ]] || [[ "$line" =~ ^devtmpfs ]] || [[ "$line" =~ ^udev ]]; then
         continue
       fi
@@ -370,18 +337,15 @@ detect_storage() {
       TOTAL=$(echo "$line" | awk '{print $2}')
       AVAIL=$(echo "$line" | awk '{print $4}')
       
-      # Convert to GB (df shows in KB by default with -k)
       TOTAL_GB=$((TOTAL / 1024 / 1024))
       AVAIL_GB=$((AVAIL / 1024 / 1024))
       
-      # Only include if we have meaningful storage (> 1GB available)
       if [ $AVAIL_GB -gt 1 ]; then
         STORAGE_DEVICES+=("$DEV|$MOUNT|$TOTAL_GB|$AVAIL_GB")
         log "Found: $DEV at $MOUNT (${TOTAL_GB}GB total, ${AVAIL_GB}GB free)"
       fi
     done < <(df -k | grep "^/dev/")
     
-    # If no devices found, fall back to root
     if [ ${#STORAGE_DEVICES[@]} -eq 0 ]; then
       ROOT_INFO=$(df -k / | tail -1)
       DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
@@ -392,7 +356,6 @@ detect_storage() {
     fi
     
   elif [ "$OS" = "darwin" ]; then
-    # macOS storage detection
     while IFS= read -r line; do
       if [[ "$line" =~ ^Filesystem ]] || [[ "$line" =~ ^map ]] || [[ "$line" =~ ^devfs ]]; then
         continue
@@ -403,7 +366,6 @@ detect_storage() {
       TOTAL=$(echo "$line" | awk '{print $2}')
       AVAIL=$(echo "$line" | awk '{print $4}')
       
-      # Convert from 512-byte blocks to GB
       TOTAL_GB=$((TOTAL / 2 / 1024 / 1024))
       AVAIL_GB=$((AVAIL / 2 / 1024 / 1024))
       
@@ -413,7 +375,6 @@ detect_storage() {
       fi
     done < <(df -k | grep "^/dev/")
     
-    # Fall back to root if nothing found
     if [ ${#STORAGE_DEVICES[@]} -eq 0 ]; then
       ROOT_INFO=$(df -k / | tail -1)
       DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
@@ -423,7 +384,6 @@ detect_storage() {
       log "Using root filesystem: $DEV (${TOTAL}GB total, ${AVAIL}GB free)"
     fi
   else
-    # Generic fallback
     ROOT_INFO=$(df / | tail -1)
     DEV=$(echo "$ROOT_INFO" | awk '{print $1}')
     TOTAL=100
@@ -444,7 +404,6 @@ select_storage() {
   SELECTED_STORAGE=()
   TOTAL_STORAGE=0
   
-  # If only one device (usually just /), auto-select it
   if [ ${#STORAGE_DEVICES[@]} -eq 1 ]; then
     device="${STORAGE_DEVICES[0]}"
     IFS='|' read -r dev mount total avail <<< "$device"
@@ -452,7 +411,6 @@ select_storage() {
     SELECTED_STORAGE+=("$device")
     TOTAL_STORAGE=$avail
   else
-    # Multiple devices, let user choose
     for device in "${STORAGE_DEVICES[@]}"; do
       IFS='|' read -r dev mount total avail <<< "$device"
       
@@ -473,7 +431,6 @@ select_storage() {
     done
   fi
   
-  # Calculate share percentage based on total available storage
   if [ $TOTAL_STORAGE -ge 500 ]; then
     STORAGE_SHARE=20
   elif [ $TOTAL_STORAGE -ge 100 ]; then
@@ -486,7 +443,7 @@ select_storage() {
   log "Total: ${TOTAL_STORAGE}GB, Share: ${STORAGE_SHARE}% (~${STORAGE_GB_SHARED}GB)"
 }
 
-# Register worker via API - FIXED error handling
+# Register worker
 register_worker() {
   section "Worker Registration"
   
@@ -543,13 +500,11 @@ EOF
 create_config() {
   section "Configuration"
   
-  # Ensure config directory exists and is not a file
   if [ -f "$CONFIG_DIR" ]; then
     rm -f "$CONFIG_DIR"
   fi
   mkdir -p "$CONFIG_DIR"
   
-  # Remove existing config if it's a directory
   if [ -d "$CONFIG_DIR/config.json" ]; then
     rm -rf "$CONFIG_DIR/config.json"
   fi
@@ -578,7 +533,7 @@ EOF
   log "Configuration saved"
 }
 
-# Install Node.js if not present
+# Install Node.js
 install_nodejs() {
   section "Node.js Setup"
   
@@ -591,11 +546,9 @@ install_nodejs() {
   info "Installing Node.js..."
   
   if [ "$OS" = "linux" ]; then
-    # Install Node.js via NodeSource
     curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
     sudo apt-get install -y nodejs
   elif [ "$OS" = "darwin" ]; then
-    # Install via Homebrew if available
     if command -v brew &> /dev/null; then
       brew install node
     else
@@ -608,13 +561,12 @@ install_nodejs() {
   log "Node.js installed: $(node -v)"
 }
 
-# Download and install worker agent
+# Install worker agent
 install_worker_agent() {
   section "Installing Worker Agent"
   
   info "Downloading worker agent..."
   
-  # Download the worker agent script
   curl -fsSL "https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/worker-agent.js" \
     -o "$CONFIG_DIR/worker-agent.js"
   
@@ -622,40 +574,56 @@ install_worker_agent() {
   
   log "Worker agent installed"
 }
+
+# Start worker (Node.js version)
+start_worker_nodejs() {
+  section "Starting Worker"
   
-  docker stop distributex-worker 2>/dev/null || true
-  docker rm distributex-worker 2>/dev/null || true
+  info "Starting Node.js worker..."
   
-  DOCKER_CMD="docker run -d --name distributex-worker --restart unless-stopped"
-  DOCKER_CMD="$DOCKER_CMD -v $CONFIG_DIR:/config:ro"
-  DOCKER_CMD="$DOCKER_CMD --cpus=$(echo "$CPU_CORES * $CPU_SHARE / 100" | bc)"
-  DOCKER_CMD="$DOCKER_CMD --memory=$(echo "$RAM_TOTAL * $RAM_SHARE / 100" | bc)m"
-  
-  if [ "$GPU_AVAILABLE" = true ]; then
-    if command -v nvidia-smi &> /dev/null; then
-      DOCKER_CMD="$DOCKER_CMD --gpus all"
-    fi
-  fi
-  
-  for device in "${SELECTED_STORAGE[@]}"; do
-    IFS='|' read -r dev mount total avail <<< "$device"
-    DOCKER_CMD="$DOCKER_CMD -v $mount:/storage$(echo $mount | tr '/' '_'):rw"
-  done
-  
-  DOCKER_CMD="$DOCKER_CMD $WORKER_IMAGE"
-  
-  info "Pulling image..."
-  docker pull $WORKER_IMAGE
-  
-  info "Starting container..."
-  eval $DOCKER_CMD
-  
-  sleep 2
-  
-  if docker ps | grep -q distributex-worker; then
-    log "Worker container started!"
+  # Create systemd service if on Linux with systemd
+  if [ "$OS" = "linux" ] && command -v systemctl &> /dev/null; then
+    sudo tee /etc/systemd/system/distributex-worker.service > /dev/null <<EOF
+[Unit]
+Description=DistributeX Worker
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$CONFIG_DIR
+ExecStart=$(which node) $CONFIG_DIR/worker-agent.js --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    sudo systemctl daemon-reload
+    sudo systemctl enable distributex-worker
+    sudo systemctl start distributex-worker
+    
+    log "Worker service installed and started"
+    info "Check status with: sudo systemctl status distributex-worker"
   else
-    error "Failed to start container"
+    # Fallback: run in background with nohup
+    nohup node "$CONFIG_DIR/worker-agent.js" --api-key "$API_TOKEN" --url "$DISTRIBUTEX_API_URL" > "$CONFIG_DIR/worker.log" 2>&1 &
+    echo $! > "$CONFIG_DIR/worker.pid"
+    
+    log "Worker started in background (PID: $(cat $CONFIG_DIR/worker.pid))"
+    info "Check logs: tail -f $CONFIG_DIR/worker.log"
+  fi
+}
+
+# Start worker
+start_worker() {
+  if [ "$USE_DOCKER" = "true" ]; then
+    error "Docker mode not yet implemented. Set USE_DOCKER=false"
+  else
+    install_nodejs
+    install_worker_agent
+    start_worker_nodejs
   fi
 }
 
@@ -663,18 +631,30 @@ install_worker_agent() {
 setup_monitoring() {
   section "Monitoring Setup"
   
-  cat > /usr/local/bin/distributex-monitor <<'EOF'
+  if [ "$OS" = "linux" ] && command -v systemctl &> /dev/null; then
+    log "Using systemd for monitoring (auto-restart enabled)"
+  else
+    # Create simple health check script
+    cat > "$CONFIG_DIR/monitor.sh" <<'EOF'
 #!/bin/bash
-if ! docker ps | grep -q distributex-worker; then
-  docker start distributex-worker || exit 1
+if [ ! -f "$HOME/.distributex/worker.pid" ]; then
+  exit 0
+fi
+
+PID=$(cat "$HOME/.distributex/worker.pid")
+if ! ps -p $PID > /dev/null 2>&1; then
+  cd "$HOME/.distributex"
+  nohup node worker-agent.js --api-key $(cat token) --url ${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev} > worker.log 2>&1 &
+  echo $! > worker.pid
 fi
 EOF
-  
-  chmod +x /usr/local/bin/distributex-monitor
-  
-  (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/distributex-monitor") | crontab -
-  
-  log "Health monitoring enabled (every 5 minutes)"
+    chmod +x "$CONFIG_DIR/monitor.sh"
+    
+    # Add to crontab
+    (crontab -l 2>/dev/null | grep -v distributex-monitor; echo "*/5 * * * * $CONFIG_DIR/monitor.sh") | crontab -
+    
+    log "Health monitoring enabled (every 5 minutes)"
+  fi
 }
 
 # Show summary
@@ -695,10 +675,25 @@ ${CYAN}Worker Details:${NC}
   • Storage: ${TOTAL_STORAGE}GB (${STORAGE_SHARE}% shared)
 
 ${CYAN}Management:${NC}
-  • Status:  docker ps | grep distributex
-  • Logs:    docker logs -f distributex-worker
-  • Stop:    docker stop distributex-worker
-  • Restart: docker restart distributex-worker
+EOF
+
+  if [ "$OS" = "linux" ] && command -v systemctl &> /dev/null; then
+    cat <<EOF
+  • Status:  sudo systemctl status distributex-worker
+  • Logs:    sudo journalctl -u distributex-worker -f
+  • Stop:    sudo systemctl stop distributex-worker
+  • Restart: sudo systemctl restart distributex-worker
+EOF
+  else
+    cat <<EOF
+  • Status:  ps aux | grep worker-agent
+  • Logs:    tail -f $CONFIG_DIR/worker.log
+  • Stop:    kill \$(cat $CONFIG_DIR/worker.pid)
+  • Restart: $CONFIG_DIR/monitor.sh
+EOF
+  fi
+
+  cat <<EOF
 
 ${CYAN}Dashboard:${NC}
   ${DISTRIBUTEX_API_URL}/dashboard
