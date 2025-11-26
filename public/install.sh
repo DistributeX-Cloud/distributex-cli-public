@@ -91,6 +91,8 @@ while true; do
   esac
 done
 
+} 
+
 # Sign up new user - FIXED error handling
 signup_user() {
   echo ""
