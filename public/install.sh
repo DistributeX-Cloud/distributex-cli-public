@@ -72,10 +72,11 @@ authenticate_user() {
   echo "  2) Login to existing account"
   echo ""
   
-  # Force valid input before continuing - FIXED
+  # Force valid input before continuing - FIXED to work with piped input
   local auth_choice=""
   while true; do
-    read -p "Enter choice [1-2]: " auth_choice
+    # Redirect from /dev/tty to read from terminal even when piped
+    read -p "Enter choice [1-2]: " auth_choice < /dev/tty
     
     # Remove any whitespace
     auth_choice=$(echo "$auth_choice" | tr -d '[:space:]')
@@ -96,16 +97,16 @@ authenticate_user() {
   done
 } 
 
-# Sign up new user - FIXED error handling
+# Sign up new user - FIXED for piped input
 signup_user() {
   echo ""
-  read -p "First Name: " first_name
-  read -p "Last Name: " last_name
-  read -p "Email: " email
+  read -p "First Name: " first_name < /dev/tty
+  read -p "Last Name: " last_name < /dev/tty
+  read -p "Email: " email < /dev/tty
   
   # Password input with validation
   while true; do
-    read -s -p "Password (min 8 chars): " password
+    read -s -p "Password (min 8 chars): " password < /dev/tty
     echo ""
     
     if [ ${#password} -lt 8 ]; then
@@ -113,7 +114,7 @@ signup_user() {
       continue
     fi
     
-    read -s -p "Confirm Password: " password_confirm
+    read -s -p "Confirm Password: " password_confirm < /dev/tty
     echo ""
     
     if [ "$password" != "$password_confirm" ]; then
@@ -156,11 +157,11 @@ signup_user() {
   log "Account created successfully!"
 }
 
-# Login existing user - FIXED error handling
+# Login existing user - FIXED for piped input
 login_user() {
   echo ""
-  read -p "Email: " email
-  read -s -p "Password: " password
+  read -p "Email: " email < /dev/tty
+  read -s -p "Password: " password < /dev/tty
   echo ""
   
   info "Logging in..."
@@ -385,7 +386,7 @@ select_storage() {
       continue
     fi
     
-    read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r
+    read -p "Include $mount with ${avail}GB available? (y/N): " -n 1 -r REPLY < /dev/tty
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
       SELECTED_STORAGE+=("$device")
@@ -554,8 +555,8 @@ show_summary() {
   cat <<EOF
 
 ${GREEN}╔═══════════════════════════════════════════════════════════╗
-        ║                ✨ Successfully Installed! ✨              ║
-        ╚═══════════════════════════════════════════════════════════╝${NC}
+║                ✨ Successfully Installed! ✨              ║
+╚═══════════════════════════════════════════════════════════╝${NC}
 
 ${CYAN}Worker Details:${NC}
   • ID: $WORKER_ID
