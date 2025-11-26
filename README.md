@@ -576,30 +576,6 @@ distributex status task_abc123 | grep error
 
 ---
 
-## 🎓 Learning Resources
-
-### Example Projects
-
-- [ML Training Pipeline](https://github.com/distributex/examples/tree/main/ml-training)
-- [Video Processing](https://github.com/distributex/examples/tree/main/video-processing)
-- [Data Analysis](https://github.com/distributex/examples/tree/main/data-analysis)
-- [Scientific Computing](https://github.com/distributex/examples/tree/main/scientific)
-
-### Tutorials
-
-- [Getting Started with DistributeX](https://distributex.io/docs/getting-started)
-- [Running ML Training Jobs](https://distributex.io/docs/ml-training)
-- [Docker Container Execution](https://distributex.io/docs/docker-execution)
-- [Parallel Processing Patterns](https://distributex.io/docs/parallel-patterns)
-
-### Community
-
-- [Discord Server](https://discord.gg/distributex)
-- [GitHub Discussions](https://github.com/distributex/distributex/discussions)
-- [Stack Overflow Tag](https://stackoverflow.com/questions/tagged/distributex)
-
----
-
 ## 🚀 Next Steps
 
 1. **Install the CLI**: `npm install -g distributex-cli`
