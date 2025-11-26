@@ -726,10 +726,6 @@ show_management_commands() {
     echo "  Container status: docker ps -f name=$CONTAINER_NAME"
     echo "  Resource usage:   docker stats $CONTAINER_NAME --no-stream"
     echo ""
-    echo -e "${CYAN}Dashboard & API:${NC}"
-    echo "  Dashboard: $DISTRIBUTEX_API_URL/dashboard"
-    echo "  API Docs:  $DISTRIBUTEX_API_URL/api-docs"
-    echo ""
 }
 
 # --------------------------
