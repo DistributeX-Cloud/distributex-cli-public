@@ -9,7 +9,7 @@
 set -e
 
 # Configuration
-DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud.pages.dev}"
+DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
 WORKER_IMAGE="distributex/worker:latest"
 AGENT_VERSION="2.0.0"
 CONFIG_DIR="$HOME/.distributex"
