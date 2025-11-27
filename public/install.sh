@@ -486,22 +486,32 @@ register_worker() {
     else
         CPU_MODEL="Unknown CPU"
     fi
-    
+
     info "Registering device: $WORKER_NAME"
-    
-    # Prepare GPU data for JSON
+
+    # Prepare GPU JSON
     if [ "$GPU_AVAILABLE" = true ]; then
         GPU_JSON="\"gpuAvailable\": true, \"gpuModel\": \"$GPU_MODEL\", \"gpuMemory\": $GPU_MEMORY, \"gpuSharePercent\": $GPU_SHARE_PERCENT,"
     else
         GPU_JSON="\"gpuAvailable\": false, \"gpuSharePercent\": 0,"
     fi
 
-    # Generate stable device fingerprint
-    DEVICE_FINGERPRINT=$(cat /etc/machine-id 2>/dev/null || echo "$(uname -n)-$(uname -m)")
+    # ===============================
+    # FIX: Generate stable fingerprint
+    # ===============================
+    if [ -f /etc/machine-id ]; then
+        DEVICE_FINGERPRINT=$(cat /etc/machine-id)
+    else
+        # fallback for macOS or rare systems
+        DEVICE_FINGERPRINT=$(uuidgen)
+    fi
 
-    # Prepare registration data
+    # -----------------------------------
+    # FIX: Include fingerprint in JSON
+    # -----------------------------------
     REGISTER_DATA=$(cat <<EOF
 {
+  "deviceFingerprint": "$DEVICE_FINGERPRINT",
   "name": "$WORKER_NAME",
   "hostname": "$WORKER_NAME",
   "platform": "$OS",
@@ -509,10 +519,10 @@ register_worker() {
   "cpuCores": $CPU_CORES,
   "cpuModel": "$CPU_MODEL",
   "ramTotal": $RAM_TOTAL,
-  "ramAvailable": $RAM_TOTAL,
+  "ramAvailable": $RAM_AVAILABLE,
   $GPU_JSON
   "storageTotal": $STORAGE_TOTAL,
-  "storageAvailable": $STORAGE_TOTAL,
+  "storageAvailable": $STORAGE_AVAILABLE,
   "cpuSharePercent": 40,
   "ramSharePercent": 30,
   "storageSharePercent": 20
@@ -534,7 +544,6 @@ EOF
         log "Worker registered successfully! ID: $WORKER_ID"
         echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
         
-        # Show what was registered
         echo ""
         info "Registered Resources:"
         echo "  • CPU: $CPU_CORES cores ($CPU_MODEL)"
