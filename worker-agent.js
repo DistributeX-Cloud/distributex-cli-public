@@ -11,7 +11,8 @@ const os = require('os');
 const https = require('https');
 const { exec } = require('child_process');
 const { promisify } = require('util');
-const fs = require('fs').promises;
+const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 
@@ -228,7 +229,7 @@ class DistributeXWorker {
 
     async getDockerId() {
     try {
-      const cgroup = await fs.readFile('/proc/self/cgroup', 'utf8');
+      const cgroup = await fsPromises.readFile('/proc/self/cgroup', 'utf8');
       const match = cgroup.match(/docker\/([a-f0-9]+)/i);
       return match ? match[1].substring(0, 12) : null;
     } catch {
