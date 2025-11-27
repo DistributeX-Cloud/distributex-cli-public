@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Agent - Advanced Version
+ * DistributeX Worker Agent - FIXED VERSION
  * 
- * Features:
- * - Device fingerprinting for tracking same device across restarts
- * - Multiple GPU device detection and tracking
- * - Proper disconnection handling
- * - CUDA version detection
+ * FIXED: Consistent device fingerprinting to prevent duplicate workers
+ * - Uses single, deterministic fingerprint generation method
+ * - Ensures one device = one worker registration
  */
 
 const os = require('os');
@@ -45,37 +43,71 @@ class DistributeXWorker {
   }
 
   /**
-   * Generate unique device fingerprint
+   * FIXED: Generate consistent device fingerprint
+   * This ensures the same device always generates the same fingerprint
    */
   async generateDeviceFingerprint() {
-    const hostname = os.hostname();
-    const cpuModel = os.cpus()[0]?.model || 'unknown';
-    const platform = os.platform();
-    const arch = os.arch();
-    
-    // Try to get MAC address
-    let macAddress = 'unknown';
     try {
-      const networkInterfaces = os.networkInterfaces();
-      for (const [name, interfaces] of Object.entries(networkInterfaces)) {
-        for (const iface of interfaces) {
-          if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
-            macAddress = iface.mac;
-            break;
+      const hostname = os.hostname();
+      const platform = os.platform();
+      const arch = os.arch();
+      const cpuModel = os.cpus()[0]?.model || 'unknown';
+      
+      // Try to get MAC address
+      let macAddress = 'unknown';
+      try {
+        const networkInterfaces = os.networkInterfaces();
+        for (const [name, interfaces] of Object.entries(networkInterfaces)) {
+          for (const iface of interfaces) {
+            if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
+              macAddress = iface.mac;
+              break;
+            }
           }
+          if (macAddress !== 'unknown') break;
         }
-        if (macAddress !== 'unknown') break;
+      } catch (e) {
+        console.warn('Could not get MAC address');
       }
-    } catch (e) {
-      console.warn('Could not get MAC address');
+      
+      // CRITICAL FIX: Use consistent, deterministic fingerprint components
+      // Remove any timestamp or random elements that would cause duplicates
+      const fingerprintComponents = [
+        hostname.toLowerCase().trim(),
+        macAddress.toLowerCase().trim(),
+        cpuModel.toLowerCase().trim().replace(/\s+/g, '-'),
+        platform.toLowerCase().trim(),
+        arch.toLowerCase().trim()
+      ];
+      
+      // Create deterministic fingerprint from components
+      const fingerprintString = fingerprintComponents.join('|');
+      const fingerprint = crypto
+        .createHash('sha256')
+        .update(fingerprintString)
+        .digest('hex')
+        .substring(0, 32);
+      
+      console.log('📌 Device Fingerprint Components:');
+      console.log('   Hostname:', hostname);
+      console.log('   MAC:', macAddress);
+      console.log('   CPU:', cpuModel);
+      console.log('   Platform:', platform);
+      console.log('   Arch:', arch);
+      console.log('📌 Generated Fingerprint:', fingerprint);
+      
+      return fingerprint;
+    } catch (error) {
+      console.error('❌ Error generating fingerprint:', error);
+      // Fallback to basic fingerprint
+      const fallback = crypto
+        .createHash('sha256')
+        .update(`${os.hostname()}-${os.platform()}-${os.arch()}`)
+        .digest('hex')
+        .substring(0, 32);
+      console.log('⚠️  Using fallback fingerprint:', fallback);
+      return fallback;
     }
-    
-    // Create fingerprint
-    const fingerprintData = `${hostname}-${macAddress}-${cpuModel}-${platform}-${arch}`;
-    const fingerprint = crypto.createHash('sha256').update(fingerprintData).digest('hex').substring(0, 32);
-    
-    console.log('📌 Device Fingerprint:', fingerprint);
-    return fingerprint;
   }
 
   /**
@@ -101,13 +133,12 @@ class DistributeXWorker {
           const lines = stdout.trim().split('\n');
           
           if (lines.length > 0 && lines[0]) {
-            // Parse first GPU info
             const [name, memory, driverVersion] = lines[0].split(',').map(s => s.trim());
             gpuInfo.available = true;
             gpuInfo.model = name;
             gpuInfo.memory = parseInt(memory);
             gpuInfo.driverVersion = driverVersion;
-            gpuInfo.count = lines.length; // Count of GPU devices
+            gpuInfo.count = lines.length;
             
             // Try to get CUDA version
             try {
@@ -132,7 +163,6 @@ class DistributeXWorker {
               gpuInfo.model = gpuMatches[0].split(':')[1].trim();
               gpuInfo.count = gpuMatches.length;
               
-              // Try to get memory
               const { stdout: memOut } = await execAsync('rocm-smi --showmeminfo vram 2>/dev/null');
               const memMatch = memOut.match(/Total.*?(\d+)/);
               if (memMatch) {
@@ -153,11 +183,10 @@ class DistributeXWorker {
           if (gpuMatch) {
             gpuInfo.available = true;
             gpuInfo.model = gpuMatch[1].trim();
-            gpuInfo.count = 1; // macOS typically has 1 integrated GPU
+            gpuInfo.count = 1;
             
-            // Estimate memory from total RAM
             const totalRam = os.totalmem();
-            gpuInfo.memory = Math.floor(totalRam / (1024 * 1024) * 0.5); // Estimate 50% of RAM
+            gpuInfo.memory = Math.floor(totalRam / (1024 * 1024) * 0.5);
             
             console.log(`✓ Detected Metal GPU: ${gpuInfo.model}`);
           }
@@ -195,25 +224,21 @@ class DistributeXWorker {
   }
 
   /**
-   * Detect system capabilities with advanced GPU info
+   * Detect system capabilities
    */
   async detectSystemCapabilities() {
     console.log('🔍 Detecting system capabilities...');
     
     const cpus = os.cpus();
-    const totalRam = Math.floor(os.totalmem() / (1024 * 1024)); // MB
-    const freeRam = Math.floor(os.freemem() / (1024 * 1024)); // MB
+    const totalRam = Math.floor(os.totalmem() / (1024 * 1024));
+    const freeRam = Math.floor(os.freemem() / (1024 * 1024));
     
-    // GPU Detection
-    let gpuInfo = await this.detectGPU();
+    const gpuInfo = await this.detectGPU();
+    const storageInfo = await this.detectStorage();
     
-    // Storage Detection  
-    let storageInfo = await this.detectStorage();
-
-    // Generate device fingerprint
+    // CRITICAL: Generate device fingerprint ONCE
     this.deviceFingerprint = await this.generateDeviceFingerprint();
 
-    // Calculate sharing percentages
     const cpuSharePercent = CONFIG.IS_DOCKER ? 80 : (cpus.length >= 8 ? 50 : cpus.length >= 4 ? 40 : 30);
     const ramSharePercent = CONFIG.IS_DOCKER ? 80 : (totalRam >= 16384 ? 30 : totalRam >= 8192 ? 25 : 20);
     const gpuSharePercent = gpuInfo.available ? (CONFIG.IS_DOCKER ? 90 : 50) : 0;
@@ -249,10 +274,10 @@ class DistributeXWorker {
   }
 
   /**
-   * Detect storage (unchanged)
+   * Detect storage
    */
   async detectStorage() {
-    let storageInfo = { total: 100, available: 50 }; // Defaults in GB
+    let storageInfo = { total: 100, available: 50 };
     
     try {
       const platform = os.platform();
@@ -271,7 +296,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Make HTTP request with retry logic (unchanged)
+   * Make HTTP request with retry logic
    */
   async makeRequest(method, path, data = null, retries = CONFIG.RETRY_ATTEMPTS) {
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -288,7 +313,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Single HTTP request attempt (unchanged)
+   * Single HTTP request attempt
    */
   async _makeRequestOnce(method, path, data = null) {
     return new Promise((resolve, reject) => {
@@ -298,7 +323,7 @@ class DistributeXWorker {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker-Advanced/3.0'
+          'User-Agent': 'DistributeX-Worker-Fixed/3.1'
         },
         timeout: 30000
       };
@@ -333,7 +358,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Register worker with advanced capabilities
+   * Register worker with consistent fingerprint
    */
   async register() {
     console.log('🔍 Detecting system capabilities...');
@@ -341,7 +366,7 @@ class DistributeXWorker {
     
     console.log('\n📊 System Information:');
     console.log(`  Environment: ${CONFIG.IS_DOCKER ? 'Docker Container' : 'Native'}`);
-    console.log(`  Device ID: ${capabilities.deviceFingerprint}`);
+    console.log(`  Device Fingerprint: ${capabilities.deviceFingerprint}`);
     console.log(`  CPU: ${capabilities.cpuCores} cores (${capabilities.cpuModel})`);
     console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)} GB total`);
     
@@ -373,6 +398,9 @@ class DistributeXWorker {
     this.workerId = worker.id;
     
     console.log(`✅ Worker ${worker.isNew ? 'registered' : 'reconnected'}! ID: ${this.workerId}`);
+    if (!worker.isNew) {
+      console.log('   (Recognized existing device - no duplicate created)');
+    }
     return worker;
   }
 
@@ -420,15 +448,12 @@ class DistributeXWorker {
         throw new Error('API key required');
       }
 
-      // Register worker
       await this.register();
       
       this.isRunning = true;
       
-      // Send initial heartbeat
       await this.sendHeartbeat();
       
-      // Schedule heartbeats
       this.heartbeatInterval = setInterval(
         () => this.sendHeartbeat(),
         CONFIG.HEARTBEAT_INTERVAL
@@ -438,17 +463,15 @@ class DistributeXWorker {
       console.log(`📡 Heartbeat interval: ${CONFIG.HEARTBEAT_INTERVAL / 60000} minutes`);
       console.log('Container will run until stopped\n');
 
-      // Graceful shutdown
       process.on('SIGINT', () => this.stop());
       process.on('SIGTERM', () => this.stop());
 
-      // Log stats every hour
       setInterval(() => {
         console.log('\n📊 Worker Stats:');
         console.log(`  Successful heartbeats: ${this.metrics.successfulHeartbeats}`);
         console.log(`  Last heartbeat: ${this.metrics.lastHeartbeat?.toLocaleString() || 'Never'}`);
         console.log(`  Worker ID: ${this.workerId}`);
-        console.log(`  Device ID: ${this.deviceFingerprint}\n`);
+        console.log(`  Device Fingerprint: ${this.deviceFingerprint}\n`);
       }, 3600000);
 
     } catch (error) {
@@ -458,7 +481,7 @@ class DistributeXWorker {
   }
 
   /**
-   * Stop worker gracefully with proper disconnection
+   * Stop worker gracefully
    */
   async stop() {
     console.log('\n🛑 Stopping worker...');
@@ -470,7 +493,6 @@ class DistributeXWorker {
 
     if (this.workerId) {
       try {
-        // Send disconnect request
         await this.makeRequest('DELETE', `/api/workers/${this.workerId}`, null, 1);
         
         console.log('✅ Worker disconnected gracefully');
@@ -488,7 +510,6 @@ class DistributeXWorker {
 if (require.main === module) {
   const args = process.argv.slice(2);
   
-  // Parse arguments
   const apiKeyIndex = args.indexOf('--api-key');
   const urlIndex = args.indexOf('--url');
   
@@ -502,11 +523,10 @@ if (require.main === module) {
     baseUrl: urlIndex !== -1 && args[urlIndex + 1] ? args[urlIndex + 1] : undefined
   };
 
-  // Banner
   console.log('\n╔═════════════════════════════════════════════════════════════════════════════════╗');
-  console.log('  ║                        DistributeX Worker Agent v3.0                            ║');
+  console.log('  ║                        DistributeX Worker Agent v3.1                            ║');
   console.log(`  ║      ${CONFIG.IS_DOCKER ? 'Docker Container Mode 🐳' : 'Native Mode 💻'}        ║`);
-  console.log('  ║                   Advanced GPU & Device Tracking                                ║');
+  console.log('  ║              FIXED: Consistent Device Fingerprinting                            ║');
   console.log('  ╚═════════════════════════════════════════════════════════════════════════════════╝\n');
 
   const worker = new DistributeXWorker(config);
