@@ -74,15 +74,15 @@ show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗        ║
-║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗       ║
-║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║       ║
-║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║       ║
-║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝       ║
-║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝        ║
+║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗         ║
+║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗        ║
+║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║        ║
+║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║        ║
+║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝        ║
+║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝         ║
 ║                                                           ║
-║              DistributeX Cloud Network                   ║
-║          Distributed Computing Platform                  ║
+║              DistributeX Cloud Network                    ║
+║          Distributed Computing Platform                   ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
@@ -151,37 +151,58 @@ authenticate_user() {
     echo "  2) Login (Existing user)"
     echo ""
     
+    local choice=""
     while true; do
-        read -p "Enter choice [1-2]: " choice
+        read -r -p "Enter choice [1-2]: " choice
         case "$choice" in
-            1) signup_user; break ;;
-            2) login_user; break ;;
-            *) echo "Invalid choice, please enter 1 or 2" ;;
+            1) 
+                signup_user
+                break
+                ;;
+            2) 
+                login_user
+                break
+                ;;
+            *) 
+                echo -e "${RED}Invalid choice. Please enter 1 or 2${NC}"
+                ;;
         esac
     done
 }
 
 signup_user() {
     echo ""
-    echo -e "${CYAN}Create Your Account${NC}"
-    read -p "First Name: " first_name
-    read -p "Last Name: " last_name
-    read -p "Email: " email
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}     Create Your Account${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    local first_name last_name email password password_confirm
+    
+    read -r -p "First Name: " first_name
+    read -r -p "Last Name: " last_name
+    read -r -p "Email: " email
     
     while true; do
-        read -s -p "Password (min 8 chars): " password; echo
+        read -s -r -p "Password (min 8 chars): " password
+        echo ""
+        
         if [ ${#password} -lt 8 ]; then
             warn "Password must be at least 8 characters"
             continue
         fi
-        read -s -p "Confirm Password: " password_confirm; echo
+        
+        read -s -r -p "Confirm Password: " password_confirm
+        echo ""
+        
         if [ "$password" != "$password_confirm" ]; then
-            warn "Passwords do not match"
+            warn "Passwords do not match. Please try again."
             continue
         fi
         break
     done
 
+    echo ""
     info "Creating account..."
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
         -H "Content-Type: application/json" \
@@ -202,13 +223,25 @@ signup_user() {
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
     log "Account created successfully!"
+    echo ""
+    
+    # Pause to let user see the success message
+    sleep 1
 }
 
 login_user() {
     echo ""
-    echo -e "${CYAN}Login to Your Account${NC}"
-    read -p "Email: " email
-    read -s -p "Password: " password; echo
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}     Login to Your Account${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    local email password
+    
+    read -r -p "Email: " email
+    read -s -r -p "Password: " password
+    echo ""
+    echo ""
     
     info "Logging in..."
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
@@ -230,6 +263,10 @@ login_user() {
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
     log "Logged in successfully!"
+    echo ""
+    
+    # Pause to let user see the success message
+    sleep 1
 }
 
 # --------------------------
@@ -595,21 +632,9 @@ MGMT_EOF
 }
 
 # --------------------------
-# Main Installation Flow
+# Final Confirmation
 # --------------------------
-main() {
-    show_banner
-    check_requirements
-    authenticate_user
-    detect_system
-    generate_device_fingerprint
-    pull_docker_image
-    stop_existing_container
-    register_worker
-    start_container
-    save_config
-    create_management_script
-    
+show_completion() {
     section "Installation Complete! 🎉"
     
     echo ""
@@ -629,6 +654,27 @@ main() {
     echo ""
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
+    
+    # Wait for user acknowledgment
+    read -r -p "Press Enter to exit..."
+}
+
+# --------------------------
+# Main Installation Flow
+# --------------------------
+main() {
+    show_banner
+    check_requirements
+    authenticate_user
+    detect_system
+    generate_device_fingerprint
+    pull_docker_image
+    stop_existing_container
+    register_worker
+    start_container
+    save_config
+    create_management_script
+    show_completion
 }
 
 # Run main installation
