@@ -474,13 +474,12 @@ stop_existing_container() {
 # --------------------------
 register_worker() {
     section "Registering Worker Device"
-    
-    # Get hostname for worker name
+
     WORKER_NAME="${HOSTNAME:-$(hostname)}"
-    
-    # Get CPU model
+
+    # CPU model
     if [ "$OS" = "linux" ]; then
-        CPU_MODEL=$(cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 | cut -d: -f2 | xargs || echo "Unknown CPU")
+        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs)
     elif [ "$OS" = "darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
     else
@@ -489,29 +488,39 @@ register_worker() {
 
     info "Registering device: $WORKER_NAME"
 
-    # Prepare GPU JSON
+    # GPU JSON emission
     if [ "$GPU_AVAILABLE" = true ]; then
-        GPU_JSON="\"gpuAvailable\": true, \"gpuModel\": \"$GPU_MODEL\", \"gpuMemory\": $GPU_MEMORY, \"gpuSharePercent\": $GPU_SHARE_PERCENT,"
+        GPU_JSON="
+        \"gpuAvailable\": true,
+        \"gpuModel\": \"$GPU_MODEL\",
+        \"gpuMemory\": $GPU_MEMORY,
+        \"gpuCount\": ${GPU_COUNT:-1},
+        \"gpuDriverVersion\": \"$GPU_DRIVER_VERSION\",
+        \"gpuCudaVersion\": \"$GPU_CUDA_VERSION\",
+        \"gpuSharePercent\": ${GPU_SHARE_PERCENT:-50},"
     else
-        GPU_JSON="\"gpuAvailable\": false, \"gpuSharePercent\": 0,"
+        GPU_JSON="
+        \"gpuAvailable\": false,
+        \"gpuCount\": 0,
+        \"gpuSharePercent\": 0,"
     fi
 
-    # ===============================
-    # FIX: Generate stable fingerprint
-    # ===============================
-    if [ -f /etc/machine-id ]; then
-        DEVICE_FINGERPRINT=$(cat /etc/machine-id)
+    # Stable fingerprint (same as worker-agent.js)
+    MAC=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+    FINGERPRINT_SRC="${MAC}-${CPU_MODEL}-${OS}-${ARCH}"
+    DEVICE_FINGERPRINT=$(echo -n "$FINGERPRINT_SRC" | sha256sum | cut -c1-32)
+
+    # Is Docker?
+    if [ -f "/.dockerenv" ]; then
+        IS_DOCKER=true
+        DOCKER_ID=$(cat /proc/self/cgroup | grep -oE 'docker/[a-f0-9]+' | head -1 | cut -d/ -f2 | cut -c1-12)
     else
-        # fallback for macOS or rare systems
-        DEVICE_FINGERPRINT=$(uuidgen)
+        IS_DOCKER=false
+        DOCKER_ID=null
     fi
 
-    # -----------------------------------
-    # FIX: Include fingerprint in JSON
-    # -----------------------------------
     REGISTER_DATA=$(cat <<EOF
 {
-  "deviceFingerprint": "$DEVICE_FINGERPRINT",
   "name": "$WORKER_NAME",
   "hostname": "$WORKER_NAME",
   "platform": "$OS",
@@ -519,39 +528,32 @@ register_worker() {
   "cpuCores": $CPU_CORES,
   "cpuModel": "$CPU_MODEL",
   "ramTotal": $RAM_TOTAL,
-  "ramAvailable": $RAM_AVAILABLE,
+  "ramAvailable": $RAM_TOTAL,
   $GPU_JSON
   "storageTotal": $STORAGE_TOTAL,
-  "storageAvailable": $STORAGE_AVAILABLE,
+  "storageAvailable": $STORAGE_TOTAL,
   "cpuSharePercent": 40,
   "ramSharePercent": 30,
-  "storageSharePercent": 20
+  "storageSharePercent": 20,
+  "isDocker": $IS_DOCKER,
+  "dockerContainerId": "$DOCKER_ID",
+  "deviceFingerprint": "$DEVICE_FINGERPRINT"
 }
 EOF
 )
-    
-    # Register with API
+
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
         -d "$REGISTER_DATA")
-    
+
     HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-    
+
     if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id')
         log "Worker registered successfully! ID: $WORKER_ID"
         echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
-        
-        echo ""
-        info "Registered Resources:"
-        echo "  • CPU: $CPU_CORES cores ($CPU_MODEL)"
-        echo "  • RAM: ${RAM_TOTAL}MB"
-        echo "  • Storage: ${STORAGE_TOTAL}GB"
-        if [ "$GPU_AVAILABLE" = true ]; then
-            echo "  • GPU: $GPU_MODEL (${GPU_MEMORY}MB)"
-        fi
     else
         error "Failed to register worker ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
     fi
