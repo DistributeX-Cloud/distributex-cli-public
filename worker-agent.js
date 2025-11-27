@@ -73,7 +73,6 @@ class DistributeXWorker {
       // CRITICAL FIX: Use consistent, deterministic fingerprint components
       // Remove any timestamp or random elements that would cause duplicates
       const fingerprintComponents = [
-        hostname.toLowerCase().trim(),
         macAddress.toLowerCase().trim(),
         cpuModel.toLowerCase().trim().replace(/\s+/g, '-'),
         platform.toLowerCase().trim(),
@@ -226,6 +225,32 @@ class DistributeXWorker {
   /**
    * Detect system capabilities
    */
+
+    async getDockerId() {
+    try {
+      const cgroup = await fs.readFile('/proc/self/cgroup', 'utf8');
+      const match = cgroup.match(/docker\/([a-f0-9]+)/i);
+      return match ? match[1].substring(0, 12) : null;
+    } catch {
+      return null;
+    }
+  }
+
+    async getStableHostname() {
+    // 1. Prefer Docker container ID if inside Docker
+    const dockerId = await this.getDockerId();
+    if (dockerId) {
+      return `docker-${dockerId}`;
+    }
+
+    // 2. Otherwise use OS hostname
+    const h = os.hostname();
+    if (h) return h.toLowerCase();
+
+    // 3. Absolute fallback
+    return 'unknown';
+  }
+  
   async detectSystemCapabilities() {
     console.log('🔍 Detecting system capabilities...');
     
@@ -243,10 +268,10 @@ class DistributeXWorker {
     const ramSharePercent = CONFIG.IS_DOCKER ? 80 : (totalRam >= 16384 ? 30 : totalRam >= 8192 ? 25 : 20);
     const gpuSharePercent = gpuInfo.available ? (CONFIG.IS_DOCKER ? 90 : 50) : 0;
     const storageSharePercent = CONFIG.IS_DOCKER ? 80 : (storageInfo.total >= 200 ? 20 : storageInfo.total >= 100 ? 15 : 10);
-
+  
     const capabilities = {
-      name: os.hostname(),
-      hostname: os.hostname(),
+      name: await this.getStableHostname(),
+      hostname: await this.getStableHostname(),
       platform: os.platform(),
       architecture: os.arch(),
       cpuCores: cpus.length,
@@ -266,7 +291,7 @@ class DistributeXWorker {
       gpuSharePercent,
       storageSharePercent,
       isDocker: CONFIG.IS_DOCKER,
-      dockerContainerId: process.env.HOSTNAME || null,
+      dockerContainerId: await this.getDockerId(),
       deviceFingerprint: this.deviceFingerprint
     };
 
