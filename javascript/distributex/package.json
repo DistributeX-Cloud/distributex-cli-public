@@ -1,0 +1,41 @@
+{
+  "name": "distributex",
+  "version": "1.0.0",
+  "description": "DistributeX JavaScript/Node.js SDK for distributed computing",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "test": "jest",
+    "lint": "eslint src/**/*.js",
+    "example": "node examples.js"
+  },
+  "keywords": [
+    "distributed",
+    "computing",
+    "cloud",
+    "parallel",
+    "processing",
+    "gpu",
+    "cpu"
+  ],
+  "author": "DistributeX Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DistributeX-Cloud/distributex-cli-public.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DistributeX-Cloud/distributex-cli-public/issues"
+  },
+  "homepage": "https://distributex.io",
+  "dependencies": {
+    "tar": "^6.2.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.50.0",
+    "jest": "^29.7.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
