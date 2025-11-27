@@ -495,7 +495,10 @@ register_worker() {
     else
         GPU_JSON="\"gpuAvailable\": false, \"gpuSharePercent\": 0,"
     fi
-    
+
+    # Generate stable device fingerprint
+    DEVICE_FINGERPRINT=$(cat /etc/machine-id 2>/dev/null || echo "$(uname -n)-$(uname -m)")
+
     # Prepare registration data
     REGISTER_DATA=$(cat <<EOF
 {
