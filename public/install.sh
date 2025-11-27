@@ -10,7 +10,7 @@ set -e
 # Configuration
 # --------------------------
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
-DOCKER_IMAGE="distributex/worker:latest"  # Pull from Docker Hub
+DOCKER_IMAGE="distributexcloud/worker:latest"  # Pull from Docker Hub
 CONTAINER_NAME="distributex-worker"
 
 # FIX: Stable hostname detection
