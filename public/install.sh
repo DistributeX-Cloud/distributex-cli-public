@@ -1,51 +1,15 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - PRODUCTION VERSION
+# DistributeX Complete Installer - FIXED VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 #
 
 set -e
 
-# --------------------------
 # Configuration
-# --------------------------
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
-DOCKER_IMAGE="distributexcloud/worker:latest"  # Pull from Docker Hub
+DOCKER_IMAGE="distributexcloud/worker:latest"
 CONTAINER_NAME="distributex-worker"
-
-# FIX: Stable hostname detection
-get_stable_hostname() {
-    local hostname=""
-    
-    # Try multiple methods in order of reliability
-    if [ -f /etc/hostname ]; then
-        hostname=$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]' | head -1)
-    fi
-    
-    if [ -z "$hostname" ] || [ "$hostname" = "unknown" ]; then
-        hostname=$(hostname 2>/dev/null | tr -d '[:space:]' | head -1)
-    fi
-    
-    if [ -z "$hostname" ] || [ "$hostname" = "unknown" ]; then
-        hostname=$(uname -n 2>/dev/null | tr -d '[:space:]' | head -1)
-    fi
-    
-    # Fallback to Docker container ID if inside Docker
-    if [ -z "$hostname" ] || [ "$hostname" = "unknown" ]; then
-        if [ -f /.dockerenv ]; then
-            hostname="docker-$(cat /proc/self/cgroup | grep -oE 'docker/[a-f0-9]+' | head -1 | cut -d'/' -f2 | cut -c1-12)"
-        fi
-    fi
-    
-    # Final fallback
-    if [ -z "$hostname" ] || [ "$hostname" = "unknown" ]; then
-        hostname="distributex-$(date +%s)"
-    fi
-    
-    echo "$hostname"
-}
-
-HOSTNAME=$(get_stable_hostname)
 CONFIG_DIR="$HOME/.distributex"
 
 # Colors
@@ -56,18 +20,14 @@ CYAN='\033[0;36m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# --------------------------
 # Logging Functions
-# --------------------------
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
 
-# --------------------------
 # Banner
-# --------------------------
 show_banner() {
     clear
     echo -e "${CYAN}"
@@ -90,23 +50,64 @@ EOF
     echo ""
 }
 
-# --------------------------
-# Requirements Check
-# --------------------------
+# Get MAC Address (Primary network interface)
+get_mac_address() {
+    local mac=""
+    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$os" = "linux" ]; then
+        # Get MAC from primary interface
+        mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+    elif [ "$os" = "darwin" ]; then
+        # macOS
+        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
+        if [ -z "$mac" ]; then
+            mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2; exit}')
+        fi
+    fi
+    
+    # Fallback to reading from sysfs on Linux
+    if [ -z "$mac" ] && [ "$os" = "linux" ]; then
+        for iface in /sys/class/net/*; do
+            if [ -f "$iface/address" ] && [ "$(basename $iface)" != "lo" ]; then
+                mac=$(cat "$iface/address")
+                break
+            fi
+        done
+    fi
+    
+    # Validate MAC address format
+    if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
+        echo "$mac"
+    else
+        echo ""
+    fi
+}
+
+# Generate Device ID from MAC address
+generate_device_id() {
+    local mac=$(get_mac_address)
+    
+    if [ -z "$mac" ]; then
+        error "Could not detect MAC address. This is required for device identification."
+    fi
+    
+    # Use MAC address as the device ID (normalized)
+    echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
+}
+
+# Check Requirements
 check_requirements() {
     section "Checking System Requirements"
     
-    # Check Docker
     if ! command -v docker &> /dev/null; then
         error "Docker is not installed. Install from: https://docs.docker.com/get-docker/"
     fi
     
-    # Check if Docker daemon is running
     if ! docker ps &> /dev/null; then
         error "Docker daemon is not running. Please start Docker and try again."
     fi
     
-    # Check other required commands
     local missing=()
     for cmd in curl jq bc; do
         if ! command -v $cmd &> /dev/null; then
@@ -122,9 +123,7 @@ check_requirements() {
     log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
 
-# --------------------------
 # User Authentication
-# --------------------------
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -265,9 +264,48 @@ login_user() {
     sleep 1
 }
 
-# --------------------------
+# Select User Role
+select_role() {
+    section "Select Your Role"
+    
+    echo ""
+    echo -e "${CYAN}How do you want to use DistributeX?${NC}"
+    echo ""
+    echo "  1) ${GREEN}Contributor${NC} - Share my computer's resources"
+    echo "     • Earn by contributing CPU, RAM, GPU, Storage"
+    echo "     • Lightweight agent runs in background"
+    echo "     • Zero impact on your daily use"
+    echo ""
+    echo "  2) ${BLUE}Developer${NC} - Use pooled computing resources"
+    echo "     • Run scripts and code on distributed network"
+    echo "     • Access global pool of CPU/GPU/Storage"
+    echo "     • Pay-as-you-go or free tier available"
+    echo ""
+    
+    while true; do
+        read -r -p "Enter choice [1-2]: " ROLE_CHOICE </dev/tty
+        case "$ROLE_CHOICE" in
+            1)
+                USER_ROLE="contributor"
+                echo "$USER_ROLE" > "$CONFIG_DIR/role"
+                log "Role set to: Contributor"
+                break
+                ;;
+            2)
+                USER_ROLE="developer"
+                echo "$USER_ROLE" > "$CONFIG_DIR/role"
+                log "Role set to: Developer"
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter 1 or 2${NC}"
+                ;;
+        esac
+    done
+    echo ""
+}
+
 # GPU Detection
-# --------------------------
 detect_gpu() {
     GPU_AVAILABLE=false
     GPU_MODEL="null"
@@ -275,9 +313,7 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_DRIVER_VERSION="null"
     GPU_CUDA_VERSION="null"
-    GPU_SHARE_PERCENT=0
     
-    # NVIDIA GPU Detection
     if command -v nvidia-smi &> /dev/null; then
         info "Detecting NVIDIA GPU..."
         GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null | head -1)
@@ -287,26 +323,21 @@ detect_gpu() {
             GPU_MEMORY=$(echo "$GPU_INFO" | cut -d',' -f2 | grep -oE '[0-9]+')
             GPU_DRIVER_VERSION=$(echo "$GPU_INFO" | cut -d',' -f3 | xargs)
             GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1)
-            GPU_SHARE_PERCENT=50
             
             if command -v nvcc &> /dev/null; then
                 GPU_CUDA_VERSION=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9.]+' | head -1)
-            elif nvidia-smi --help 2>&1 | grep -q "CUDA Version"; then
-                GPU_CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | grep -oP 'CUDA Version: \K[0-9.]+')
             fi
             
-            log "NVIDIA GPU detected: $GPU_MODEL (${GPU_MEMORY}MB, Count: ${GPU_COUNT:-1})"
+            log "NVIDIA GPU detected: $GPU_MODEL (${GPU_MEMORY}MB)"
         fi
     fi
     
     if [ "$GPU_AVAILABLE" = false ]; then
-        info "No GPU detected or GPU tools not installed"
+        info "No GPU detected"
     fi
 }
 
-# --------------------------
 # System Detection
-# --------------------------
 detect_system() {
     section "System Detection"
     
@@ -332,113 +363,47 @@ detect_system() {
     
     detect_gpu
     
-    DOCKER_CPU_LIMIT=$(echo "scale=1; $CPU_CORES * 0.5" | bc)
-    DOCKER_RAM_LIMIT=$(echo "scale=0; $RAM_TOTAL * 0.3 / 1024" | bc)
-    
-    if (( $(echo "$DOCKER_CPU_LIMIT < 1" | bc -l) )); then
-        DOCKER_CPU_LIMIT="1.0"
-    fi
-    if [ "$DOCKER_RAM_LIMIT" -lt 1 ]; then
-        DOCKER_RAM_LIMIT="1"
-    fi
+    # Generate device ID from MAC address
+    DEVICE_ID=$(generate_device_id)
     
     log "System: $OS ($ARCH)"
-    log "Hostname: $HOSTNAME"
+    log "Device ID (MAC): $DEVICE_ID"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
-    log "RAM: ${RAM_TOTAL}MB (Docker limit: ${DOCKER_RAM_LIMIT}GB)"
+    log "RAM: ${RAM_TOTAL}MB"
     log "Storage: ${STORAGE_TOTAL}GB"
     if [ "$GPU_AVAILABLE" = true ]; then
-        log "GPU: $GPU_MODEL (Sharing: ${GPU_SHARE_PERCENT}%)"
+        log "GPU: $GPU_MODEL"
     fi
 }
 
-# --------------------------
-# Generate Device Fingerprint
-# --------------------------
-generate_device_fingerprint() {
-    section "Generating Device Fingerprint"
-    
-    MAC=""
-    if [ "$OS" = "linux" ]; then
-        MAC=$(ip link show | awk '/link\/ether/ {print $2; exit}')
-    elif [ "$OS" = "darwin" ]; then
-        MAC=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
-    fi
-    
-    if [ -z "$MAC" ]; then
-        MAC="00:00:00:00:00:00"
-    fi
-    
-    FINGERPRINT_SRC="${MAC}-${CPU_MODEL}-${OS}-${ARCH}"
-    DEVICE_FINGERPRINT=$(echo -n "$FINGERPRINT_SRC" | sha256sum | cut -c1-32)
-    
-    log "Device fingerprint generated: $DEVICE_FINGERPRINT"
-}
-
-# --------------------------
-# Docker Setup
-# --------------------------
-pull_docker_image() {
-    section "Pulling Docker Image from Docker Hub"
-    
-    info "Pulling $DOCKER_IMAGE..."
-    if docker pull $DOCKER_IMAGE; then
-        log "Docker image pulled successfully from Docker Hub"
-    else
-        error "Failed to pull Docker image. Please check your internet connection."
-    fi
-}
-
-stop_existing_container() {
-    section "Checking for Existing Container"
-    
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        warn "Existing container found, stopping and removing..."
-        docker stop $CONTAINER_NAME &> /dev/null || true
-        docker rm $CONTAINER_NAME &> /dev/null || true
-        log "Existing container removed"
-    else
-        log "No existing container found"
-    fi
-}
-
-# --------------------------
-# Register Worker
-# --------------------------
+# Register Worker (Contributor Only)
 register_worker() {
     section "Registering Worker Device"
 
-    info "Registering device: $HOSTNAME"
+    info "Registering device with MAC-based ID: $DEVICE_ID"
 
+    GPU_JSON=""
     if [ "$GPU_AVAILABLE" = true ]; then
         GPU_JSON="\"gpuAvailable\": true,
         \"gpuModel\": \"$GPU_MODEL\",
         \"gpuMemory\": ${GPU_MEMORY:-0},
         \"gpuCount\": ${GPU_COUNT:-1},
         \"gpuDriverVersion\": \"$GPU_DRIVER_VERSION\",
-        \"gpuCudaVersion\": \"$GPU_CUDA_VERSION\",
-        \"gpuSharePercent\": ${GPU_SHARE_PERCENT:-50},"
+        \"gpuCudaVersion\": \"$GPU_CUDA_VERSION\","
     else
         GPU_JSON="\"gpuAvailable\": false,
-        \"gpuCount\": 0,
-        \"gpuSharePercent\": 0,"
-    fi
-
-    IS_DOCKER=false
-    DOCKER_ID="null"
-    if [ -f "/.dockerenv" ]; then
-        IS_DOCKER=true
-        DOCKER_ID=$(cat /proc/self/cgroup | grep -oE 'docker/[a-f0-9]+' | head -1 | cut -d/ -f2 | cut -c1-12 || echo "null")
+        \"gpuCount\": 0,"
     fi
 
     CPU_SHARE_PERCENT=$([ $CPU_CORES -ge 8 ] && echo 50 || echo 40)
     RAM_SHARE_PERCENT=$([ $RAM_TOTAL -ge 16384 ] && echo 30 || echo 25)
     STORAGE_SHARE_PERCENT=20
+    GPU_SHARE_PERCENT=50
 
     REGISTER_DATA=$(cat <<EOF
 {
-  "name": "$HOSTNAME",
-  "hostname": "$HOSTNAME",
+  "name": "$(hostname)",
+  "hostname": "$(hostname)",
   "platform": "$OS",
   "architecture": "$ARCH",
   "cpuCores": $CPU_CORES,
@@ -450,10 +415,9 @@ register_worker() {
   "storageAvailable": $STORAGE_TOTAL,
   "cpuSharePercent": $CPU_SHARE_PERCENT,
   "ramSharePercent": $RAM_SHARE_PERCENT,
+  "gpuSharePercent": $GPU_SHARE_PERCENT,
   "storageSharePercent": $STORAGE_SHARE_PERCENT,
-  "isDocker": $IS_DOCKER,
-  "dockerContainerId": "$DOCKER_ID",
-  "deviceFingerprint": "$DEVICE_FINGERPRINT"
+  "macAddress": "$(get_mac_address)"
 }
 EOF
 )
@@ -474,7 +438,6 @@ EOF
             log "Worker registered successfully! ID: $WORKER_ID"
         else
             log "Worker reconnected successfully! ID: $WORKER_ID"
-            info "Existing worker recognized - no duplicate created"
         fi
         
         echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
@@ -483,84 +446,102 @@ EOF
     fi
 }
 
-# --------------------------
-# Start Docker Container
-# --------------------------
-start_container() {
-    section "Starting Docker Worker Container"
+# Start Contributor Container
+start_contributor() {
+    section "Starting Contributor Worker"
     
-    info "Starting container with auto-restart enabled..."
+    pull_docker_image
+    stop_existing_container
+    register_worker
     
-    DOCKER_CMD="docker run -d \
+    info "Starting worker container..."
+    
+    docker run -d \
         --name $CONTAINER_NAME \
         --restart unless-stopped \
-        --cpus=\"$DOCKER_CPU_LIMIT\" \
-        --memory=\"${DOCKER_RAM_LIMIT}g\" \
-        -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
-        -v \"$CONFIG_DIR:/config:ro\""
-    
-    if [ "$GPU_AVAILABLE" = true ]; then
-        if command -v nvidia-smi &> /dev/null; then
-            info "Enabling NVIDIA GPU support..."
-            DOCKER_CMD="$DOCKER_CMD --gpus all"
-        fi
-    fi
-    
-    DOCKER_CMD="$DOCKER_CMD \
+        -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
+        -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
-        --api-key \"$API_TOKEN\" \
-        --url \"$DISTRIBUTEX_API_URL\""
+        --api-key "$API_TOKEN" \
+        --url "$DISTRIBUTEX_API_URL"
     
-    eval $DOCKER_CMD || error "Failed to start container"
-
-    sleep 3
+    sleep 2
     
     if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log "Container started successfully"
-        if [ "$GPU_AVAILABLE" = true ]; then
-            log "GPU passthrough enabled"
-        fi
+        log "Worker container started successfully"
     else
-        error "Container failed to start. Check logs: docker logs $CONTAINER_NAME"
+        error "Container failed to start"
     fi
 }
 
-# --------------------------
+# Setup Developer Environment
+setup_developer() {
+    section "Setting Up Developer Environment"
+    
+    info "Installing DistributeX CLI..."
+    
+    # Save API key
+    echo "$API_TOKEN" > "$CONFIG_DIR/api-key"
+    chmod 600 "$CONFIG_DIR/api-key"
+    
+    # Create CLI wrapper
+    cat > "$CONFIG_DIR/distributex-cli" << 'EOF'
+#!/bin/bash
+# DistributeX CLI Wrapper
+API_KEY=$(cat ~/.distributex/api-key)
+export DISTRIBUTEX_API_KEY="$API_KEY"
+# Add CLI commands here
+echo "DistributeX Developer CLI"
+echo "API Key configured: ${API_KEY:0:10}..."
+EOF
+    
+    chmod +x "$CONFIG_DIR/distributex-cli"
+    
+    log "Developer environment configured"
+    log "API Key saved to: $CONFIG_DIR/api-key"
+    echo ""
+    echo -e "${CYAN}Usage Examples:${NC}"
+    echo "  • API Documentation: $DISTRIBUTEX_API_URL/docs"
+    echo "  • Your API Key: ${API_TOKEN:0:20}..."
+    echo ""
+}
+
+# Pull Docker Image
+pull_docker_image() {
+    info "Pulling Docker image..."
+    docker pull $DOCKER_IMAGE || error "Failed to pull Docker image"
+    log "Docker image ready"
+}
+
+# Stop Existing Container
+stop_existing_container() {
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        warn "Stopping existing container..."
+        docker stop $CONTAINER_NAME &> /dev/null || true
+        docker rm $CONTAINER_NAME &> /dev/null || true
+        log "Existing container removed"
+    fi
+}
+
 # Save Configuration
-# --------------------------
 save_config() {
     section "Saving Configuration"
     
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
   "version": "3.0.0",
+  "role": "$USER_ROLE",
   "apiUrl": "$DISTRIBUTEX_API_URL",
-  "containerName": "$CONTAINER_NAME",
-  "dockerImage": "$DOCKER_IMAGE",
-  "workerId": "$(cat $CONFIG_DIR/worker-id 2>/dev/null || echo "unknown")",
-  "deviceFingerprint": "$DEVICE_FINGERPRINT",
-  "system": {
-    "hostname": "$HOSTNAME",
-    "os": "$OS",
-    "arch": "$ARCH",
-    "cpuCores": $CPU_CORES,
-    "cpuModel": "$CPU_MODEL",
-    "ramTotal": $RAM_TOTAL,
-    "storageTotal": $STORAGE_TOTAL,
-    "gpuAvailable": $GPU_AVAILABLE,
-    "gpuModel": "$GPU_MODEL",
-    "gpuMemory": ${GPU_MEMORY:-0}
-  },
+  "deviceId": "$DEVICE_ID",
+  "macAddress": "$(get_mac_address)",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
     chmod 600 "$CONFIG_DIR/config.json"
-    log "Configuration saved to: $CONFIG_DIR/config.json"
+    log "Configuration saved"
 }
 
-# --------------------------
 # Create Management Script
-# --------------------------
 create_management_script() {
     cat > "$CONFIG_DIR/manage.sh" <<'MGMT_EOF'
 #!/bin/bash
@@ -585,18 +566,15 @@ case "$1" in
         ;;
     status)
         docker ps -f name=$CONTAINER_NAME
-        echo ""
-        docker stats $CONTAINER_NAME --no-stream
         ;;
     uninstall)
-        echo "Uninstalling DistributeX worker..."
+        echo "Uninstalling..."
         docker stop $CONTAINER_NAME 2>/dev/null || true
         docker rm $CONTAINER_NAME 2>/dev/null || true
         if [ "$2" = "--purge" ]; then
-            echo "Removing configuration..."
             rm -rf "$CONFIG_DIR"
         fi
-        echo "Uninstall complete!"
+        echo "Done!"
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|logs|status|uninstall}"
@@ -606,53 +584,64 @@ esac
 MGMT_EOF
     
     chmod +x "$CONFIG_DIR/manage.sh"
-    log "Management script created: $CONFIG_DIR/manage.sh"
+    log "Management script created"
 }
 
-# --------------------------
-# Final Confirmation
-# --------------------------
+# Show Completion
 show_completion() {
     section "Installation Complete! 🎉"
     
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║     DistributeX Worker Successfully Installed!        ║${NC}"
+    echo -e "${GREEN}║     DistributeX Successfully Installed!               ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
-    log "Worker is running and contributing to the network"
-    log "Worker ID: $(cat $CONFIG_DIR/worker-id 2>/dev/null || echo 'N/A')"
-    log "Device Fingerprint: $DEVICE_FINGERPRINT"
-    echo ""
     
-    echo -e "${CYAN}Management Commands:${NC}"
-    echo "  $CONFIG_DIR/manage.sh status        # Check worker status"
-    echo "  $CONFIG_DIR/manage.sh logs          # View logs"
-    echo "  $CONFIG_DIR/manage.sh restart       # Restart worker"
+    if [ "$USER_ROLE" = "contributor" ]; then
+        log "Role: Contributor (Resource Sharing)"
+        log "Worker ID: $(cat $CONFIG_DIR/worker-id 2>/dev/null || echo 'N/A')"
+        log "Device ID: $DEVICE_ID"
+        echo ""
+        echo -e "${CYAN}Management Commands:${NC}"
+        echo "  $CONFIG_DIR/manage.sh status"
+        echo "  $CONFIG_DIR/manage.sh logs"
+        echo "  $CONFIG_DIR/manage.sh restart"
+    else
+        log "Role: Developer (Resource Consumer)"
+        log "API Key: ${API_TOKEN:0:20}..."
+        echo ""
+        echo -e "${CYAN}Next Steps:${NC}"
+        echo "  • View API Documentation: $DISTRIBUTEX_API_URL/docs"
+        echo "  • Your API Key is saved in: $CONFIG_DIR/api-key"
+    fi
+    
     echo ""
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
-    
-    read -r -p "Press Enter to exit..." </dev/tty
 }
 
-# --------------------------
 # Main Installation Flow
-# --------------------------
 main() {
     show_banner
     check_requirements
     authenticate_user
+    select_role
     detect_system
-    generate_device_fingerprint
-    pull_docker_image
-    stop_existing_container
-    register_worker
-    start_container
+    
+    if [ "$USER_ROLE" = "contributor" ]; then
+        start_contributor
+    else
+        setup_developer
+    fi
+    
     save_config
-    create_management_script
+    
+    if [ "$USER_ROLE" = "contributor" ]; then
+        create_management_script
+    fi
+    
     show_completion
 }
 
-# Run main installation
+# Run
 main
