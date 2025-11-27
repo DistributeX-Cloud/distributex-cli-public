@@ -22,16 +22,6 @@ Run your scripts, train ML models, process data, or render videos using pooled r
 curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 ```
 
-#### Manual Docker Installation:
-```bash
-# Get your API key from https://distributex-cloud-network.pages.dev
-docker run -d \
-  --name distributex-worker \
-  --restart unless-stopped \
-  distributexcloud/worker:latest \
-  --api-key YOUR_API_KEY
-```
-
 **That's it!** The installer will:
 - ✅ Auto-detect your system (CPU, RAM, GPU, Storage)
 - ✅ Register your device securely
