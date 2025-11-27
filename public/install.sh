@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - FIXED VERSION
+# DistributeX Complete Installer - PRODUCTION VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 #
 
@@ -10,7 +10,7 @@ set -e
 # Configuration
 # --------------------------
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
-DOCKER_IMAGE="distributex/worker:latest"
+DOCKER_IMAGE="distributex/worker:latest"  # Pull from Docker Hub
 CONTAINER_NAME="distributex-worker"
 
 # FIX: Stable hostname detection
@@ -153,7 +153,6 @@ authenticate_user() {
     
     local choice=""
     while true; do
-        # Read from /dev/tty to bypass pipe issues
         read -r -p "Enter choice [1-2]: " choice </dev/tty
         case "$choice" in
             1) 
@@ -225,8 +224,6 @@ signup_user() {
     chmod 600 "$CONFIG_DIR/token"
     log "Account created successfully!"
     echo ""
-    
-    # Pause to let user see the success message
     sleep 1
 }
 
@@ -265,8 +262,6 @@ login_user() {
     chmod 600 "$CONFIG_DIR/token"
     log "Logged in successfully!"
     echo ""
-    
-    # Pause to let user see the success message
     sleep 1
 }
 
@@ -294,7 +289,6 @@ detect_gpu() {
             GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -1)
             GPU_SHARE_PERCENT=50
             
-            # Try to get CUDA version
             if command -v nvcc &> /dev/null; then
                 GPU_CUDA_VERSION=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9.]+' | head -1)
             elif nvidia-smi --help 2>&1 | grep -q "CUDA Version"; then
@@ -320,7 +314,6 @@ detect_system() {
     ARCH=$(uname -m)
     CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
     
-    # CPU Model
     if [ "$OS" = "linux" ]; then
         CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs)
     elif [ "$OS" = "darwin" ]; then
@@ -329,24 +322,19 @@ detect_system() {
         CPU_MODEL="Unknown CPU"
     fi
     
-    # RAM
     if command -v free &> /dev/null; then
         RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
     else
         RAM_TOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}' || echo 8192)
     fi
     
-    # Storage
     STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
     
-    # Detect GPU
     detect_gpu
     
-    # Calculate Docker resource limits
     DOCKER_CPU_LIMIT=$(echo "scale=1; $CPU_CORES * 0.5" | bc)
     DOCKER_RAM_LIMIT=$(echo "scale=0; $RAM_TOTAL * 0.3 / 1024" | bc)
     
-    # Ensure minimum values
     if (( $(echo "$DOCKER_CPU_LIMIT < 1" | bc -l) )); then
         DOCKER_CPU_LIMIT="1.0"
     fi
@@ -370,7 +358,6 @@ detect_system() {
 generate_device_fingerprint() {
     section "Generating Device Fingerprint"
     
-    # Get MAC address (most stable identifier)
     MAC=""
     if [ "$OS" = "linux" ]; then
         MAC=$(ip link show | awk '/link\/ether/ {print $2; exit}')
@@ -378,30 +365,27 @@ generate_device_fingerprint() {
         MAC=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
     fi
     
-    # Fallback if no MAC found
     if [ -z "$MAC" ]; then
         MAC="00:00:00:00:00:00"
     fi
     
-    # Create stable fingerprint
     FINGERPRINT_SRC="${MAC}-${CPU_MODEL}-${OS}-${ARCH}"
     DEVICE_FINGERPRINT=$(echo -n "$FINGERPRINT_SRC" | sha256sum | cut -c1-32)
     
     log "Device fingerprint generated: $DEVICE_FINGERPRINT"
-    info "Components: MAC=$MAC, CPU=$CPU_MODEL, OS=$OS, ARCH=$ARCH"
 }
 
 # --------------------------
 # Docker Setup
 # --------------------------
 pull_docker_image() {
-    section "Pulling Docker Image"
+    section "Pulling Docker Image from Docker Hub"
     
     info "Pulling $DOCKER_IMAGE..."
-    if docker pull $DOCKER_IMAGE 2>&1 | grep -q "Status: Downloaded newer image\|Status: Image is up to date"; then
-        log "Docker image pulled successfully"
+    if docker pull $DOCKER_IMAGE; then
+        log "Docker image pulled successfully from Docker Hub"
     else
-        warn "Failed to pull from Docker Hub, will build locally if needed"
+        error "Failed to pull Docker image. Please check your internet connection."
     fi
 }
 
@@ -426,7 +410,6 @@ register_worker() {
 
     info "Registering device: $HOSTNAME"
 
-    # GPU JSON
     if [ "$GPU_AVAILABLE" = true ]; then
         GPU_JSON="\"gpuAvailable\": true,
         \"gpuModel\": \"$GPU_MODEL\",
@@ -441,7 +424,6 @@ register_worker() {
         \"gpuSharePercent\": 0,"
     fi
 
-    # Is Docker?
     IS_DOCKER=false
     DOCKER_ID="null"
     if [ -f "/.dockerenv" ]; then
@@ -449,7 +431,6 @@ register_worker() {
         DOCKER_ID=$(cat /proc/self/cgroup | grep -oE 'docker/[a-f0-9]+' | head -1 | cut -d/ -f2 | cut -c1-12 || echo "null")
     fi
 
-    # Calculate share percentages
     CPU_SHARE_PERCENT=$([ $CPU_CORES -ge 8 ] && echo 50 || echo 40)
     RAM_SHARE_PERCENT=$([ $RAM_TOTAL -ge 16384 ] && echo 30 || echo 25)
     STORAGE_SHARE_PERCENT=20
@@ -510,7 +491,6 @@ start_container() {
     
     info "Starting container with auto-restart enabled..."
     
-    # Base docker run command
     DOCKER_CMD="docker run -d \
         --name $CONTAINER_NAME \
         --restart unless-stopped \
@@ -519,7 +499,6 @@ start_container() {
         -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
         -v \"$CONFIG_DIR:/config:ro\""
     
-    # Add GPU support if available
     if [ "$GPU_AVAILABLE" = true ]; then
         if command -v nvidia-smi &> /dev/null; then
             info "Enabling NVIDIA GPU support..."
@@ -527,13 +506,11 @@ start_container() {
         fi
     fi
     
-    # Complete the command
     DOCKER_CMD="$DOCKER_CMD \
         $DOCKER_IMAGE \
         --api-key \"$API_TOKEN\" \
         --url \"$DISTRIBUTEX_API_URL\""
     
-    # Execute
     eval $DOCKER_CMD || error "Failed to start container"
 
     sleep 3
@@ -656,7 +633,6 @@ show_completion() {
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
     
-    # Wait for user acknowledgment
     read -r -p "Press Enter to exit..." </dev/tty
 }
 
