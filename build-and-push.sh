@@ -7,7 +7,7 @@
 set -e
 
 VERSION="${1:-latest}"
-IMAGE_NAME="distributex/worker"
+IMAGE_NAME="distributexcloud/worker"  # ✅ Updated
 PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
 
 echo "🐳 Building DistributeX Worker Docker Image"
