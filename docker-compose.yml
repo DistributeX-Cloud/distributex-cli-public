@@ -2,23 +2,23 @@ version: '3.8'
 
 services:
   distributex-worker:
-    image: distributex/worker:latest
+    image: distributexcloud/worker:latest  # ✅ Correct image name
     container_name: distributex-worker
     restart: unless-stopped
     
-    # Set your API key here or via .env file
+    # API key from environment variable
     command: 
       - --api-key
       - ${DISTRIBUTEX_API_KEY}
       - --url
       - ${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}
     
-    # Resource limits (these will be auto-detected and configured)
+    # Resource limits
     deploy:
       resources:
         limits:
-          cpus: '2.0'  # Will be overridden by installer
-          memory: 4G   # Will be overridden by installer
+          cpus: '2.0'
+          memory: 4G
         reservations:
           cpus: '0.5'
           memory: 512M
@@ -35,8 +35,6 @@ services:
     # Mount config directory
     volumes:
       - ${HOME}/.distributex:/config:ro
-      # Optional: Add storage volumes
-      # - /path/to/storage:/storage:rw
     
     # Health check
     healthcheck:
