@@ -3,12 +3,6 @@
 > **Free, open-source distributed computing platform**  
 > Share your unused computing resources or run your code on a global pool of CPU, RAM, GPU, and Storage.
 
-[![Contributors](https://img.shields.io/badge/contributors-2800%2B-blue)]()
-[![Uptime](https://img.shields.io/badge/uptime-99.9%25-green)]()
-[![Total Resources](https://img.shields.io/badge/pool-156TB-purple)]()
-
----
-
 ## 🎯 Two Ways to Use DistributeX
 
 ### 1️⃣ **For Contributors** (Share Your Resources)
@@ -19,12 +13,23 @@ Run your scripts, train ML models, process data, or render videos using pooled r
 
 ---
 
-## 🤝 For Contributors (Share Resources)
+## 🚀 Quick Start
 
-### Quick Start - One Command Install
+### For Contributors (Share Resources)
 
+#### One-Command Install:
 ```bash
 curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
+```
+
+#### Manual Docker Installation:
+```bash
+# Get your API key from https://distributex-cloud-network.pages.dev
+docker run -d \
+  --name distributex-worker \
+  --restart unless-stopped \
+  distributexcloud/worker:latest \
+  --api-key YOUR_API_KEY
 ```
 
 **That's it!** The installer will:
