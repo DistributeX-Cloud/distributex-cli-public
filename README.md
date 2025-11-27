@@ -4,9 +4,6 @@
 
 Share your computing resources OR run your code on a global pool of CPU, RAM, GPU, and Storage.
 
-![DistributeX](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0-green.svg)
-
 ---
 
 ## 🚀 Quick Start
