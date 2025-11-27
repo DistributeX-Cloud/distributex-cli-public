@@ -62,7 +62,7 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
 
 # --------------------------
@@ -74,15 +74,15 @@ show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗         ║
-║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗        ║
-║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║        ║
-║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║        ║
-║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝        ║
-║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝         ║
+║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗        ║
+║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗       ║
+║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║       ║
+║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║       ║
+║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝       ║
+║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝        ║
 ║                                                           ║
-║              DistributeX Cloud Network                    ║
-║          Distributed Computing Platform                   ║
+║              DistributeX Cloud Network                   ║
+║          Distributed Computing Platform                  ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
@@ -153,7 +153,8 @@ authenticate_user() {
     
     local choice=""
     while true; do
-        read -r -p "Enter choice [1-2]: " choice
+        # Read from /dev/tty to bypass pipe issues
+        read -r -p "Enter choice [1-2]: " choice </dev/tty
         case "$choice" in
             1) 
                 signup_user
@@ -179,12 +180,12 @@ signup_user() {
     
     local first_name last_name email password password_confirm
     
-    read -r -p "First Name: " first_name
-    read -r -p "Last Name: " last_name
-    read -r -p "Email: " email
+    read -r -p "First Name: " first_name </dev/tty
+    read -r -p "Last Name: " last_name </dev/tty
+    read -r -p "Email: " email </dev/tty
     
     while true; do
-        read -s -r -p "Password (min 8 chars): " password
+        read -s -r -p "Password (min 8 chars): " password </dev/tty
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -192,7 +193,7 @@ signup_user() {
             continue
         fi
         
-        read -s -r -p "Confirm Password: " password_confirm
+        read -s -r -p "Confirm Password: " password_confirm </dev/tty
         echo ""
         
         if [ "$password" != "$password_confirm" ]; then
@@ -238,8 +239,8 @@ login_user() {
     
     local email password
     
-    read -r -p "Email: " email
-    read -s -r -p "Password: " password
+    read -r -p "Email: " email </dev/tty
+    read -s -r -p "Password: " password </dev/tty
     echo ""
     echo ""
     
@@ -656,7 +657,7 @@ show_completion() {
     echo ""
     
     # Wait for user acknowledgment
-    read -r -p "Press Enter to exit..."
+    read -r -p "Press Enter to exit..." </dev/tty
 }
 
 # --------------------------
