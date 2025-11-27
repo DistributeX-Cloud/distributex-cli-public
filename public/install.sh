@@ -13,6 +13,16 @@ set -e
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
 DOCKER_IMAGE="distributex/worker:latest"
 CONTAINER_NAME="distributex-worker"
+
+# FIX 1 — Force stable hostname (prevents "unknown")
+if [ -z "$HOSTNAME" ] || [ "$HOSTNAME" = "unknown" ]; then
+    HOSTNAME=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "dx-node")
+fi
+
+if [ -z "$HOME" ] || [ "$HOME" = "/home/unknown" ]; then
+    HOME="/root"
+fi
+
 CONFIG_DIR="$HOME/.distributex"
 LOCAL_DOCKERFILE_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/Dockerfile"
 LOCAL_WORKER_JS_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/worker-agent.js"
@@ -474,6 +484,11 @@ stop_existing_container() {
 # --------------------------
 register_worker() {
     section "Registering Worker Device"
+
+    # FIX 2 — stabillize hostname BEFORE fingerprint
+    if [ -z "$HOSTNAME" ] || [ "$HOSTNAME" = "unknown" ]; then
+        HOSTNAME=$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "dx-node")
+    fi
 
     WORKER_NAME="${HOSTNAME:-$(hostname)}"
 
