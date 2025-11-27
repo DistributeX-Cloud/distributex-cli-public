@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: distributex/worker
+  IMAGE_NAME: distributexcloud/worker  # ✅ Updated to match your Docker Hub
   PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
 
 jobs:
