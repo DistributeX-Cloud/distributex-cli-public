@@ -170,15 +170,17 @@ authenticate_user() {
         echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}" > /dev/tty
         read -r choice < /dev/tty
         case "$choice" in
-            1) 
+            1)
                 signup_user
-                break 
+                log "Signup complete, now logging in..."
+                login_user  # automatically log in after signup
+                break
                 ;;
-            2) 
+            2)
                 login_user
-                break 
+                break
                 ;;
-            *) 
+            *)
                 echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
                 ;;
         esac
@@ -201,11 +203,11 @@ signup_user() {
     read -r last_name < /dev/tty
     
     echo -ne "${BOLD}Email: ${NC}"
-    read -rp "Email: " email
+    read -r email < /dev/tty
     
     while true; do
         echo -ne "${BOLD}Password (min 8 chars): ${NC}"
-        read -rsp "Password: " password
+        read -s -r password < /dev/tty
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -239,16 +241,7 @@ signup_user() {
         error "Signup failed: $ERROR_MSG"
     fi
 
-    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token' 2>/dev/null)
-    if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
-        error "No authentication token returned"
-    fi
-    
-    echo "$API_TOKEN" > "$CONFIG_DIR/token"
-    chmod 600 "$CONFIG_DIR/token"
     log "Account created successfully!"
-    echo ""
-    sleep 1
 }
 
 login_user() {
@@ -261,11 +254,10 @@ login_user() {
     local email password
     
     echo -ne "${BOLD}Email: ${NC}"
-    read -r email
+    read -r email < /dev/tty
     
     echo -ne "${BOLD}Password: ${NC}"
-    read -s -r password
-    echo ""
+    read -s -r password < /dev/tty
     echo ""
     
     info "Logging in..."
@@ -290,7 +282,6 @@ login_user() {
     chmod 600 "$CONFIG_DIR/token"
     log "Logged in successfully!"
     echo ""
-    sleep 1
 }
 
 # Detect GPU
