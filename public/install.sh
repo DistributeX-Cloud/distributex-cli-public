@@ -14,6 +14,9 @@ DOCKER_IMAGE="distributexcloud/worker:latest"
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
 
+# Default runtime options (may be changed interactively)
+RESTART_POLICY="always"    # will be changed to "no" for on-demand
+SETUP_SYSTEMD=false       # whether to create systemd unit (if linux)
 # Colors (with Windows compatibility)
 if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BLUE=''; BOLD=''; NC=''
@@ -678,6 +681,7 @@ login_user() {
         error "No authentication token returned"
     fi
     
+    mkdir -p "$CONFIG_DIR"
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
     log "Logged in successfully!"
@@ -922,14 +926,40 @@ register_worker() {
         error "Worker registered but no ID returned"
     fi
 
+    mkdir -p "$CONFIG_DIR"
+
+    # Save Worker ID
     echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
     chmod 600 "$CONFIG_DIR/worker-id"
+
+    # Save API Token (needed for container + CLI)
+    echo "$API_TOKEN" > "$CONFIG_DIR/token"
+    chmod 600 "$CONFIG_DIR/token"
+
+    # Full JSON config for UI / container
+    cat > "$CONFIG_DIR/config.json" <<EOF
+{
+  "workerId": "$WORKER_ID",
+  "token": "$API_TOKEN",
+  "deviceId": "$DEVICE_ID",
+  "cpu": "$CPU_SHARE",
+  "ram": "$RAM_SHARE",
+  "storage": "$STORAGE_SHARE",
+  "gpu": "$GPU_SHARE",
+  "restartPolicy": "$RESTART_POLICY",
+  "systemdEnabled": "$SETUP_SYSTEMD",
+  "apiUrl": "$DISTRIBUTEX_API_URL",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+    chmod 600 "$CONFIG_DIR/config.json"
 
     if [ "$is_new" = "true" ]; then
         log "Worker registered successfully: $WORKER_ID"
     else
         log "Worker reconnected (existing device): $WORKER_ID"
     fi
+    
     echo ""
 }
 
@@ -961,34 +991,30 @@ start_worker_container() {
     
     stop_existing_container
     
-    info "Starting always-on worker container..."
+    info "Starting worker container (restart policy: $RESTART_POLICY)..."
     
-    local docker_cmd="docker run -d \
-        --name $CONTAINER_NAME \
-        --restart always \
-        -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
-        -e API_TOKEN=\"$API_TOKEN\" \
-        -e WORKER_ID=\"$WORKER_ID\" \
-        -e MAC_ADDRESS=\"${MAC_ADDRESS:-$DEVICE_ID}\" \
-        -v \"$CONFIG_DIR:/config:ro\""
-    
+    # Build docker run command safely
+    local docker_cmd=(docker run -d --name "$CONTAINER_NAME" --restart "$RESTART_POLICY" -e "DISTRIBUTEX_API_URL=$DISTRIBUTEX_API_URL" -e "API_TOKEN=$API_TOKEN" -e "WORKER_ID=$WORKER_ID" -e "MAC_ADDRESS=${MAC_ADDRESS:-$DEVICE_ID}" -v "$CONFIG_DIR:/config:ro")
+
+    # GPU support
     if [ "$GPU_AVAILABLE" = true ]; then
         if command -v nvidia-smi &> /dev/null; then
-            docker_cmd="$docker_cmd --gpus all"
+            docker_cmd+=("--gpus" "all")
         fi
     fi
-    
-    docker_cmd="$docker_cmd $DOCKER_IMAGE --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL"
-    
-    if eval "$docker_cmd" &> /dev/null; then
+
+    docker_cmd+=("$DOCKER_IMAGE" "--api-key" "$API_TOKEN" "--url" "$DISTRIBUTEX_API_URL")
+
+    # Run the container
+    if "${docker_cmd[@]}" &> /dev/null; then
         sleep 3
         
         if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             log "Worker container started successfully"
             echo ""
             info "Container configured with:"
-            echo "  ✓ Always-on restart policy (survives reboots)"
-            echo "  ✓ Auto-restart on failure"
+            echo "  ✓ Restart policy: $RESTART_POLICY"
+            echo "  ✓ Auto-restart on failure (if restart policy enabled)"
             echo "  ✓ Background daemon mode"
             [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU access enabled"
         else
@@ -1009,6 +1035,11 @@ setup_systemd_autostart() {
         return
     fi
     
+    if [ "$SETUP_SYSTEMD" != true ]; then
+        info "Systemd autostart not requested by user, skipping"
+        return
+    fi
+
     section "Setting Up Auto-Start"
     
     info "Creating systemd service..."
@@ -1040,6 +1071,7 @@ EOF
 create_management_script() {
     section "Creating Management Tools"
     
+    mkdir -p "$CONFIG_DIR"
     cat > "$CONFIG_DIR/manage.sh" <<'MGMT_EOF'
 #!/bin/bash
 CONTAINER_NAME="distributex-worker"
@@ -1132,7 +1164,7 @@ show_success() {
     echo -e "${GREEN}${BOLD}"
     cat << "EOF"
     ✓ Worker registered and running
-    ✓ Container configured for auto-restart
+    ✓ Container configured for auto-restart (if selected)
     ✓ Management tools installed
 EOF
     echo -e "${NC}"
@@ -1142,7 +1174,9 @@ EOF
     echo -e "  Worker ID:    ${GREEN}$WORKER_ID${NC}"
     echo -e "  Device ID:    ${GREEN}$DEVICE_ID${NC}"
     echo -e "  Container:    ${GREEN}$CONTAINER_NAME${NC}"
-    echo -e "  Status:       ${GREEN}Running${NC}"
+    local ctr_status
+    ctr_status=$(docker ps --filter "name=$CONTAINER_NAME" --format '{{.Status}}' 2>/dev/null || echo "Not running")
+    echo -e "  Status:       ${GREEN}${ctr_status}${NC}"
     
     echo ""
     echo -e "${CYAN}${BOLD}Resource Sharing:${NC}"
@@ -1172,6 +1206,48 @@ EOF
     echo ""
 }
 
+# Ask user about autostart behavior
+ask_autostart_choice() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}${CYAN}  Autostart / Always-on Configuration${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "Choose how you'd like the worker to run:"
+    echo "  1) Always-on: container restarts automatically and systemd service is set (recommended for servers)"
+    echo "  2) On-demand: run once now, no auto-restart nor systemd service (recommended for laptops/desktops)"
+    echo ""
+    
+    local choice=""
+    while [ -z "$choice" ]; do
+        choice=$(read_input "${BOLD}Enter your choice [1 (Always-on) / 2 (On-demand)]: ${NC}")
+        choice=$(echo "$choice" | tr -d '[:space:]')
+        case "$choice" in
+            1)
+                RESTART_POLICY="always"
+                # Only set up systemd if on Linux
+                if [ "$(uname -s | tr '[:upper:]' '[:lower:]')" = "linux" ]; then
+                    SETUP_SYSTEMD=true
+                else
+                    SETUP_SYSTEMD=false
+                fi
+                break
+                ;;
+            2)
+                RESTART_POLICY="no"
+                SETUP_SYSTEMD=false
+                break
+                ;;
+            *)
+                warn "Invalid choice. Please enter 1 or 2."
+                choice=""
+                ;;
+        esac
+    done
+    
+    info "Selected restart policy: $RESTART_POLICY (systemd setup: $SETUP_SYSTEMD)"
+}
+
 # Cleanup on Error
 cleanup_on_error() {
     warn "Cleaning up after error..."
@@ -1188,15 +1264,23 @@ main() {
     check_requirements
     authenticate_user
     detect_system
-    install_docker_if_missing
-    configure_docker_service
-    configure_docker_service
-    pull_latest_image
-    start_worker_container
+
+    # Ask user about autostart / always-on behavior
+    ask_autostart_choice
+
+    # Register device (needs API_TOKEN set by login)
     register_worker
+
+    # Pull and start container
     pull_docker_image
     start_worker_container
-    setup_systemd_autostart
+
+    # If user requested systemd autostart and we're on Linux, set it up
+    if [ "$SETUP_SYSTEMD" = true ]; then
+        setup_systemd_autostart
+    fi
+
+    # Create management tools and show final summary
     create_management_script
     show_success
 }
