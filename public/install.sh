@@ -1188,6 +1188,11 @@ main() {
     check_requirements
     authenticate_user
     detect_system
+    install_docker_if_missing
+    configure_docker_service
+    configure_docker_service
+    pull_latest_image
+    start_worker_container
     register_worker
     pull_docker_image
     start_worker_container
