@@ -303,7 +303,8 @@ class PersistentWorker {
       
       return false;
     } catch (error) {
-      console.warn('⚠️  Could not check for existing worker:', error.message);
+      // If endpoint doesn't exist (404) or other error, try alternate method
+      console.warn('⚠️  Check endpoint failed, trying to register/reconnect...');
       return false;
     }
   }
@@ -314,33 +315,43 @@ class PersistentWorker {
   async register() {
     this.macAddress = await this.getMacAddress();
     
-    // First check if worker already exists
-    const exists = await this.checkExisting();
-    
-    if (exists) {
-      console.log('✅ Using existing worker registration');
-      return { workerId: this.workerId, isNew: false };
-    }
-    
     // Check if self-registration is disabled
     if (CONFIG.DISABLE_SELF_REGISTER) {
-      console.log('⚠️  Self-registration disabled (DISABLE_SELF_REGISTER=true)');
-      console.log('⚠️  Worker should be registered by installation script');
-      console.log('⚠️  Waiting 10 seconds for registration...');
+      console.log('ℹ️  Self-registration disabled (DISABLE_SELF_REGISTER=true)');
+      console.log('ℹ️  Attempting to reconnect to existing worker...');
       
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      
-      // Try to find worker again
-      if (await this.checkExisting()) {
-        return { workerId: this.workerId, isNew: false };
+      // Try to register/reconnect - the backend will handle existing workers
+      try {
+        console.log('\n🔍 Detecting system capabilities...');
+        const capabilities = await this.detectSystem();
+        
+        console.log('\n🔌 Attempting to connect...');
+        const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
+        this.workerId = worker.workerId;
+        
+        console.log(`\n✅ Connected!`);
+        console.log(`  Worker ID: ${this.workerId}`);
+        console.log(`  Name: Worker-${this.macAddress}`);
+        console.log(`  Status: ${worker.isNew ? 'New registration' : 'Reconnected to existing'}`);
+        
+        return worker;
+      } catch (error) {
+        console.error('\n❌ Connection failed:', error.message);
+        console.error('   The worker may not be registered yet');
+        console.error('   Please ensure the installation completed successfully');
+        
+        // Don't exit immediately, retry
+        console.log('\n⏳ Retrying in 30 seconds...');
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        
+        if (!this.isRunning) process.exit(1);
+        
+        // Try one more time
+        return await this.register();
       }
-      
-      console.error('❌ Worker not found and self-registration is disabled');
-      console.error('   Please run the installation script or enable self-registration');
-      process.exit(1);
     }
     
-    // Self-registration is enabled, proceed
+    // Self-registration is enabled, proceed normally
     console.log('\n🔍 Detecting system capabilities...');
     const capabilities = await this.detectSystem();
     
