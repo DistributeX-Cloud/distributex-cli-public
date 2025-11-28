@@ -460,9 +460,10 @@ start_contributor() {
 
     info "Launching worker container (heartbeat-only mode)..."
     
-    # Container runs with DISABLE_SELF_REGISTER=true to prevent double registration
+    # Container runs with restart policy and DISABLE_SELF_REGISTER=true
     docker run -d \
         --name $CONTAINER_NAME \
+        --restart unless-stopped \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
@@ -620,7 +621,8 @@ show_completion() {
         echo " • Single worker registered per device"
         echo " • Worker sends heartbeats to maintain online status"
         echo " • No duplicate registrations"
-        echo " • Container runs continuously"
+        echo " • Container auto-restarts (unless stopped manually)"
+        echo " • Will survive reboots and network interruptions"
     else
         log "Role: Developer (Resource Consumer)"
         log "API Key: ${API_TOKEN:0:20}..."
