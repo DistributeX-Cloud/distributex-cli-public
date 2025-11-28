@@ -421,7 +421,8 @@ register_worker() {
   "cpuSharePercent": $CPU_SHARE,
   "ramSharePercent": $RAM_SHARE,
   "gpuSharePercent": $GPU_SHARE,
-  "storageSharePercent": $STORAGE_SHARE
+  "storageSharePercent": $STORAGE_SHARE,
+  "role": "contributor"
 }
 EOF
 )
