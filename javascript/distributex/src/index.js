@@ -14,11 +14,16 @@
  *   const result = await dx.runScript('process.js', { workers: 4, gpu: true });
  */
 
+#!/usr/bin/env node
+/**
+ * DistributeX JavaScript/Node.js SDK
+ */
+
 const https = require('https');
 const fs = require('fs').promises;
 const path = require('path');
 const tar = require('tar');
-const { URL } = require('url');
+const crypto = require('crypto');
 
 class DistributeX {
   constructor(apiKey, baseUrl = 'https://distributex-cloud-network.pages.dev') {
@@ -29,9 +34,8 @@ class DistributeX {
     }
     
     this.baseUrl = baseUrl;
-    this.pollInterval = 5000; // 5 seconds
+    this.pollInterval = 5000;
   }
-
   /**
    * Run JavaScript function on distributed network
    */
