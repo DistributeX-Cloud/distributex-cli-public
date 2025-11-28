@@ -738,39 +738,39 @@ show_completion() {
     
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║     DistributeX Successfully Installed!               ║${NC}"
-    echo -e "${GREEN}║     Worker Status: ONLINE                             ║${NC}"
+    echo -e "${GREEN}║     DistributeX Worker Successfully Installed!        ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
-    
-    log "Device ID: $DEVICE_ID"
-    log "Worker ID: $WORKER_ID"
-    log "Restart Policy: ALWAYS (survives reboots)"
-    
-    if [ "$GPU_AVAILABLE" = true ]; then
-        log "GPU Support: ENABLED ($GPU_MODEL)"
-    fi
-    
+    log "Worker is running and contributing to the network"
+    log "Worker ID: $(cat $CONFIG_DIR/worker-id 2>/dev/null || echo 'N/A')"
+    log "Device Fingerprint: $DEVICE_FINGERPRINT"
     echo ""
+    
     echo -e "${CYAN}Management Commands:${NC}"
-    echo "  $CONFIG_DIR/manage.sh status   # Check worker status"
-    echo "  $CONFIG_DIR/manage.sh logs     # View worker logs"
-    echo "  $CONFIG_DIR/manage.sh stats    # Resource usage"
-    echo "  $CONFIG_DIR/manage.sh restart  # Restart worker"
-    echo "  $CONFIG_DIR/manage.sh stop     # Stop worker"
-    echo ""
-    echo -e "${CYAN}View Dashboard:${NC}"
-    echo "  $DISTRIBUTEX_API_URL/dashboard"
-    echo ""
-    echo -e "${CYAN}Worker Features:${NC}"
-    echo "  ✓ Auto-starts on system boot"
-    echo "  ✓ Auto-restarts on failure"
-    echo "  ✓ Runs 24/7 in background"
-    echo "  ✓ Zero impact on performance"
-    [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU-accelerated tasks ready"
+    echo "  $CONFIG_DIR/manage.sh status        # Check worker status"
+    echo "  $CONFIG_DIR/manage.sh logs          # View logs"
+    echo "  $CONFIG_DIR/manage.sh restart       # Restart worker"
     echo ""
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
+
+    # === ADD THIS INTERACTIVE EXIT PROMPT ===
+    echo ""
+    echo -e "${CYAN}Press Enter to exit, or type 'm' to view management commands again.${NC}"
+    read -p "> " exit_choice
+    
+    if [ "$exit_choice" = "m" ]; then
+        echo ""
+        echo -e "${CYAN}Management Commands:${NC}"
+        echo "  $CONFIG_DIR/manage.sh status"
+        echo "  $CONFIG_DIR/manage.sh logs"
+        echo "  $CONFIG_DIR/manage.sh restart"
+        echo "  $CONFIG_DIR/manage.sh uninstall"
+        echo ""
+        echo -e "${CYAN}Press Enter to finish.${NC}"
+        read
+    fi
+}
     
     # Show live status
     info "Checking worker status..."
