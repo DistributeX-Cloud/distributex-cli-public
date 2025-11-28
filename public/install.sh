@@ -156,7 +156,7 @@ authenticate_user() {
     echo ""
     
     while true; do
-        read -r -p "Enter choice [1-2]: " choice
+        read -r -p "Enter choice [1-2]: " choice < /dev/tty
         case "$choice" in
             1) signup_user; break ;;
             2) login_user; break ;;
@@ -174,12 +174,12 @@ signup_user() {
     
     local first_name last_name email password password_confirm
     
-    read -r -p "First Name: " first_name
-    read -r -p "Last Name: " last_name
-    read -r -p "Email: " email
+    read -r -p "First Name: " first_name < /dev/tty
+    read -r -p "Last Name: " last_name < /dev/tty
+    read -r -p "Email: " email < /dev/tty
     
     while true; do
-        read -s -r -p "Password (min 8 chars): " password
+        read -s -r -p "Password (min 8 chars): " password < /dev/tty
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -187,7 +187,7 @@ signup_user() {
             continue
         fi
         
-        read -s -r -p "Confirm Password: " password_confirm
+        read -s -r -p "Confirm Password: " password_confirm < /dev/tty
         echo ""
         
         if [ "$password" != "$password_confirm" ]; then
@@ -232,7 +232,7 @@ login_user() {
     local email password
     
     read -r -p "Email: " email
-    read -s -r -p "Password: " password
+    read -s -r -p "Password: " password < /dev/tty
     echo ""
     echo ""
     
