@@ -359,7 +359,7 @@ setup_developer() {
     echo ""
 }
 start_contributor() {
-    section "Starting Always-On Worker + Guaranteed Neon Registration"
+    section "Starting Always-On Worker"
 
     pull_docker_image
     stop_existing_container
@@ -375,7 +375,7 @@ start_contributor() {
 
     sleep 10
 
-    info "Registering your device in DistributeX network (Neon DB)..."
+    info "Registering your device in DistributeX network..."
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
@@ -404,7 +404,7 @@ start_contributor() {
         }')
 
     if [ "$HTTP_CODE" = "200" ]; then
-        log "Worker successfully registered in Neon database!"
+        log "Worker successfully registered in database!"
         log "You are now earning on DistributeX Cloud Network"
     else
         warn "Registration call failed (HTTP $HTTP_CODE) — worker will retry every 30s automatically"
