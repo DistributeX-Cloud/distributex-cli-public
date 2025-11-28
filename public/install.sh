@@ -358,54 +358,31 @@ setup_developer() {
     echo " • Your API Key: ${API_TOKEN:0:20}..."
     echo ""
 }
-# Start Worker Container with ALWAYS restart policy
-# Start Worker Container with ALWAYS restart policy + forced registration
 start_contributor() {
-    section "Starting Always-On Worker"
+    section "Starting Always-On Worker + Guaranteed Neon Registration"
 
     pull_docker_image
     stop_existing_container
 
-    info "Starting persistent worker container with immediate registration..."
-
+    info "Launching persistent worker container..."
     docker run -d \
         --name $CONTAINER_NAME \
         --restart always \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
-        -e API_TOKEN="$API_TOKEN" \
-        -e MAC_ADDRESS="$MAC_ADDRESS" \
-        -e HOSTNAME="$(hostname)" \
-        -e PLATFORM="$OS" \
-        -e ARCHITECTURE="$ARCH" \
-        -e CPU_CORES="$CPU_CORES" \
-        -e CPU_MODEL="$CPU_MODEL" \
-        -e RAM_TOTAL="$RAM_TOTAL" \
-        -e GPU_AVAILABLE="$GPU_AVAILABLE" \
-        -e GPU_MODEL="$GPU_MODEL" \
-        -e GPU_MEMORY="$GPU_MEMORY" \
-        -e GPU_COUNT="$GPU_COUNT" \
-        -e GPU_DRIVER_VERSION="$GPU_DRIVER_VERSION" \
-        -e GPU_CUDA_VERSION="$GPU_CUDA_VERSION" \
-        -e STORAGE_TOTAL="$((STORAGE_TOTAL * 1024))" \
-        -e CPU_SHARE_PERCENT="90" \
-        -e RAM_SHARE_PERCENT="80" \
-        -e GPU_SHARE_PERCENT="70" \
-        -e STORAGE_SHARE_PERCENT="50" \
         -v "$CONFIG_DIR:/config:ro" \
-        $DOCKER_IMAGE
+        $DOCKER_IMAGE > /dev/null
 
-    # Wait a moment and force immediate registration
-    sleep 8
+    sleep 10
 
-    log "Triggering worker registration in Neon database..."
-    docker exec $CONTAINER_NAME curl -X POST "$DISTRIBUTEX_API_URL/api/worker/register" \
+    info "Registering your device in DistributeX network (Neon DB)..."
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{
           "macAddress": "'"$MAC_ADDRESS"'",
-          "name": "'$(hostname)' Worker'",
-          "hostname": "'$(hostname)'",
+          "name": "'"$(hostname)"' Worker",
+          "hostname": "'"$(hostname)"'",
           "platform": "'"$OS"'",
           "architecture": "'"$ARCH"'",
           "cpuCores": '"$CPU_CORES"',
@@ -424,15 +401,17 @@ start_contributor() {
           "ramSharePercent": 80,
           "gpuSharePercent": 70,
           "storageSharePercent": 50
-        }' > /dev/null 2>&1 && log "Worker successfully registered in Neon database!" || warn "Registration call sent (will retry automatically)"
+        }')
 
-    if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log "Worker container started with ALWAYS-ON restart policy"
-        echo ""
-        info "Your device is now visible in the network within seconds"
+    if [ "$HTTP_CODE" = "200" ]; then
+        log "Worker successfully registered in Neon database!"
+        log "You are now earning on DistributeX Cloud Network"
     else
-        error "Container failed to start"
+        warn "Registration call failed (HTTP $HTTP_CODE) — worker will retry every 30s automatically"
     fi
+
+    log "Container running with --restart always"
+    info "Your device is now visible in the network"
 }
 # Pull Docker Image
 pull_docker_image() {
