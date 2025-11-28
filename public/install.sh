@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - Production Ready
+# DistributeX Complete Installer - Production Ready (Fixed)
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 #
 # Features:
@@ -138,7 +138,7 @@ authenticate_user() {
         API_TOKEN=$(cat "$CONFIG_DIR/token")
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $API_TOKEN" \
-            "$DISTRIBUTEX_API_URL/api/auth/user")
+            "$DISTRIBUTEX_API_URL/api/auth/user" 2>/dev/null || echo "000")
         
         if [ "$HTTP_CODE" = "200" ]; then
             log "Using existing authentication"
@@ -156,7 +156,7 @@ authenticate_user() {
     echo ""
     
     while true; do
-        read -r -p "Enter choice [1-2]: " choice </dev/tty
+        read -r -p "Enter choice [1-2]: " choice
         case "$choice" in
             1) signup_user; break ;;
             2) login_user; break ;;
@@ -174,12 +174,12 @@ signup_user() {
     
     local first_name last_name email password password_confirm
     
-    read -r -p "First Name: " first_name </dev/tty
-    read -r -p "Last Name: " last_name </dev/tty
-    read -r -p "Email: " email </dev/tty
+    read -r -p "First Name: " first_name
+    read -r -p "Last Name: " last_name
+    read -r -p "Email: " email
     
     while true; do
-        read -s -r -p "Password (min 8 chars): " password </dev/tty
+        read -s -r -p "Password (min 8 chars): " password
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -187,7 +187,7 @@ signup_user() {
             continue
         fi
         
-        read -s -r -p "Confirm Password: " password_confirm </dev/tty
+        read -s -r -p "Confirm Password: " password_confirm
         echo ""
         
         if [ "$password" != "$password_confirm" ]; then
@@ -231,8 +231,8 @@ login_user() {
     
     local email password
     
-    read -r -p "Email: " email </dev/tty
-    read -s -r -p "Password: " password </dev/tty
+    read -r -p "Email: " email
+    read -s -r -p "Password: " password
     echo ""
     echo ""
     
@@ -734,4 +734,4 @@ main() {
 }
 
 # Run installer
-main
+main "$@"
