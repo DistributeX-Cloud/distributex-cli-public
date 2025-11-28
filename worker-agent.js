@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * DistributeX Persistent Worker Agent - STABLE VERSION
+ * DistributeX Persistent Worker Agent - HEARTBEAT ONLY VERSION
  * 
  * FIXES:
- * 1. Prevents infinite restart loops
- * 2. Better error recovery
- * 3. Graceful shutdown handling
- * 4. Proper heartbeat spacing
+ * 1. Respects DISABLE_SELF_REGISTER flag
+ * 2. Only sends heartbeats if already registered
+ * 3. Worker name: Worker-{MAC_ADDRESS}
+ * 4. Hostname: Actual device hostname
  */
 
 const os = require('os');
@@ -24,7 +24,7 @@ const CONFIG = {
   REGISTRATION_RETRY_DELAY: 30 * 1000, // 30 seconds
   MAX_CONSECUTIVE_FAILURES: 5,
   IS_DOCKER: process.env.DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv'),
-  MAX_REGISTRATION_RETRIES: 3,
+  DISABLE_SELF_REGISTER: process.env.DISABLE_SELF_REGISTER === 'true',
   SHUTDOWN_GRACE_PERIOD: 5000
 };
 
@@ -34,6 +34,7 @@ class PersistentWorker {
     this.baseUrl = config.baseUrl || CONFIG.API_BASE_URL;
     this.workerId = null;
     this.macAddress = null;
+    this.hostname = os.hostname();
     this.isRunning = true;
     this.isShuttingDown = false;
     this.heartbeatTimer = null;
@@ -91,10 +92,8 @@ class PersistentWorker {
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     
-    // Log errors but DON'T EXIT unless critical
     process.on('uncaughtException', (error) => {
       console.error('❌ Uncaught exception:', error.message);
-      // Only exit on truly fatal errors
       if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
         console.error('💥 Fatal error, exiting...');
         process.exit(1);
@@ -120,6 +119,7 @@ class PersistentWorker {
             
             if (/^[0-9a-f]{12}$/.test(mac)) {
               console.log(`📌 MAC: ${mac} (${name})`);
+              console.log(`📌 Hostname: ${this.hostname}`);
               return mac;
             }
           }
@@ -174,7 +174,7 @@ class PersistentWorker {
   }
 
   /**
-   * Detect storage - FIXED: Returns GB not TB
+   * Detect storage - Returns GB not TB
    */
   async detectStorage() {
     let storage = { total: 100, available: 50 };
@@ -188,8 +188,6 @@ class PersistentWorker {
         
         storage.total = parseInt(parts[1].replace('G', '')) || 100;
         storage.available = parseInt(parts[3].replace('G', '')) || 50;
-        
-        console.log(`💾 Storage: ${storage.total}GB total, ${storage.available}GB available`);
       }
     } catch (error) {
       console.warn('⚠️  Storage detection failed, using defaults');
@@ -217,8 +215,8 @@ class PersistentWorker {
     const storageShare = CONFIG.IS_DOCKER ? 85 : 15;
 
     return {
-      name: `${os.hostname()} Worker`,
-      hostname: os.hostname(),
+      name: `Worker-${this.macAddress}`,
+      hostname: this.hostname,
       platform: os.platform(),
       architecture: os.arch(),
       cpuCores: cpus.length,
@@ -254,7 +252,7 @@ class PersistentWorker {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker/3.2'
+          'User-Agent': 'DistributeX-Worker/3.3'
         },
         timeout: 30000
       };
@@ -289,48 +287,81 @@ class PersistentWorker {
   }
 
   /**
-   * Register worker with retry limit
+   * Check if worker already exists
+   */
+  async checkExisting() {
+    try {
+      const response = await this.makeRequest('GET', `/api/workers/check/${this.macAddress}`);
+      
+      if (response.exists && response.workerId) {
+        this.workerId = response.workerId;
+        console.log(`✅ Found existing worker: ${this.workerId}`);
+        console.log(`   Name: Worker-${this.macAddress}`);
+        console.log(`   Hostname: ${this.hostname}`);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.warn('⚠️  Could not check for existing worker:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Register worker - ONLY if not disabled and doesn't exist
    */
   async register() {
-    while (this.isRunning && this.registrationAttempts < CONFIG.MAX_REGISTRATION_RETRIES) {
-      this.registrationAttempts++;
-      
-      try {
-        console.log(`\n🔍 Detecting system (Attempt ${this.registrationAttempts}/${CONFIG.MAX_REGISTRATION_RETRIES})...`);
-        const capabilities = await this.detectSystem();
-        
-        console.log('\n📊 System:');
-        console.log(`  MAC: ${capabilities.macAddress}`);
-        console.log(`  CPU: ${capabilities.cpuCores} cores`);
-        console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)}GB`);
-        console.log(`  Storage: ${Math.floor(capabilities.storageTotal / 1024)}GB`);
-        console.log(`  GPU: ${capabilities.gpuAvailable ? capabilities.gpuModel : 'None'}`);
-        
-        console.log('\n🚀 Registering...');
-        const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
-        this.workerId = worker.workerId;
-        
-        console.log(`\n✅ ${worker.isNew ? 'Registered' : 'Reconnected'}!`);
-        console.log(`  Worker ID: ${this.workerId}`);
-        
-        // Reset attempt counter on success
-        this.registrationAttempts = 0;
-        return worker;
-        
-      } catch (error) {
-        console.error(`\n❌ Registration failed (Attempt ${this.registrationAttempts}/${CONFIG.MAX_REGISTRATION_RETRIES}):`, error.message);
-        
-        if (!this.isRunning) break;
-        
-        if (this.registrationAttempts >= CONFIG.MAX_REGISTRATION_RETRIES) {
-          console.error('💥 Max registration attempts reached. Exiting...');
-          process.exit(1);
-        }
-        
-        console.log(`⏳ Retrying in 30s...`);
-        await new Promise(resolve => setTimeout(resolve, CONFIG.REGISTRATION_RETRY_DELAY));
-      }
+    this.macAddress = await this.getMacAddress();
+    
+    // First check if worker already exists
+    const exists = await this.checkExisting();
+    
+    if (exists) {
+      console.log('✅ Using existing worker registration');
+      return { workerId: this.workerId, isNew: false };
     }
+    
+    // Check if self-registration is disabled
+    if (CONFIG.DISABLE_SELF_REGISTER) {
+      console.log('⚠️  Self-registration disabled (DISABLE_SELF_REGISTER=true)');
+      console.log('⚠️  Worker should be registered by installation script');
+      console.log('⚠️  Waiting 10 seconds for registration...');
+      
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      // Try to find worker again
+      if (await this.checkExisting()) {
+        return { workerId: this.workerId, isNew: false };
+      }
+      
+      console.error('❌ Worker not found and self-registration is disabled');
+      console.error('   Please run the installation script or enable self-registration');
+      process.exit(1);
+    }
+    
+    // Self-registration is enabled, proceed
+    console.log('\n🔍 Detecting system capabilities...');
+    const capabilities = await this.detectSystem();
+    
+    console.log('\n📊 System:');
+    console.log(`  Name: ${capabilities.name}`);
+    console.log(`  Hostname: ${capabilities.hostname}`);
+    console.log(`  MAC: ${capabilities.macAddress}`);
+    console.log(`  CPU: ${capabilities.cpuCores} cores`);
+    console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)}GB`);
+    console.log(`  Storage: ${Math.floor(capabilities.storageTotal / 1024)}GB`);
+    console.log(`  GPU: ${capabilities.gpuAvailable ? capabilities.gpuModel : 'None'}`);
+    
+    console.log('\n🚀 Registering...');
+    const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
+    this.workerId = worker.workerId;
+    
+    console.log(`\n✅ ${worker.isNew ? 'Registered' : 'Reconnected'}!`);
+    console.log(`  Worker ID: ${this.workerId}`);
+    console.log(`  Name: Worker-${this.macAddress}`);
+    
+    return worker;
   }
 
   /**
@@ -368,11 +399,10 @@ class PersistentWorker {
       
       console.error(`❌ Heartbeat failed (${this.metrics.consecutiveFailures}/${CONFIG.MAX_CONSECUTIVE_FAILURES}):`, error.message);
       
-      // Re-register if too many failures
+      // Try to reconnect if too many failures
       if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
-        console.warn('⚠️  Too many failures, re-registering...');
-        this.registrationAttempts = 0; // Reset for re-registration
-        await this.register();
+        console.warn('⚠️  Too many failures, attempting to reconnect...');
+        await this.checkExisting();
       }
     }
   }
@@ -384,7 +414,7 @@ class PersistentWorker {
     if (this.isRunning && !this.isShuttingDown) {
       this.heartbeatTimer = setTimeout(async () => {
         await this.sendHeartbeat();
-        this.scheduleHeartbeat(); // Schedule next one
+        this.scheduleHeartbeat();
       }, CONFIG.HEARTBEAT_INTERVAL);
     }
   }
@@ -394,8 +424,8 @@ class PersistentWorker {
    */
   async runForever() {
     console.log('\n╔═══════════════════════════════════════════════════════════╗');
-    console.log('║         DistributeX Persistent Worker v3.2              ║');
-    console.log('║         Stable, Self-Healing, Always-On                 ║');
+    console.log('║         DistributeX Persistent Worker v3.3              ║');
+    console.log('║         Heartbeat-Only Mode (No Duplicate Registration)  ║');
     console.log('╚═══════════════════════════════════════════════════════════╝\n');
     
     if (!this.apiKey) {
@@ -403,10 +433,10 @@ class PersistentWorker {
       process.exit(1);
     }
 
-    // Register once
+    // Register or find existing worker
     await this.register();
     
-    console.log('\n✨ Worker is ONLINE and running FOREVER');
+    console.log('\n✨ Worker is ONLINE');
     console.log('💓 Heartbeat every 60 seconds');
     console.log('🔒 Press Ctrl+C to stop\n');
 
@@ -414,7 +444,7 @@ class PersistentWorker {
     this.scheduleHeartbeat();
     
     // Keep process alive
-    await new Promise(() => {}); // Never resolves
+    await new Promise(() => {});
   }
 
   /**
@@ -437,7 +467,7 @@ if (require.main === module) {
   if (args.length === 0 || args.includes('--help')) {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║         DistributeX Persistent Worker v3.2               ║
+║         DistributeX Persistent Worker v3.3               ║
 ╚═══════════════════════════════════════════════════════════╝
 
 USAGE:
@@ -449,6 +479,10 @@ OPTIONS:
 
 EXAMPLE:
   node worker-agent.js --api-key abc123xyz456
+
+ENVIRONMENT VARIABLES:
+  DISABLE_SELF_REGISTER   Set to 'true' to disable self-registration
+                          (worker must be registered by install script)
 
 GET API KEY:
   https://distributex-cloud-network.pages.dev/auth
