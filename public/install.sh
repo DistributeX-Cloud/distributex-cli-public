@@ -192,11 +192,12 @@ signup_user() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
    
     if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-        error "Signup failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+        error "Signup failed ($HTTP_CODE): $ERROR_MSG"
     fi
-    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token' 2>/dev/null)
     if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
-        error "No authentication token returned"
+        error "No authentication token returned. Response: $HTTP_BODY"
     fi
    
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
@@ -229,11 +230,12 @@ login_user() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
    
     if [ "$HTTP_CODE" != "200" ]; then
-        error "Login failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Invalid credentials"')"
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Invalid credentials"' 2>/dev/null || echo "Invalid credentials")
+        error "Login failed ($HTTP_CODE): $ERROR_MSG"
     fi
-    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token' 2>/dev/null)
     if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
-        error "No authentication token returned"
+        error "No authentication token returned. Response: $HTTP_BODY"
     fi
    
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
@@ -372,13 +374,15 @@ check_existing_worker() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
     if [ "$HTTP_CODE" = "200" ]; then
-        WORKER_EXISTS=$(echo "$HTTP_BODY" | jq -r '.exists')
+        WORKER_EXISTS=$(echo "$HTTP_BODY" | jq -r '.exists' 2>/dev/null || echo "false")
         if [ "$WORKER_EXISTS" = "true" ]; then
-            WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId')
-            log "Worker already exists: $WORKER_ID"
-            echo "true" > "$CONFIG_DIR/worker_exists"
-            echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
-            return 0
+            WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId' 2>/dev/null || echo "")
+            if [ -n "$WORKER_ID" ] && [ "$WORKER_ID" != "null" ]; then
+                log "Worker already exists: $WORKER_ID"
+                echo "true" > "$CONFIG_DIR/worker_exists"
+                echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
+                return 0
+            fi
         fi
     fi
     
@@ -429,14 +433,18 @@ register_worker() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
     if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-        WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId')
+        WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId' 2>/dev/null || echo "")
+        if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
+            error "Worker registration succeeded but no workerId returned. Response: $HTTP_BODY"
+        fi
         echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
         log "Worker successfully registered!"
         log "Worker ID: $WORKER_ID"
         log "Worker Name: Worker-$MAC_ADDRESS"
         log "Hostname: $HOSTNAME"
     else
-        error "Worker registration failed (HTTP $HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // .error // "Unknown error"' 2>/dev/null || echo "Unknown error")
+        error "Worker registration failed (HTTP $HTTP_CODE): $ERROR_MSG"
     fi
 }
 
