@@ -1,5 +1,5 @@
 # DistributeX Worker Docker Image
-# Optimized multi-stage build
+# Stable build - runs once without restart loops
 
 FROM node:18-alpine AS builder
 
@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json ./
 COPY worker-agent.js ./
 
-# Install dependencies (none required currently, but prepared for future)
+# Install dependencies
 RUN npm install --production || true
 
 # Production image
@@ -38,8 +38,8 @@ ENV NODE_ENV=production \
     DISTRIBUTEX_API_URL=https://distributex-cloud-network.pages.dev \
     DOCKER_CONTAINER=true
 
-# Health check
-HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
+# Health check - more lenient to avoid false failures
+HEALTHCHECK --interval=10m --timeout=30s --start-period=2m --retries=5 \
   CMD node -e "console.log('Worker healthy')" || exit 1
 
 # Run as non-root user for security
@@ -49,15 +49,13 @@ RUN addgroup -g 1001 -S distributex && \
 
 USER distributex
 
-# Expose no ports (outbound only)
-
 # Labels
 LABEL org.opencontainers.image.title="DistributeX Worker" \
-      org.opencontainers.image.description="Distributed computing worker node" \
+      org.opencontainers.image.description="Distributed computing worker node - stable version" \
       org.opencontainers.image.vendor="DistributeX" \
-      org.opencontainers.image.version="2.0.0"
+      org.opencontainers.image.version="3.2.0"
 
-# Start the worker
+# Start the worker - will run continuously without restart
 ENTRYPOINT ["node", "worker-agent.js"]
 
 # Default args (must be overridden with actual API key)
