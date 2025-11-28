@@ -1,109 +1,38 @@
 #!/bin/bash
-set -e
-set -o pipefail
-
 #
-# DistributeX Complete Installer - Enhanced Edition
-# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
+# DistributeX Complete Installer - Production Ready
+# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 #
 # Features:
-# - Universal OS support (Linux, macOS, Windows via WSL)
-# - Automatic Docker installation
-# - GPU detection (NVIDIA, AMD, Intel, Apple)
+# - Automatic GPU detection (NVIDIA CUDA, AMD ROCm)
+# - Docker auto-start and restart policies
 # - Worker registration with full system detection
-# - Role selection (Contributor/Developer)
-# - Always-on background service with auto-restart
-# - Management CLI tools
-#
+# - Always-on background service
+
+set -e
 
 # Configuration
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
 DOCKER_IMAGE="distributexcloud/worker:latest"
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
-RESTART_POLICY="always"
-SETUP_SYSTEMD=true
 
-# Colors with Windows compatibility
-if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
-    RED=''; GREEN=''; YELLOW=''; CYAN=''; BLUE=''; BOLD=''; NC=''
-else
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'
-    BLUE='\033[0;34m'
-    BOLD='\033[1m'
-    NC='\033[0m'
-fi
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Global variables
-declare OS ARCH HOSTNAME CPU_CORES CPU_MODEL RAM_TOTAL RAM_AVAILABLE
-declare STORAGE_TOTAL STORAGE_AVAILABLE MAC_ADDRESS DEVICE_ID
-declare GPU_AVAILABLE GPU_MODEL GPU_MEMORY GPU_COUNT GPU_DRIVER GPU_CUDA
-declare CPU_SHARE RAM_SHARE STORAGE_SHARE GPU_SHARE
-declare API_TOKEN WORKER_ID USER_ROLE
-declare IS_WSL=false
-declare IS_WINDOWS=false
-
-# ═══════════════════════════════════════════════════════════════
-# LOGGING FUNCTIONS
-# ═══════════════════════════════════════════════════════════════
-
+# Logging Functions
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
 
-# ═══════════════════════════════════════════════════════════════
-# INPUT HANDLING
-# ═══════════════════════════════════════════════════════════════
-
-read_input() {
-    local prompt="$1"
-    local silent="$2"
-    local value=""
-    
-    if [ "$silent" = "true" ]; then
-        stty_orig=$(stty -g 2>/dev/null) || true
-    fi
-    
-    if [ -t 0 ]; then
-        if [ "$silent" = "true" ]; then
-            read -s -r -p "$prompt" value
-            echo "" >&2
-        else
-            read -r -p "$prompt" value
-        fi
-    elif [ -c /dev/tty ]; then
-        exec </dev/tty
-        if [ "$silent" = "true" ]; then
-            read -s -r -p "$prompt" value
-            echo "" >&2
-        else
-            read -r -p "$prompt" value
-        fi
-    else
-        if [ "$silent" = "true" ]; then
-            read -s -r -p "$prompt" value
-            echo "" >&2
-        else
-            read -r -p "$prompt" value
-        fi
-    fi
-    
-    if [ "$silent" = "true" ] && [ -n "$stty_orig" ]; then
-        stty "$stty_orig" 2>/dev/null || true
-    fi
-    
-    echo "$value"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# BANNER & DETECTION
-# ═══════════════════════════════════════════════════════════════
-
+# Banner
 show_banner() {
     clear
     echo -e "${CYAN}"
@@ -115,7 +44,7 @@ show_banner() {
 ║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║        ║
 ║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║        ║
 ║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝        ║
-║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═���═╝         ║
+║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝         ║
 ║                                                           ║
 ║              DistributeX Cloud Network                    ║
 ║           Distributed Computing Platform                  ║
@@ -126,259 +55,112 @@ EOF
     echo ""
 }
 
-detect_windows() {
-    if grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null; then
-        IS_WSL=true
-        info "Running in WSL (Windows Subsystem for Linux)"
-    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-        IS_WINDOWS=true
-        info "Running in Windows environment"
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════
-# DEPENDENCY INSTALLATION
-# ═══════════════════════════════════════════════════════════════
-
-install_dependencies() {
-    section "Installing Required Dependencies"
+# Get MAC Address
+get_mac_address() {
+    local mac=""
+    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
     
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    
-    if [ "$OS" = "linux" ]; then
-        if command -v apt-get &> /dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y curl jq bc 2>/dev/null || true
-        elif command -v dnf &> /dev/null; then
-            sudo dnf install -y curl jq bc 2>/dev/null || true
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y curl jq bc 2>/dev/null || true
-        elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm curl jq bc 2>/dev/null || true
-        fi
-    elif [ "$OS" = "darwin" ]; then
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew not found. Installing..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        brew install curl jq bc 2>/dev/null || true
+    if [ "$os" = "linux" ]; then
+        mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+    elif [ "$os" = "darwin" ]; then
+        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
+        [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2; exit}')
     fi
     
-    log "Dependencies installed"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# DOCKER INSTALLATION
-# ═══════════════════════════════════════════════════════════════
-
-install_docker_debian() {
-    info "Installing Docker on Debian/Ubuntu..."
-    sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-    sudo apt-get update -qq
-    sudo apt-get install -y ca-certificates curl gnupg lsb-release
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt-get update -qq
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    sudo usermod -aG docker $USER
-    log "Docker installed successfully!"
-}
-
-install_docker_macos() {
-    if [ -d "/Applications/Docker.app" ]; then
-        if ! docker ps &> /dev/null; then
-            warn "Starting Docker Desktop..."
-            open -a Docker
-            info "Waiting for Docker to start..."
-            local max_wait=120
-            local waited=0
-            while ! docker ps &> /dev/null && [ $waited -lt $max_wait ]; do
-                sleep 5
-                waited=$((waited + 5))
-            done
-            if docker ps &> /dev/null; then
-                log "Docker Desktop started"
-            else
-                error "Docker failed to start. Please start it manually."
-            fi
-        fi
+    if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
+        echo "$mac"
     else
-        error "Docker Desktop not found. Install from: https://www.docker.com/products/docker-desktop"
+        echo ""
     fi
 }
 
-install_docker_windows() {
-    if [ "$IS_WSL" = true ]; then
-        if ! docker ps &> /dev/null; then
-            error "Docker Desktop with WSL integration required. Visit: https://www.docker.com/products/docker-desktop"
-        fi
-    else
-        error "Please use WSL2 with Docker Desktop"
-    fi
-}
-
-install_docker() {
-    section "Docker Setup"
-    detect_windows
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+# Generate Device ID from MAC
+generate_device_id() {
+    local mac=$(get_mac_address)
     
-    if [ "$IS_WSL" = true ] || [ "$IS_WINDOWS" = true ]; then
-        install_docker_windows
-    elif [ "$OS" = "darwin" ]; then
-        install_docker_macos
-    elif [ "$OS" = "linux" ]; then
-        install_docker_debian
+    if [ -z "$mac" ]; then
+        error "Could not detect MAC address for device identification."
     fi
+    
+    echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
 }
 
-# ═══════════════════════════════════════════════════════════════
-# SYSTEM REQUIREMENTS CHECK
-# ═══════════════════════════════════════════════════════════════
-
+# Check System Requirements
 check_requirements() {
     section "Checking System Requirements"
-    detect_windows
     
     # Check Docker
     if ! command -v docker &> /dev/null; then
-        warn "Docker not installed"
-        local choice=$(read_input "${BOLD}Install Docker now? [Y/n]: ${NC}")
-        if [[ ! "$choice" =~ ^[Nn]$ ]]; then
-            install_docker
+        error "Docker is not installed. Install from: https://docs.docker.com/get-docker/"
+    fi
+    
+    # Check if Docker daemon is running
+    if ! docker ps &> /dev/null; then
+        warn "Docker daemon is not running. Attempting to start..."
+        
+        # Try to start Docker
+        if command -v systemctl &> /dev/null; then
+            sudo systemctl start docker || error "Failed to start Docker. Please start it manually."
+            sleep 3
         else
-            error "Docker is required"
+            error "Docker daemon is not running. Please start Docker and try again."
+        fi
+        
+        # Verify Docker is now running
+        if ! docker ps &> /dev/null; then
+            error "Docker is still not running after start attempt."
         fi
     fi
     
-    # Check Docker daemon
-    local retries=0
-    while ! docker ps &> /dev/null && [ $retries -lt 3 ]; do
-        retries=$((retries + 1))
-        warn "Docker not running (attempt $retries/3)"
-        
-        if command -v systemctl &> /dev/null; then
-            sudo systemctl start docker 2>/dev/null || true
-            sleep 3
-        elif [ "$(uname)" = "Darwin" ]; then
-            open -a Docker 2>/dev/null || true
-            sleep 15
-        fi
-        
-        if [ $retries -ge 3 ]; then
-            error "Docker not running. Please start Docker."
-        fi
-    done
-    
-    # Check dependencies
+    # Check required commands
     local missing=()
-    for cmd in curl jq; do
+    for cmd in curl jq bc; do
         if ! command -v $cmd &> /dev/null; then
             missing+=($cmd)
         fi
     done
     
     if [ ${#missing[@]} -ne 0 ]; then
-        install_dependencies
+        error "Missing required commands: ${missing[*]}. Install them first."
     fi
     
     log "All requirements satisfied"
-    log "Docker: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
+    log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# DEVICE IDENTIFICATION
-# ═══════════════════════════════════════════════════════════════
-
-get_mac_address() {
-    local mac=""
-    local os_type=$(uname -s | tr '[:upper:]' '[:lower:]')
-    
-    if [ "$os_type" = "linux" ]; then
-        for iface in eth0 en0 wlan0 wlp0s20f3 enp0s3 ens33; do
-            if command -v ip &> /dev/null; then
-                mac=$(ip link show "$iface" 2>/dev/null | awk '/link\/ether/ {print $2}')
-            elif command -v ifconfig &> /dev/null; then
-                mac=$(ifconfig "$iface" 2>/dev/null | awk '/ether/ {print $2}')
-            fi
-            [ -n "$mac" ] && break
-        done
-    elif [ "$os_type" = "darwin" ]; then
-        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2}')
-        [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2}')
-    fi
-    
-    if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
-        echo "$mac"
-    fi
-}
-
-generate_device_id() {
-    local mac=$(get_mac_address)
-    
-    if [ -z "$mac" ]; then
-        if command -v md5sum &> /dev/null; then
-            echo "$(hostname)-$(date +%s)" | md5sum | cut -d' ' -f1
-        else
-            echo "fallback-$(date +%s)-$$"
-        fi
-    else
-        echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════
-# USER AUTHENTICATION
-# ═══════════════════════════════════════════════════════════════
-
+# User Authentication
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
 
+    # Check for existing token
     if [ -f "$CONFIG_DIR/token" ]; then
         API_TOKEN=$(cat "$CONFIG_DIR/token")
-        local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $API_TOKEN" \
-            "$DISTRIBUTEX_API_URL/api/auth/user" 2>/dev/null || echo "000")
+            "$DISTRIBUTEX_API_URL/api/auth/user")
         
-        if [ "$http_code" = "200" ]; then
+        if [ "$HTTP_CODE" = "200" ]; then
             log "Using existing authentication"
             return 0
         else
-            warn "Token expired, please log in again"
+            warn "Existing token expired, please log in again"
             rm -f "$CONFIG_DIR/token"
         fi
     fi
 
     echo ""
-    echo -e "${BOLD}${CYAN}╔════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}║   Authentication Required          ║${NC}"
-    echo -e "${BOLD}${CYAN}╚════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} Sign Up (New User)"
-    echo -e "  ${GREEN}2)${NC} Login (Existing User)"
+    echo -e "${CYAN}Choose an option:${NC}"
+    echo "  1) Sign up (New user)"
+    echo "  2) Login (Existing user)"
     echo ""
     
-    local choice=""
     while true; do
-        choice=$(read_input "${BOLD}Choose [1 or 2]: ${NC}")
-        choice=$(echo "$choice" | tr -d '[:space:]')
-        
+        read -r -p "Enter choice [1-2]: " choice </dev/tty
         case "$choice" in
-            1)
-                signup_user
-                login_user
-                break
-                ;;
-            2)
-                login_user
-                break
-                ;;
-            *)
-                warn "Please enter 1 or 2"
-                ;;
+            1) signup_user; break ;;
+            2) login_user; break ;;
+            *) echo -e "${RED}Invalid choice. Please enter 1 or 2${NC}" ;;
         esac
     done
 }
@@ -386,36 +168,30 @@ authenticate_user() {
 signup_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${CYAN}     Create Your Account${NC}"
+    echo -e "${CYAN}     Create Your Account${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     local first_name last_name email password password_confirm
     
-    while [ -z "$first_name" ]; do
-        first_name=$(read_input "${BOLD}First Name: ${NC}")
-    done
-    
-    while [ -z "$last_name" ]; do
-        last_name=$(read_input "${BOLD}Last Name: ${NC}")
-    done
-    
-    while [ -z "$email" ]; do
-        email=$(read_input "${BOLD}Email: ${NC}")
-    done
+    read -r -p "First Name: " first_name </dev/tty
+    read -r -p "Last Name: " last_name </dev/tty
+    read -r -p "Email: " email </dev/tty
     
     while true; do
-        password=$(read_input "${BOLD}Password (min 8 chars): ${NC}" "true")
+        read -s -r -p "Password (min 8 chars): " password </dev/tty
+        echo ""
         
-        if [ -z "$password" ] || [ ${#password} -lt 8 ]; then
+        if [ ${#password} -lt 8 ]; then
             warn "Password must be at least 8 characters"
             continue
         fi
         
-        password_confirm=$(read_input "${BOLD}Confirm Password: ${NC}" "true")
+        read -s -r -p "Confirm Password: " password_confirm </dev/tty
+        echo ""
         
         if [ "$password" != "$password_confirm" ]; then
-            warn "Passwords don't match"
+            warn "Passwords do not match. Please try again."
             continue
         fi
         break
@@ -423,214 +199,155 @@ signup_user() {
 
     echo ""
     info "Creating account..."
-    
-    local response=$(curl -s -w "\n%{http_code}" -X POST \
-        "$DISTRIBUTEX_API_URL/api/auth/register" \
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
         -H "Content-Type: application/json" \
-        -d "{\"firstName\":\"$first_name\",\"lastName\":\"$last_name\",\"email\":\"$email\",\"password\":\"$password\"}")
+        -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
     
-    local http_code=$(echo "$response" | tail -n1)
-    local http_body=$(echo "$response" | head -n -1)
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
-    if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-        local err=$(echo "$http_body" | jq -r '.message // "Signup failed"' 2>/dev/null || echo "Signup failed")
-        error "$err"
+    if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+        error "Signup failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
     fi
 
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
+    if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
+        error "No authentication token returned"
+    fi
+    
+    echo "$API_TOKEN" > "$CONFIG_DIR/token"
+    chmod 600 "$CONFIG_DIR/token"
     log "Account created successfully!"
+    echo ""
+    sleep 1
 }
 
 login_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${CYAN}     Login to Your Account${NC}"
+    echo -e "${CYAN}     Login to Your Account${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     local email password
     
-    while [ -z "$email" ]; do
-        email=$(read_input "${BOLD}Email: ${NC}")
-    done
-    
-    while [ -z "$password" ]; do
-        password=$(read_input "${BOLD}Password: ${NC}" "true")
-    done
+    read -r -p "Email: " email </dev/tty
+    read -s -r -p "Password: " password </dev/tty
+    echo ""
+    echo ""
     
     info "Logging in..."
-    local response=$(curl -s -w "\n%{http_code}" -X POST \
-        "$DISTRIBUTEX_API_URL/api/auth/login" \
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
         -H "Content-Type: application/json" \
         -d "{\"email\":\"$email\",\"password\":\"$password\"}")
     
-    local http_body=$(echo "$response" | head -n -1)
-    local http_code=$(echo "$response" | tail -n1)
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
-    if [ "$http_code" != "200" ]; then
-        local err=$(echo "$http_body" | jq -r '.message // "Invalid credentials"' 2>/dev/null || echo "Login failed")
-        error "$err"
+    if [ "$HTTP_CODE" != "200" ]; then
+        error "Login failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Invalid credentials"')"
     fi
 
-    API_TOKEN=$(echo "$http_body" | jq -r '.token' 2>/dev/null)
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
     if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
-        error "No token returned"
+        error "No authentication token returned"
     fi
     
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
     log "Logged in successfully!"
     echo ""
+    sleep 1
 }
 
-# ═══════════════════════════════════════════════════════════════
-# ROLE SELECTION
-# ═══════════════════════════════════════════════════════════════
-
-select_user_role() {
-    section "Select Your Role"
-    
-    echo ""
-    echo -e "${BOLD}${CYAN}╔════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}║          Choose Your Participation Type           ║${NC}"
-    echo -e "${BOLD}${CYAN}╚════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} ${BOLD}Contributor${NC} - Share compute resources & earn rewards"
-    echo -e "     • Run tasks on your hardware"
-    echo -e "     • Earn based on contribution"
-    echo -e "     • Always-on worker daemon"
-    echo ""
-    echo -e "  ${GREEN}2)${NC} ${BOLD}Developer${NC} - Use the network for your projects"
-    echo -e "     • Submit compute tasks"
-    echo -e "     • Access distributed resources"
-    echo -e "     • API access & SDK"
-    echo ""
-    
-    local choice=""
-    while true; do
-        choice=$(read_input "${BOLD}Choose your role [1 or 2]: ${NC}")
-        choice=$(echo "$choice" | tr -d '[:space:]')
-        
-        case "$choice" in
-            1)
-                USER_ROLE="contributor"
-                log "Role: Contributor (Resource Provider)"
-                break
-                ;;
-            2)
-                USER_ROLE="developer"
-                log "Role: Developer (Resource Consumer)"
-                break
-                ;;
-            *)
-                warn "Please enter 1 or 2"
-                ;;
-        esac
-    done
-    echo ""
-}
-
-# ═══════════════════════════════════════════════════════════════
-# GPU DETECTION
-# ═══════════════════════════════════════════════════════════════
-
+# Detect GPU
 detect_gpu() {
-    GPU_AVAILABLE=false
-    GPU_MODEL=""
-    GPU_MEMORY=0
-    GPU_COUNT=0
-    GPU_DRIVER=""
-    GPU_CUDA=""
-
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-
-    # NVIDIA GPU
-    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-        GPU_AVAILABLE=true
-        GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
-        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
-        GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-        GPU_CUDA=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}')
-        return
-    fi
-
-    # AMD GPU
-    if command -v rocminfo &>/dev/null && rocminfo &>/dev/null; then
-        GPU_AVAILABLE=true
-        GPU_MODEL=$(rocminfo | grep -m1 "Name:" | awk -F': ' '{print $2}')
-        GPU_COUNT=1
-        GPU_DRIVER="ROCm"
-        return
-    fi
-
-    # Fallback detection
-    if command -v lspci &>/dev/null; then
-        if lspci | grep -qiE "(VGA|3D|Display).*(NVIDIA|AMD|Intel)"; then
-            GPU_AVAILABLE=true
-            GPU_MODEL=$(lspci | grep -iE "(VGA|3D|Display)" | head -n1 | cut -d: -f3 | xargs)
-            GPU_COUNT=1
-            GPU_DRIVER="Generic"
+    local gpu_available=false
+    local gpu_model=""
+    local gpu_memory=0
+    local gpu_count=0
+    local gpu_driver=""
+    local gpu_cuda=""
+    
+    # Check for NVIDIA GPU
+    if command -v nvidia-smi &> /dev/null; then
+        if nvidia-smi &> /dev/null; then
+            gpu_available=true
+            gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -n1)
+            gpu_model=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
+            gpu_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
+            gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+            
+            # Get CUDA version if available
+            if command -v nvcc &> /dev/null; then
+                gpu_cuda=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1)
+            else
+                # Try to get CUDA version from nvidia-smi
+                gpu_cuda=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}')
+            fi
         fi
     fi
-
-    # macOS GPU
-    if [ "$OS" = "darwin" ]; then
-        GPU_AVAILABLE=true
-        GPU_MODEL=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -n1 | awk -F': ' '{print $2}' || echo "Apple GPU")
-        GPU_COUNT=1
-        GPU_DRIVER="Metal"
+    
+    # Check for AMD GPU (ROCm)
+    if [ "$gpu_available" = false ] && command -v rocm-smi &> /dev/null; then
+        if rocm-smi &> /dev/null; then
+            gpu_available=true
+            gpu_model=$(rocm-smi --showproductname | grep "Card series" | awk -F': ' '{print $2}')
+            gpu_count=1
+            gpu_driver=$(rocm-smi --showdriverversion | grep "Driver version" | awk '{print $3}')
+        fi
     fi
+    
+    # Export results
+    GPU_AVAILABLE="$gpu_available"
+    GPU_MODEL="$gpu_model"
+    GPU_MEMORY="$gpu_memory"
+    GPU_COUNT="$gpu_count"
+    GPU_DRIVER="$gpu_driver"
+    GPU_CUDA="$gpu_cuda"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# SYSTEM DETECTION
-# ═══════════════════════════════════════════════════════════════
-
+# Detect System Capabilities
 detect_system() {
     section "System Detection"
-   
+    
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
-    HOSTNAME=$(hostname 2>/dev/null || echo "distributex-$(date +%s | tail -c 6)")
+    HOSTNAME=$(hostname)
     
-    # CPU
+    # CPU Detection
     if [ "$OS" = "linux" ]; then
         CPU_CORES=$(nproc 2>/dev/null || echo 4)
-        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown")
+        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs)
     elif [ "$OS" = "darwin" ]; then
         CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
-        CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
+        CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
     else
         CPU_CORES=4
-        CPU_MODEL="Unknown"
+        CPU_MODEL="Unknown CPU"
     fi
     
-    # RAM
+    # RAM Detection
     if command -v free &> /dev/null; then
-        RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
-        RAM_AVAILABLE=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo $((RAM_TOTAL * 80 / 100)))
+        RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+        RAM_AVAILABLE=$(free -m | awk '/^Mem:/{print $7}')
     else
         RAM_TOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}' || echo 8192)
         RAM_AVAILABLE=$((RAM_TOTAL * 80 / 100))
     fi
     
-    # Storage
-    if [ "$OS" = "darwin" ]; then
-        STORAGE_TOTAL=$(df -g / 2>/dev/null | tail -1 | awk '{print $2}' || echo 100)
-        STORAGE_AVAILABLE=$(df -g / 2>/dev/null | tail -1 | awk '{print $4}' || echo 80)
-    else
-        STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
-        STORAGE_AVAILABLE=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//' || echo 80)
-    fi
+    # Storage Detection
+    STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
+    STORAGE_AVAILABLE=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//' || echo 80)
     
-    # GPU
+    # GPU Detection
     detect_gpu
     
-    # Device ID
-    MAC_ADDRESS=$(get_mac_address)
+    # Device ID (MAC-based)
     DEVICE_ID=$(generate_device_id)
+    MAC_ADDRESS=$(get_mac_address)
     
-    # Sharing percentages
+    # Calculate sharing percentages (intelligent defaults)
     if [ "$CPU_CORES" -ge 8 ]; then
         CPU_SHARE=40
     elif [ "$CPU_CORES" -ge 4 ]; then
@@ -641,234 +358,191 @@ detect_system() {
     
     RAM_SHARE=30
     STORAGE_SHARE=20
-    GPU_SHARE=0
-    [ "$GPU_AVAILABLE" = true ] && GPU_SHARE=50
     
-    # Display
+    if [ "$GPU_AVAILABLE" = true ]; then
+        GPU_SHARE=50
+    else
+        GPU_SHARE=0
+    fi
+    
+    # Display detected capabilities
     log "System: $OS ($ARCH)"
     log "Hostname: $HOSTNAME"
     log "Device ID: $DEVICE_ID"
-    [ -n "$MAC_ADDRESS" ] && log "MAC: $MAC_ADDRESS"
+    log "MAC Address: $MAC_ADDRESS"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
     log "RAM: ${RAM_TOTAL}MB (${RAM_AVAILABLE}MB available)"
     log "Storage: ${STORAGE_TOTAL}GB (${STORAGE_AVAILABLE}GB available)"
     
     if [ "$GPU_AVAILABLE" = true ]; then
         log "GPU: $GPU_MODEL"
-        [ "$GPU_MEMORY" -gt 0 ] && log "GPU Memory: ${GPU_MEMORY}MB"
+        log "GPU Memory: ${GPU_MEMORY}MB"
+        log "GPU Count: $GPU_COUNT"
         log "GPU Driver: $GPU_DRIVER"
-        [ -n "$GPU_CUDA" ] && log "CUDA: $GPU_CUDA"
+        [ -n "$GPU_CUDA" ] && log "CUDA Version: $GPU_CUDA"
     else
         info "No GPU detected (optional)"
     fi
     
     echo ""
-    info "Resource Sharing:"
+    info "Sharing Configuration:"
     echo "  CPU: ${CPU_SHARE}% ($((CPU_CORES * CPU_SHARE / 100)) cores)"
     echo "  RAM: ${RAM_SHARE}% ($((RAM_TOTAL * RAM_SHARE / 100))MB)"
     echo "  Storage: ${STORAGE_SHARE}% ($((STORAGE_TOTAL * STORAGE_SHARE / 100))GB)"
     [ "$GPU_AVAILABLE" = true ] && echo "  GPU: ${GPU_SHARE}%"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# WORKER REGISTRATION
-# ═══════════════════════════════════════════════════════════════
-
+# Register Worker with API
 register_worker() {
-    section "Worker Registration"
+    section "Registering Worker"
     
-    info "Registering with DistributeX network..."
+    info "Registering device with network..."
     
-    local device_id="${MAC_ADDRESS:-$DEVICE_ID}"
-    
-    local payload=$(jq -n \
-        --arg name "${HOSTNAME}-worker" \
-        --arg hostname "$HOSTNAME" \
-        --arg platform "$OS" \
-        --arg arch "$ARCH" \
-        --arg role "$USER_ROLE" \
-        --argjson cpuCores "$CPU_CORES" \
-        --arg cpuModel "$CPU_MODEL" \
-        --argjson ramTotal "$RAM_TOTAL" \
-        --argjson ramAvailable "$RAM_AVAILABLE" \
-        --argjson gpuAvailable "$([ "$GPU_AVAILABLE" = true ] && echo true || echo false)" \
-        --arg gpuModel "${GPU_MODEL:-null}" \
-        --argjson gpuMemory "${GPU_MEMORY:-0}" \
-        --argjson gpuCount "${GPU_COUNT:-0}" \
-        --arg gpuDriver "${GPU_DRIVER:-null}" \
-        --arg gpuCuda "${GPU_CUDA:-null}" \
-        --argjson storageTotal "$STORAGE_TOTAL" \
-        --argjson storageAvailable "$STORAGE_AVAILABLE" \
-        --argjson cpuShare "$CPU_SHARE" \
-        --argjson ramShare "$RAM_SHARE" \
-        --argjson storageShare "$STORAGE_SHARE" \
-        --argjson gpuShare "$GPU_SHARE" \
-        --arg deviceId "$device_id" \
-        --arg macAddress "${MAC_ADDRESS:-}" \
-        '{
-            name: $name,
-            hostname: $hostname,
-            platform: $platform,
-            architecture: $arch,
-            role: $role,
-            deviceId: $deviceId,
-            macAddress: $macAddress,
-            specs: {
-                cpu: {
-                    cores: $cpuCores,
-                    model: $cpuModel
-                },
-                ram: {
-                    total: $ramTotal,
-                    available: $ramAvailable
-                },
-                gpu: {
-                    available: $gpuAvailable,
-                    model: $gpuModel,
-                    memory: $gpuMemory,
-                    count: $gpuCount,
-                    driver: $gpuDriver,
-                    cuda: $gpuCuda
-                },
-                storage: {
-                    total: $storageTotal,
-                    available: $storageAvailable
-                }
-            },
-            sharing: {
-                cpu: $cpuShare,
-                ram: $ramShare,
-                storage: $storageShare,
-                gpu: $gpuShare
-            }
-        }')
-    
-    local response=$(curl -s -w "\n%{http_code}" -X POST \
-        "$DISTRIBUTEX_API_URL/api/workers/register" \
+    # Build JSON payload
+    local payload=$(cat <<EOF
+{
+  "name": "${HOSTNAME}-worker",
+  "hostname": "$HOSTNAME",
+  "platform": "$OS",
+  "architecture": "$ARCH",
+  "macAddress": "$MAC_ADDRESS",
+  "cpuCores": $CPU_CORES,
+  "cpuModel": "$CPU_MODEL",
+  "ramTotal": $RAM_TOTAL,
+  "ramAvailable": $RAM_AVAILABLE,
+  "gpuAvailable": $GPU_AVAILABLE,
+  "gpuModel": $([ -n "$GPU_MODEL" ] && echo "\"$GPU_MODEL\"" || echo "null"),
+  "gpuMemory": $([ "$GPU_MEMORY" -gt 0 ] && echo "$GPU_MEMORY" || echo "null"),
+  "gpuCount": $GPU_COUNT,
+  "gpuDriverVersion": $([ -n "$GPU_DRIVER" ] && echo "\"$GPU_DRIVER\"" || echo "null"),
+  "gpuCudaVersion": $([ -n "$GPU_CUDA" ] && echo "\"$GPU_CUDA\"" || echo "null"),
+  "storageTotal": $STORAGE_TOTAL,
+  "storageAvailable": $STORAGE_AVAILABLE,
+  "cpuSharePercent": $CPU_SHARE,
+  "ramSharePercent": $RAM_SHARE,
+  "gpuSharePercent": $GPU_SHARE,
+  "storageSharePercent": $STORAGE_SHARE
+}
+EOF
+)
+
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
         -d "$payload")
-    
-    local http_body=$(echo "$response" | head -n -1)
-    local http_code=$(echo "$response" | tail -n1)
-    
-    if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-        local err=$(echo "$http_body" | jq -r '.message // "Registration failed"' 2>/dev/null || echo "Registration failed")
-        error "Worker registration failed (HTTP $http_code): $err
-        
-Debug Info:
-- Hostname: $HOSTNAME
-- OS: $OS
-- Role: $USER_ROLE
-- CPU Cores: $CPU_CORES
-- RAM: ${RAM_TOTAL}MB
-- Device ID: $device_id
 
-Payload sent:
-$(echo "$payload" | jq . 2>/dev/null || echo "$payload")"
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+
+    if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+        error "Worker registration failed ($HTTP_CODE): $(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')"
     fi
-    
-    WORKER_ID=$(echo "$http_body" | jq -r '.workerId // .id' 2>/dev/null)
-    
+
+    WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id')
+    IS_NEW=$(echo "$HTTP_BODY" | jq -r '.isNew')
+
     if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
-        error "No worker ID returned from registration"
+        error "Worker registration succeeded but no ID was returned"
     fi
-    
-    echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
-    echo "$USER_ROLE" > "$CONFIG_DIR/role"
-    
-    log "Worker registered successfully!"
-    log "Worker ID: $WORKER_ID"
-    log "Role: $USER_ROLE"
+
+    echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
+    chmod 600 "$CONFIG_DIR/worker-id"
+
+    if [ "$IS_NEW" = "true" ]; then
+        log "Worker registered successfully: $WORKER_ID"
+    else
+        log "Worker reconnected (existing device): $WORKER_ID"
+    fi
 }
 
-# ═══════════════════════════════════════════════════════════════
-# DOCKER CONTAINER DEPLOYMENT
-# ═══════════════════════════════════════════════════════════════
-
-deploy_worker() {
-    section "Deploying Worker Container"
-    
-    # Stop existing container
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        info "Stopping existing container..."
-        docker stop "$CONTAINER_NAME" 2>/dev/null || true
-        docker rm "$CONTAINER_NAME" 2>/dev/null || true
-    fi
-    
-    # Pull latest image
+# Pull Docker Image
+pull_docker_image() {
+    section "Preparing Docker Image"
     info "Pulling latest worker image..."
-    docker pull "$DOCKER_IMAGE"
     
-    # Prepare Docker run command
+    if docker pull $DOCKER_IMAGE; then
+        log "Docker image ready: $DOCKER_IMAGE"
+    else
+        error "Failed to pull Docker image"
+    fi
+}
+
+# Stop Existing Container
+stop_existing_container() {
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        warn "Stopping existing container..."
+        docker stop $CONTAINER_NAME &> /dev/null || true
+        docker rm $CONTAINER_NAME &> /dev/null || true
+        log "Existing container removed"
+    fi
+}
+
+# Start Worker Container
+start_worker_container() {
+    section "Starting Worker Container"
+    
+    stop_existing_container
+    
+    info "Starting always-on worker container..."
+    
+    WORKER_ID=$(cat "$CONFIG_DIR/worker-id")
+    
+    # Build docker run command
     local docker_cmd="docker run -d \
         --name $CONTAINER_NAME \
-        --restart=$RESTART_POLICY \
-        -e API_URL=$DISTRIBUTEX_API_URL \
-        -e API_TOKEN=$API_TOKEN \
-        -e WORKER_ID=$WORKER_ID \
-        -e WORKER_ROLE=$USER_ROLE \
-        -e CPU_CORES=$CPU_CORES \
-        -e CPU_SHARE=$CPU_SHARE \
-        -e RAM_TOTAL=$RAM_TOTAL \
-        -e RAM_SHARE=$RAM_SHARE \
-        -e STORAGE_TOTAL=$STORAGE_TOTAL \
-        -e STORAGE_SHARE=$STORAGE_SHARE \
-        -e HOSTNAME=$HOSTNAME \
-        -e DEVICE_ID=$DEVICE_ID"
+        --restart always \
+        -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
+        -e API_TOKEN=\"$API_TOKEN\" \
+        -e WORKER_ID=\"$WORKER_ID\" \
+        -e MAC_ADDRESS=\"$MAC_ADDRESS\" \
+        -v \"$CONFIG_DIR:/config:ro\""
     
     # Add GPU support if available
     if [ "$GPU_AVAILABLE" = true ]; then
-        if command -v nvidia-smi &>/dev/null; then
-            docker_cmd="$docker_cmd --gpus all \
-                -e GPU_ENABLED=true \
-                -e GPU_MODEL=\"$GPU_MODEL\" \
-                -e GPU_MEMORY=$GPU_MEMORY \
-                -e GPU_SHARE=$GPU_SHARE"
+        if command -v nvidia-smi &> /dev/null; then
+            docker_cmd="$docker_cmd --gpus all"
         fi
     fi
     
-    # Add volume mounts
-    docker_cmd="$docker_cmd \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -v $CONFIG_DIR:/app/config"
-    
-    # Execute
+    # Complete command
     docker_cmd="$docker_cmd $DOCKER_IMAGE"
     
-    info "Starting worker container..."
-    eval $docker_cmd
+    # Execute
+    eval $docker_cmd || error "Failed to start container"
+    
+    sleep 3
     
     # Verify container is running
-    sleep 3
-    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log "Worker container deployed successfully!"
-        log "Container: $CONTAINER_NAME"
+    if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        log "Worker container started successfully"
+        echo ""
+        info "Container configured with:"
+        echo "  ✓ Always-on restart policy (survives reboots)"
+        echo "  ✓ Auto-restart on failure"
+        echo "  ✓ Background daemon mode"
+        [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU access enabled"
     else
-        error "Failed to start worker container"
+        error "Container failed to start"
     fi
 }
 
-# ═══════════════════════════════════════════════════════════════
-# SYSTEMD SERVICE (Linux only)
-# ═══════════════════════════════════════════════════════════════
-
-setup_systemd_service() {
-    if [ "$SETUP_SYSTEMD" != true ]; then
+# Setup systemd service for auto-start (Linux only)
+setup_systemd_autostart() {
+    if [ "$OS" != "linux" ]; then
         return
     fi
     
-    if ! command -v systemctl &>/dev/null; then
+    if ! command -v systemctl &> /dev/null; then
         return
     fi
     
-    section "Setting Up Systemd Service"
+    section "Setting Up Auto-Start"
     
-    local service_file="/etc/systemd/system/distributex-worker.service"
+    info "Creating systemd service..."
     
-    sudo tee "$service_file" > /dev/null <<EOF
+    sudo tee /etc/systemd/system/distributex-worker.service > /dev/null <<EOF
 [Unit]
-Description=DistributeX Worker Service
+Description=DistributeX Worker Container
 After=docker.service
 Requires=docker.service
 
@@ -877,178 +551,187 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/docker start $CONTAINER_NAME
 ExecStop=/usr/bin/docker stop $CONTAINER_NAME
-Restart=on-failure
-RestartSec=10
+User=$USER
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     sudo systemctl daemon-reload
-    sudo systemctl enable distributex-worker.service
+    sudo systemctl enable distributex-worker.service &> /dev/null
     
-    log "Systemd service configured"
+    log "Auto-start on boot configured"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# CLI MANAGEMENT TOOLS
-# ═══════════════════════════════════════════════════════════════
-
-install_cli_tools() {
-    section "Installing CLI Management Tools"
+# Create Management Script
+create_management_script() {
+    section "Creating Management Tools"
     
-    local cli_script="/usr/local/bin/distributex"
-    
-    sudo tee "$cli_script" > /dev/null <<'EOF'
+    cat > "$CONFIG_DIR/manage.sh" <<'MGMT_EOF'
 #!/bin/bash
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
 
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
 case "$1" in
     start)
+        echo -e "${CYAN}Starting worker...${NC}"
         docker start $CONTAINER_NAME
-        echo "Worker started"
         ;;
     stop)
+        echo -e "${YELLOW}Stopping worker...${NC}"
         docker stop $CONTAINER_NAME
-        echo "Worker stopped"
         ;;
     restart)
+        echo -e "${CYAN}Restarting worker...${NC}"
         docker restart $CONTAINER_NAME
-        echo "Worker restarted"
-        ;;
-    status)
-        if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-            echo "Status: Running"
-            docker ps --filter "name=$CONTAINER_NAME" --format "table {{.ID}}\t{{.Status}}\t{{.Names}}"
-        else
-            echo "Status: Stopped"
-        fi
         ;;
     logs)
-        docker logs -f $CONTAINER_NAME
+        docker logs ${2:--f} $CONTAINER_NAME
+        ;;
+    status)
+        echo -e "${CYAN}Worker Status:${NC}"
+        docker ps -f name=$CONTAINER_NAME
+        echo ""
+        echo "Restart policy:"
+        docker inspect $CONTAINER_NAME --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || echo "Container not found"
         ;;
     stats)
-        docker stats $CONTAINER_NAME
-        ;;
-    info)
-        if [ -f "$CONFIG_DIR/worker_id" ]; then
-            echo "Worker ID: $(cat $CONFIG_DIR/worker_id)"
-        fi
-        if [ -f "$CONFIG_DIR/role" ]; then
-            echo "Role: $(cat $CONFIG_DIR/role)"
-        fi
-        ;;
-    update)
-        docker pull distributexcloud/worker:latest
-        docker stop $CONTAINER_NAME
-        docker rm $CONTAINER_NAME
-        echo "Rerun installer to redeploy with latest image"
+        echo -e "${CYAN}Resource Usage:${NC}"
+        docker stats --no-stream $CONTAINER_NAME
         ;;
     uninstall)
-        docker stop $CONTAINER_NAME 2>/dev/null
-        docker rm $CONTAINER_NAME 2>/dev/null
-        rm -rf $CONFIG_DIR
-        sudo rm -f /etc/systemd/system/distributex-worker.service
-        sudo systemctl daemon-reload 2>/dev/null
-        sudo rm -f /usr/local/bin/distributex
-        echo "DistributeX worker uninstalled"
+        echo -e "${YELLOW}Uninstalling...${NC}"
+        docker stop $CONTAINER_NAME 2>/dev/null || true
+        docker rm $CONTAINER_NAME 2>/dev/null || true
+        if [ "$2" = "--purge" ]; then
+            rm -rf "$CONFIG_DIR"
+            echo "All data removed"
+        fi
+        echo -e "${GREEN}Done!${NC}"
         ;;
     *)
-        echo "DistributeX Worker CLI"
+        echo "DistributeX Worker Management"
         echo ""
-        echo "Usage: distributex <command>"
+        echo "Usage: $0 {start|stop|restart|logs|status|stats|uninstall}"
         echo ""
         echo "Commands:"
-        echo "  start       - Start the worker"
-        echo "  stop        - Stop the worker"
-        echo "  restart     - Restart the worker"
-        echo "  status      - Show worker status"
-        echo "  logs        - View worker logs"
-        echo "  stats       - Show resource usage"
-        echo "  info        - Show worker info"
-        echo "  update      - Update worker image"
-        echo "  uninstall   - Remove worker completely"
+        echo "  start      - Start the worker"
+        echo "  stop       - Stop the worker"
+        echo "  restart    - Restart the worker"
+        echo "  logs       - View worker logs (add -f to follow)"
+        echo "  status     - Show worker status"
+        echo "  stats      - Show resource usage"
+        echo "  uninstall  - Remove worker (add --purge to delete config)"
+        exit 1
         ;;
 esac
-EOF
+MGMT_EOF
     
-    sudo chmod +x "$cli_script"
-    log "CLI tools installed at: $cli_script"
+    chmod +x "$CONFIG_DIR/manage.sh"
+    log "Management script created: $CONFIG_DIR/manage.sh"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# FINAL SUMMARY
-# ═══════════════════════════════════════════════════════════════
+# Save Configuration
+save_config() {
+    section "Saving Configuration"
+    
+    cat > "$CONFIG_DIR/config.json" <<EOF
+{
+  "version": "4.0.0",
+  "apiUrl": "$DISTRIBUTEX_API_URL",
+  "deviceId": "$DEVICE_ID",
+  "macAddress": "$MAC_ADDRESS",
+  "workerId": "$WORKER_ID",
+  "hostname": "$HOSTNAME",
+  "system": {
+    "os": "$OS",
+    "arch": "$ARCH",
+    "cpuCores": $CPU_CORES,
+    "cpuModel": "$CPU_MODEL",
+    "ramTotal": $RAM_TOTAL,
+    "storageTotal": $STORAGE_TOTAL,
+    "gpuAvailable": $GPU_AVAILABLE,
+    "gpuModel": $([ -n "$GPU_MODEL" ] && echo "\"$GPU_MODEL\"" || echo "null"),
+    "gpuCount": $GPU_COUNT
+  },
+  "sharing": {
+    "cpuPercent": $CPU_SHARE,
+    "ramPercent": $RAM_SHARE,
+    "storagePercent": $STORAGE_SHARE,
+    "gpuPercent": $GPU_SHARE
+  },
+  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+    chmod 600 "$CONFIG_DIR/config.json"
+    log "Configuration saved"
+}
 
-show_summary() {
-    section "Installation Complete!"
+# Show Completion Summary
+show_completion() {
+    section "Installation Complete! 🎉"
     
     echo ""
-    echo -e "${GREEN}${BOLD}╔════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║   DistributeX Worker Successfully Installed!      ║${NC}"
-    echo -e "${GREEN}${BOLD}╚════════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     DistributeX Successfully Installed!               ║${NC}"
+    echo -e "${GREEN}║     Worker Status: ONLINE                             ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    echo -e "${CYAN}Worker Information:${NC}"
-    echo "  • Worker ID: $WORKER_ID"
-    echo "  • Role: $USER_ROLE"
-    echo "  • Container: $CONTAINER_NAME"
-    echo "  • Status: Running (auto-restart enabled)"
-    echo ""
+    log "Device ID: $DEVICE_ID"
+    log "Worker ID: $WORKER_ID"
+    log "Restart Policy: ALWAYS (survives reboots)"
     
-    echo -e "${CYAN}Resource Contribution:${NC}"
-    echo "  • CPU: $CPU_SHARE% ($((CPU_CORES * CPU_SHARE / 100)) cores)"
-    echo "  • RAM: $RAM_SHARE% ($((RAM_TOTAL * RAM_SHARE / 100))MB)"
-    echo "  • Storage: $STORAGE_SHARE% ($((STORAGE_TOTAL * STORAGE_SHARE / 100))GB)"
-    [ "$GPU_AVAILABLE" = true ] && echo "  • GPU: $GPU_SHARE% ($GPU_MODEL)"
-    echo ""
-    
-    echo -e "${CYAN}Management Commands:${NC}"
-    echo "  distributex status    - Check worker status"
-    echo "  distributex logs      - View worker logs"
-    echo "  distributex stats     - Monitor resource usage"
-    echo "  distributex restart   - Restart worker"
-    echo "  distributex stop      - Stop worker"
-    echo "  distributex start     - Start worker"
-    echo ""
-    
-    echo -e "${CYAN}Dashboard:${NC}"
-    echo "  Visit: $DISTRIBUTEX_API_URL/dashboard"
-    echo ""
-    
-    if [ "$USER_ROLE" = "contributor" ]; then
-        echo -e "${YELLOW}${BOLD}💰 Earning Rewards:${NC}"
-        echo "  Your worker is now contributing compute resources"
-        echo "  and earning rewards based on task completion!"
-        echo ""
-    else
-        echo -e "${YELLOW}${BOLD}🚀 Using the Network:${NC}"
-        echo "  You can now submit tasks via the dashboard or API."
-        echo "  Visit the docs for integration guides."
-        echo ""
+    if [ "$GPU_AVAILABLE" = true ]; then
+        log "GPU Support: ENABLED ($GPU_MODEL)"
     fi
     
-    echo -e "${GREEN}Thank you for joining DistributeX! 🎉${NC}"
     echo ""
+    echo -e "${CYAN}Management Commands:${NC}"
+    echo "  $CONFIG_DIR/manage.sh status   # Check worker status"
+    echo "  $CONFIG_DIR/manage.sh logs     # View worker logs"
+    echo "  $CONFIG_DIR/manage.sh stats    # Resource usage"
+    echo "  $CONFIG_DIR/manage.sh restart  # Restart worker"
+    echo "  $CONFIG_DIR/manage.sh stop     # Stop worker"
+    echo ""
+    echo -e "${CYAN}View Dashboard:${NC}"
+    echo "  $DISTRIBUTEX_API_URL/dashboard"
+    echo ""
+    echo -e "${CYAN}Worker Features:${NC}"
+    echo "  ✓ Auto-starts on system boot"
+    echo "  ✓ Auto-restarts on failure"
+    echo "  ✓ Runs 24/7 in background"
+    echo "  ✓ Zero impact on performance"
+    [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU-accelerated tasks ready"
+    echo ""
+    echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
+    echo ""
+    
+    # Show live status
+    info "Checking worker status..."
+    sleep 2
+    docker ps -f name=$CONTAINER_NAME --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# MAIN EXECUTION
-# ═══════════════════════════════════════════════════════════════
-
+# Main Installation Flow
 main() {
     show_banner
     check_requirements
     authenticate_user
-    select_user_role
     detect_system
     register_worker
-    deploy_worker
-    setup_systemd_service
-    install_cli_tools
-    show_summary
+    pull_docker_image
+    start_worker_container
+    setup_systemd_autostart
+    create_management_script
+    save_config
+    show_completion
 }
 
-# Run main function
-main "$@"
+# Run installer
+main
