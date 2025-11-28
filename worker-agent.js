@@ -2,9 +2,11 @@
 /**
  * DistributeX Worker Agent - FIXED VERSION
  * 
- * FIXED: Consistent device fingerprinting to prevent duplicate workers
- * - Uses single, deterministic fingerprint generation method
- * - Ensures one device = one worker registration
+ * FIXES:
+ * - Better error handling and logging
+ * - Proper MAC address detection
+ * - Detailed error messages for debugging
+ * - Graceful fallbacks
  */
 
 const os = require('os');
@@ -44,8 +46,7 @@ class DistributeXWorker {
   }
 
   /**
-   * FIXED: Generate consistent device fingerprint
-   * This ensures the same device always generates the same fingerprint
+   * Generate consistent device fingerprint using MAC address
    */
   async generateDeviceFingerprint() {
     try {
@@ -68,23 +69,17 @@ class DistributeXWorker {
           if (macAddress !== 'unknown') break;
         }
       } catch (e) {
-        console.warn('Could not get MAC address');
+        console.warn('⚠️  Could not get MAC address:', e.message);
       }
       
-      // CRITICAL FIX: Use consistent, deterministic fingerprint components
-      const fingerprintComponents = [
-        macAddress.toLowerCase().trim(),
-        cpuModel.toLowerCase().trim().replace(/\s+/g, '-'),
-        platform.toLowerCase().trim(),
-        arch.toLowerCase().trim()
-      ];
+      // Normalize MAC address: lowercase, remove colons/dashes
+      macAddress = macAddress.toLowerCase().replace(/[:-]/g, '');
       
-      const fingerprintString = fingerprintComponents.join('|');
-      const fingerprint = crypto
-        .createHash('sha256')
-        .update(fingerprintString)
-        .digest('hex')
-        .substring(0, 32);
+      // Validate MAC address format
+      if (!/^[0-9a-f]{12}$/.test(macAddress) && macAddress !== 'unknown') {
+        console.warn(`⚠️  Invalid MAC format: ${macAddress}, using fallback`);
+        macAddress = 'unknown';
+      }
       
       console.log('📌 Device Fingerprint Components:');
       console.log('   Hostname:', hostname);
@@ -92,18 +87,12 @@ class DistributeXWorker {
       console.log('   CPU:', cpuModel);
       console.log('   Platform:', platform);
       console.log('   Arch:', arch);
-      console.log('📌 Generated Fingerprint:', fingerprint);
       
-      return fingerprint;
+      return macAddress;
+      
     } catch (error) {
       console.error('❌ Error generating fingerprint:', error);
-      const fallback = crypto
-        .createHash('sha256')
-        .update(`${os.hostname()}-${os.platform()}-${os.arch()}`)
-        .digest('hex')
-        .substring(0, 32);
-      console.log('⚠️  Using fallback fingerprint:', fallback);
-      return fallback;
+      return 'unknown';
     }
   }
 
@@ -126,6 +115,54 @@ class DistributeXWorker {
     if (h) return h.toLowerCase();
     return 'unknown';
   }
+
+  /**
+   * Detect GPU information
+   */
+  async detectGPU() {
+    let gpuInfo = {
+      available: false,
+      model: null,
+      memory: 0,
+      count: 0,
+      driverVersion: null,
+      cudaVersion: null
+    };
+
+    try {
+      // Try nvidia-smi
+      const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader', {
+        timeout: 5000
+      });
+      
+      const lines = stdout.trim().split('\n');
+      if (lines.length > 0 && lines[0]) {
+        gpuInfo.available = true;
+        gpuInfo.count = lines.length;
+        
+        const [name, memory, driver] = lines[0].split(',').map(s => s.trim());
+        gpuInfo.model = name;
+        gpuInfo.memory = parseInt(memory) || 0;
+        gpuInfo.driverVersion = driver;
+      }
+
+      // Try to get CUDA version
+      try {
+        const { stdout: cudaOut } = await execAsync('nvcc --version', { timeout: 3000 });
+        const cudaMatch = cudaOut.match(/release\s+(\d+\.\d+)/i);
+        if (cudaMatch) {
+          gpuInfo.cudaVersion = cudaMatch[1];
+        }
+      } catch (e) {
+        // CUDA not available
+      }
+    } catch (error) {
+      // No NVIDIA GPU or nvidia-smi not available
+      console.log('ℹ️  No NVIDIA GPU detected');
+    }
+
+    return gpuInfo;
+  }
   
   async detectSystemCapabilities() {
     console.log('🔍 Detecting system capabilities...');
@@ -137,7 +174,7 @@ class DistributeXWorker {
     const gpuInfo = await this.detectGPU();
     const storageInfo = await this.detectStorage();
     
-    // CRITICAL: Generate device fingerprint ONCE
+    // Generate MAC address (device fingerprint)
     this.deviceFingerprint = await this.generateDeviceFingerprint();
 
     const cpuSharePercent = CONFIG.IS_DOCKER ? 80 : (cpus.length >= 8 ? 50 : cpus.length >= 4 ? 40 : 30);
@@ -168,7 +205,7 @@ class DistributeXWorker {
       storageSharePercent,
       isDocker: CONFIG.IS_DOCKER,
       dockerContainerId: await this.getDockerId(),
-      deviceFingerprint: this.deviceFingerprint
+      macAddress: this.deviceFingerprint
     };
 
     return capabilities;
@@ -190,35 +227,42 @@ class DistributeXWorker {
         storageInfo.available = parseInt(parts[3].replace('G', ''));
       }
     } catch (error) {
-      console.log('Storage detection using defaults');
+      console.log('ℹ️  Storage detection using defaults');
     }
 
     return storageInfo;
   }
 
   /**
-   * Make HTTP request with retry logic
+   * Make HTTP request with detailed error logging
    */
   async makeRequest(method, path, data = null, retries = CONFIG.RETRY_ATTEMPTS) {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         return await this._makeRequestOnce(method, path, data);
       } catch (error) {
-        if (attempt === retries) throw error;
+        console.error(`❌ Request failed (attempt ${attempt}/${retries}):`, error.message);
+        
+        if (attempt === retries) {
+          throw error;
+        }
         
         const delay = CONFIG.RETRY_DELAY * attempt;
-        console.log(`Retry ${attempt}/${retries} after ${delay}ms...`);
+        console.log(`⏳ Retrying in ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
 
   /**
-   * Single HTTP request attempt
+   * Single HTTP request attempt with detailed error info
    */
   async _makeRequestOnce(method, path, data = null) {
     return new Promise((resolve, reject) => {
       const url = new URL(path, this.baseUrl);
+      
+      console.log(`🌐 ${method} ${url.toString()}`);
+      
       const options = {
         method,
         headers: {
@@ -233,57 +277,93 @@ class DistributeXWorker {
         let body = '';
         res.on('data', chunk => body += chunk);
         res.on('end', () => {
+          console.log(`📡 Response ${res.statusCode}: ${body.substring(0, 200)}${body.length > 200 ? '...' : ''}`);
+          
           try {
             const json = body ? JSON.parse(body) : {};
             
             if (res.statusCode >= 200 && res.statusCode < 300) {
               resolve(json);
             } else {
-              reject(new Error(`HTTP ${res.statusCode}: ${json.message || body}`));
+              reject(new Error(`HTTP ${res.statusCode}: ${json.message || json.error || body}`));
             }
           } catch (e) {
-            reject(new Error(`Failed to parse response: ${body}`));
+            reject(new Error(`Failed to parse response (${res.statusCode}): ${body}`));
           }
         });
       });
 
-      req.on('error', reject);
+      req.on('error', (err) => {
+        console.error('🔴 Request error:', err);
+        reject(err);
+      });
+      
       req.on('timeout', () => {
         req.destroy();
         reject(new Error('Request timeout'));
       });
       
-      if (data) req.write(JSON.stringify(data));
+      if (data) {
+        const payload = JSON.stringify(data);
+        console.log(`📤 Payload: ${payload.substring(0, 200)}${payload.length > 200 ? '...' : ''}`);
+        req.write(payload);
+      }
+      
       req.end();
     });
   }
 
   /**
-   * Register worker with consistent fingerprint
+   * Register worker with detailed error handling
    */
   async register() {
     console.log('🔍 Detecting system capabilities...');
     const capabilities = await this.detectSystemCapabilities();
     
+    // Validate MAC address before sending
+    if (!capabilities.macAddress || capabilities.macAddress === 'unknown') {
+      throw new Error('Cannot register without valid MAC address. Please check network interfaces.');
+    }
+    
     console.log('\n📊 System Information:');
     console.log(`  Environment: ${CONFIG.IS_DOCKER ? 'Docker Container' : 'Native'}`);
-    console.log(`  Device Fingerprint: ${capabilities.deviceFingerprint}`);
+    console.log(`  MAC Address: ${capabilities.macAddress}`);
     console.log(`  CPU: ${capabilities.cpuCores} cores (${capabilities.cpuModel})`);
     console.log(`  RAM: ${Math.floor(capabilities.ramTotal / 1024)} GB total`);
     
     if (capabilities.gpuAvailable) {
-      console.log(`  GPU: ${capabilities.gpuCount}x ${capabilities.gpuModel}`);
+      console.log(`  GPU: ${capabilities.gpuCount}x ${capabilities.gpuModel} (${capabilities.gpuMemory}MB)`);
+      if (capabilities.gpuDriverVersion) {
+        console.log(`  GPU Driver: ${capabilities.gpuDriverVersion}`);
+      }
+      if (capabilities.gpuCudaVersion) {
+        console.log(`  CUDA: ${capabilities.gpuCudaVersion}`);
+      }
     }
 
     console.log('\n🚀 Registering worker...');
-    const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
-    this.workerId = worker.id;
     
-    console.log(`✅ Worker ${worker.isNew ? 'registered' : 'reconnected'}! ID: ${this.workerId}`);
-    if (!worker.isNew) {
-      console.log('   (Recognized existing device - no duplicate created)');
+    try {
+      const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
+      this.workerId = worker.workerId;
+      
+      console.log(`✅ Worker ${worker.isNew ? 'registered' : 'reconnected'}! ID: ${this.workerId}`);
+      if (!worker.isNew) {
+        console.log('   (Recognized existing device - no duplicate created)');
+      }
+      
+      return worker;
+    } catch (error) {
+      console.error('\n❌ Registration failed:', error.message);
+      console.error('   API URL:', this.baseUrl);
+      console.error('   MAC Address:', capabilities.macAddress);
+      console.error('   Please check:');
+      console.error('   1. API URL is correct');
+      console.error('   2. API key is valid');
+      console.error('   3. Database migrations have been run');
+      console.error('   4. Network connectivity is working');
+      throw error;
     }
-    return worker;
   }
 
   /**
@@ -295,10 +375,11 @@ class DistributeXWorker {
       const storageInfo = await this.detectStorage();
 
       await this.makeRequest('POST', `/api/workers/${this.workerId}/heartbeat`, {
+        macAddress: this.deviceFingerprint,
         ramAvailable: freeRam,
         storageAvailable: storageInfo.available,
         status: 'online',
-      });
+      }, 1); // Only 1 retry for heartbeat
 
       this.metrics.lastHeartbeat = new Date();
       this.metrics.successfulHeartbeats++;
@@ -307,7 +388,7 @@ class DistributeXWorker {
       console.log(`💓 Heartbeat sent at ${this.metrics.lastHeartbeat.toLocaleTimeString()}`);
     } catch (error) {
       this.metrics.failedHeartbeats++;
-      console.error(`❌ Heartbeat failed (${this.metrics.failedHeartbeats}): ${error.message}`);
+      console.error(`❌ Heartbeat failed (${this.metrics.failedHeartbeats}):`, error.message);
       
       if (this.metrics.failedHeartbeats >= 3) {
         console.warn('⚠️  Multiple heartbeat failures, attempting re-registration...');
@@ -315,7 +396,7 @@ class DistributeXWorker {
           await this.register();
           this.metrics.failedHeartbeats = 0;
         } catch (e) {
-          console.error('Re-registration failed:', e.message);
+          console.error('❌ Re-registration failed:', e.message);
         }
       }
     }
@@ -327,13 +408,15 @@ class DistributeXWorker {
   async start() {
     try {
       if (!this.apiKey) {
-        throw new Error('API key required');
+        throw new Error('API key required. Use --api-key YOUR_KEY');
       }
 
+      console.log('🔐 Authenticating...');
       await this.register();
       
       this.isRunning = true;
       
+      console.log('💓 Starting heartbeat...');
       await this.sendHeartbeat();
       
       this.heartbeatInterval = setInterval(
@@ -348,16 +431,22 @@ class DistributeXWorker {
       process.on('SIGINT', () => this.stop());
       process.on('SIGTERM', () => this.stop());
 
+      // Periodic stats
       setInterval(() => {
         console.log('\n📊 Worker Stats:');
         console.log(`  Successful heartbeats: ${this.metrics.successfulHeartbeats}`);
         console.log(`  Last heartbeat: ${this.metrics.lastHeartbeat?.toLocaleString() || 'Never'}`);
         console.log(`  Worker ID: ${this.workerId}`);
-        console.log(`  Device Fingerprint: ${this.deviceFingerprint}\n`);
-      }, 3600000);
+        console.log(`  MAC Address: ${this.deviceFingerprint}\n`);
+      }, 3600000); // Every hour
 
     } catch (error) {
-      console.error('❌ Failed to start worker:', error.message);
+      console.error('\n❌ Failed to start worker:', error.message);
+      console.error('\nTroubleshooting:');
+      console.error('1. Verify your API key is correct');
+      console.error('2. Check network connectivity to', this.baseUrl);
+      console.error('3. Ensure database migrations have been run');
+      console.error('4. Check server logs for details');
       process.exit(1);
     }
   }
@@ -380,7 +469,7 @@ class DistributeXWorker {
         console.log('✅ Worker disconnected gracefully');
         console.log(`📊 Total heartbeats sent: ${this.metrics.successfulHeartbeats}`);
       } catch (error) {
-        console.warn('Warning: Failed to send disconnect signal');
+        console.warn('⚠️  Failed to send disconnect signal:', error.message);
       }
     }
     
@@ -392,11 +481,35 @@ class DistributeXWorker {
 if (require.main === module) {
   const args = process.argv.slice(2);
   
+  // Show help
+  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+    console.log(`
+DistributeX Worker Agent
+
+Usage:
+  node worker-agent.js --api-key YOUR_API_KEY [--url API_URL]
+
+Options:
+  --api-key    Your DistributeX API key (required)
+  --url        API base URL (default: https://distributex-cloud-network.pages.dev)
+  --help       Show this help message
+
+Example:
+  node worker-agent.js --api-key abc123xyz456
+
+Get your API key at:
+  https://distributex-cloud-network.pages.dev/auth
+`);
+    process.exit(args.includes('--help') || args.includes('-h') ? 0 : 1);
+  }
+  
   const apiKeyIndex = args.indexOf('--api-key');
   const urlIndex = args.indexOf('--url');
   
   if (apiKeyIndex === -1 || !args[apiKeyIndex + 1]) {
-    console.error('❌ Usage: node worker-agent.js --api-key YOUR_API_KEY [--url API_URL]');
+    console.error('❌ Error: --api-key is required');
+    console.error('Usage: node worker-agent.js --api-key YOUR_API_KEY');
+    console.error('Get your API key at: https://distributex-cloud-network.pages.dev/auth');
     process.exit(1);
   }
 
@@ -408,7 +521,7 @@ if (require.main === module) {
   console.log('\n╔═════════════════════════════════════════════════════════════════════════════════╗');
   console.log('  ║                        DistributeX Worker Agent v3.1                            ║');
   console.log(`  ║      ${CONFIG.IS_DOCKER ? 'Docker Container Mode 🐳' : 'Native Mode 💻'}        ║`);
-  console.log('  ║              FIXED: Consistent Device Fingerprinting                            ║');
+  console.log('  ║              FIXED: Better Error Handling & MAC Address Detection               ║');
   console.log('  ╚═════════════════════════════════════════════════════════════════════════════════╝\n');
 
   const worker = new DistributeXWorker(config);
