@@ -378,14 +378,14 @@ start_contributor() {
         --url "$DISTRIBUTEX_API_URL" > /dev/null
 
     sleep 10
-
+    
     info "Registering your device in DistributeX network..."
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{
           "macAddress": "'"$MAC_ADDRESS"'",
-          "name": "'"$(hostname)"' Worker",
+          "name": "Worker-'"$MAC_ADDRESS"'", 
           "hostname": "'"$(hostname)"'",
           "platform": "'"$OS"'",
           "architecture": "'"$ARCH"'",
