@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * DistributeX Persistent Worker Agent - FIXED VERSION
+ * DistributeX Persistent Worker Agent - STABLE VERSION
  * 
- * KEY FIXES:
- * 1. Never exits - runs indefinitely like Honeygain/EarnApp
- * 2. Fixed storage calculation (GB not TB)
- * 3. Proper error recovery
- * 4. Continuous heartbeat loop
+ * FIXES:
+ * 1. Prevents infinite restart loops
+ * 2. Better error recovery
+ * 3. Graceful shutdown handling
+ * 4. Proper heartbeat spacing
  */
 
 const os = require('os');
@@ -23,7 +23,9 @@ const CONFIG = {
   HEARTBEAT_INTERVAL: 60 * 1000, // 1 minute
   REGISTRATION_RETRY_DELAY: 30 * 1000, // 30 seconds
   MAX_CONSECUTIVE_FAILURES: 5,
-  IS_DOCKER: process.env.DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv')
+  IS_DOCKER: process.env.DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv'),
+  MAX_REGISTRATION_RETRIES: 3,
+  SHUTDOWN_GRACE_PERIOD: 5000
 };
 
 class PersistentWorker {
@@ -33,6 +35,9 @@ class PersistentWorker {
     this.workerId = null;
     this.macAddress = null;
     this.isRunning = true;
+    this.isShuttingDown = false;
+    this.heartbeatTimer = null;
+    this.registrationAttempts = 0;
     
     // Metrics
     this.metrics = {
@@ -46,13 +51,25 @@ class PersistentWorker {
   }
 
   /**
-   * Setup graceful shutdown only
+   * Setup graceful shutdown handlers
    */
   setupProcessHandlers() {
     const shutdown = async (signal) => {
+      if (this.isShuttingDown) {
+        console.log('⚠️  Forced shutdown');
+        process.exit(1);
+      }
+      
       console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+      this.isShuttingDown = true;
       this.isRunning = false;
       
+      // Clear heartbeat timer
+      if (this.heartbeatTimer) {
+        clearTimeout(this.heartbeatTimer);
+      }
+      
+      // Send offline status
       if (this.macAddress && this.workerId) {
         try {
           await this.makeRequest('POST', `/api/workers/${this.workerId}/heartbeat`, {
@@ -61,23 +78,31 @@ class PersistentWorker {
           });
           console.log('✅ Graceful shutdown complete');
         } catch (e) {
-          console.log('⚠️  Offline status not sent');
+          console.log('⚠️  Could not send offline status');
         }
       }
       
-      process.exit(0);
+      // Wait for cleanup
+      setTimeout(() => {
+        process.exit(0);
+      }, CONFIG.SHUTDOWN_GRACE_PERIOD);
     };
 
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     
-    // Log errors but DON'T EXIT
+    // Log errors but DON'T EXIT unless critical
     process.on('uncaughtException', (error) => {
-      console.error('❌ Uncaught exception (continuing):', error.message);
+      console.error('❌ Uncaught exception:', error.message);
+      // Only exit on truly fatal errors
+      if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
+        console.error('💥 Fatal error, exiting...');
+        process.exit(1);
+      }
     });
     
     process.on('unhandledRejection', (reason) => {
-      console.error('❌ Unhandled rejection (continuing):', reason);
+      console.error('❌ Unhandled rejection:', reason);
     });
   }
 
@@ -161,7 +186,6 @@ class PersistentWorker {
         const { stdout } = await execAsync('df -BG / | tail -1');
         const parts = stdout.trim().split(/\s+/);
         
-        // FIXED: Parse GB values correctly
         storage.total = parseInt(parts[1].replace('G', '')) || 100;
         storage.available = parseInt(parts[3].replace('G', '')) || 50;
         
@@ -219,7 +243,7 @@ class PersistentWorker {
   }
 
   /**
-   * Make HTTP request
+   * Make HTTP request with timeout
    */
   async makeRequest(method, path, data = null) {
     return new Promise((resolve, reject) => {
@@ -230,7 +254,7 @@ class PersistentWorker {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker/3.1'
+          'User-Agent': 'DistributeX-Worker/3.2'
         },
         timeout: 30000
       };
@@ -265,16 +289,14 @@ class PersistentWorker {
   }
 
   /**
-   * Register worker with retries
+   * Register worker with retry limit
    */
   async register() {
-    let attempt = 0;
-    
-    while (this.isRunning) {
-      attempt++;
+    while (this.isRunning && this.registrationAttempts < CONFIG.MAX_REGISTRATION_RETRIES) {
+      this.registrationAttempts++;
       
       try {
-        console.log(`\n🔍 Detecting system (Attempt ${attempt})...`);
+        console.log(`\n🔍 Detecting system (Attempt ${this.registrationAttempts}/${CONFIG.MAX_REGISTRATION_RETRIES})...`);
         const capabilities = await this.detectSystem();
         
         console.log('\n📊 System:');
@@ -291,12 +313,19 @@ class PersistentWorker {
         console.log(`\n✅ ${worker.isNew ? 'Registered' : 'Reconnected'}!`);
         console.log(`  Worker ID: ${this.workerId}`);
         
+        // Reset attempt counter on success
+        this.registrationAttempts = 0;
         return worker;
         
       } catch (error) {
-        console.error(`\n❌ Registration failed (Attempt ${attempt}):`, error.message);
+        console.error(`\n❌ Registration failed (Attempt ${this.registrationAttempts}/${CONFIG.MAX_REGISTRATION_RETRIES}):`, error.message);
         
         if (!this.isRunning) break;
+        
+        if (this.registrationAttempts >= CONFIG.MAX_REGISTRATION_RETRIES) {
+          console.error('💥 Max registration attempts reached. Exiting...');
+          process.exit(1);
+        }
         
         console.log(`⏳ Retrying in 30s...`);
         await new Promise(resolve => setTimeout(resolve, CONFIG.REGISTRATION_RETRY_DELAY));
@@ -308,7 +337,7 @@ class PersistentWorker {
    * Send heartbeat
    */
   async sendHeartbeat() {
-    if (!this.isRunning) return;
+    if (!this.isRunning || this.isShuttingDown) return;
     
     try {
       const freeRam = Math.floor(os.freemem() / (1024 * 1024));
@@ -320,7 +349,7 @@ class PersistentWorker {
         {
           macAddress: this.macAddress,
           ramAvailable: freeRam,
-          storageAvailable: storage.available * 1024, // Convert GB to MB
+          storageAvailable: storage.available * 1024,
           status: 'online'
         }
       );
@@ -342,18 +371,31 @@ class PersistentWorker {
       // Re-register if too many failures
       if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
         console.warn('⚠️  Too many failures, re-registering...');
+        this.registrationAttempts = 0; // Reset for re-registration
         await this.register();
       }
     }
   }
 
   /**
-   * Run indefinitely - LIKE HONEYGAIN/EARNAPP
+   * Schedule next heartbeat
+   */
+  scheduleHeartbeat() {
+    if (this.isRunning && !this.isShuttingDown) {
+      this.heartbeatTimer = setTimeout(async () => {
+        await this.sendHeartbeat();
+        this.scheduleHeartbeat(); // Schedule next one
+      }, CONFIG.HEARTBEAT_INTERVAL);
+    }
+  }
+
+  /**
+   * Run indefinitely
    */
   async runForever() {
     console.log('\n╔═══════════════════════════════════════════════════════════╗');
-    console.log('║         DistributeX Persistent Worker v3.1              ║');
-    console.log('║         Runs Forever Like Honeygain/EarnApp             ║');
+    console.log('║         DistributeX Persistent Worker v3.2              ║');
+    console.log('║         Stable, Self-Healing, Always-On                 ║');
     console.log('╚═══════════════════════════════════════════════════════════╝\n');
     
     if (!this.apiKey) {
@@ -361,20 +403,18 @@ class PersistentWorker {
       process.exit(1);
     }
 
-    // Register
+    // Register once
     await this.register();
     
     console.log('\n✨ Worker is ONLINE and running FOREVER');
     console.log('💓 Heartbeat every 60 seconds');
     console.log('🔒 Press Ctrl+C to stop\n');
 
-    // CRITICAL: Infinite heartbeat loop
-    while (this.isRunning) {
-      await this.sendHeartbeat();
-      
-      // Wait for next heartbeat
-      await new Promise(resolve => setTimeout(resolve, CONFIG.HEARTBEAT_INTERVAL));
-    }
+    // Start heartbeat loop
+    this.scheduleHeartbeat();
+    
+    // Keep process alive
+    await new Promise(() => {}); // Never resolves
   }
 
   /**
@@ -385,13 +425,7 @@ class PersistentWorker {
       await this.runForever();
     } catch (error) {
       console.error('\n❌ Critical error:', error.message);
-      
-      // Try to recover
-      if (this.isRunning) {
-        console.log('🔄 Attempting recovery in 10s...');
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        await this.start();
-      }
+      process.exit(1);
     }
   }
 }
@@ -403,7 +437,7 @@ if (require.main === module) {
   if (args.length === 0 || args.includes('--help')) {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║         DistributeX Persistent Worker v3.1               ║
+║         DistributeX Persistent Worker v3.2               ║
 ╚═══════════════════════════════════════════════════════════╝
 
 USAGE:
