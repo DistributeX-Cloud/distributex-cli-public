@@ -237,14 +237,14 @@ select_role() {
     echo -e "${CYAN}How do you want to use DistributeX?${NC}"
     echo ""
     echo " 1) ${GREEN}Contributor${NC} - Share my computer's resources"
-    echo " • Earn by contributing CPU, RAM, GPU, Storage"
+    echo " • Contribute CPU, RAM, GPU, Storage"
     echo " • Lightweight agent runs 24/7 in background"
     echo " • Zero impact on your daily use"
     echo ""
     echo " 2) ${BLUE}Developer${NC} - Use pooled computing resources"
     echo " • Run scripts and code on distributed network"
-    echo " • Access global pool of CPU/GPU/Storage"
-    echo " • Pay-as-you-go or free tier available"
+    echo " • Access global pool of RAM/CPU/GPU/Storage"
+    echo " • Free"
     echo ""
    
     while true; do
