@@ -704,12 +704,15 @@ register_worker() {
         --argjson storageShare "$STORAGE_SHARE" \
         --argjson gpuShare "$GPU_SHARE" \
         --arg deviceId "$device_id" \
+        --arg macAddress "${MAC_ADDRESS:-}" \
         '{
             name: $name,
             hostname: $hostname,
             platform: $platform,
             architecture: $arch,
             role: $role,
+            deviceId: $deviceId,
+            macAddress: $macAddress,
             specs: {
                 cpu: {
                     cores: $cpuCores,
@@ -737,8 +740,7 @@ register_worker() {
                 ram: $ramShare,
                 storage: $storageShare,
                 gpu: $gpuShare
-            },
-            deviceId: $deviceId
+            }
         }')
     
     local response=$(curl -s -w "\n%{http_code}" -X POST \
@@ -752,7 +754,18 @@ register_worker() {
     
     if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
         local err=$(echo "$http_body" | jq -r '.message // "Registration failed"' 2>/dev/null || echo "Registration failed")
-        error "Worker registration failed: $err"
+        error "Worker registration failed (HTTP $http_code): $err
+        
+Debug Info:
+- Hostname: $HOSTNAME
+- OS: $OS
+- Role: $USER_ROLE
+- CPU Cores: $CPU_CORES
+- RAM: ${RAM_TOTAL}MB
+- Device ID: $device_id
+
+Payload sent:
+$(echo "$payload" | jq . 2>/dev/null || echo "$payload")"
     fi
     
     WORKER_ID=$(echo "$http_body" | jq -r '.workerId // .id' 2>/dev/null)
