@@ -234,7 +234,6 @@ login_user() {
     read -r -p "Email: " email
     read -s -r -p "Password: " password < /dev/tty
     echo ""
-    echo ""
     
     info "Logging in..."
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
