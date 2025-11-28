@@ -768,13 +768,14 @@ detect_gpu() {
     GPU_AVAILABLE=false
 }
 
-# Detect System Capabilities
 detect_system() {
     section "System Detection"
-    
+   
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
-    HOSTNAME=$(hostname)
+    
+    HOSTNAME=$(hostname 2>/dev/null || echo "unknown")
+    [[ "$HOSTNAME" == "unknown" || -z "$HOSTNAME" ]] && HOSTNAME="distributex-$(openssl rand -hex 3 2>/dev/null || echo $RANDOM | md5sum | head -c 6 || date +%s | cut -c1-8)"
     
     if [ "$OS" = "linux" ]; then
         CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
