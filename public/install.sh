@@ -1,10 +1,10 @@
 #!/bin/bash
+set -e
+set -o pipefail
 #
 # DistributeX Complete Installer - FIXED VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-
-set -e
 
 # Configuration
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
@@ -742,8 +742,8 @@ show_completion() {
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
     log "Worker is running and contributing to the network"
-    log "Worker ID: $(cat $CONFIG_DIR/worker-id 2>/dev/null || echo 'N/A')"
-    log "Device Fingerprint: $DEVICE_FINGERPRINT"
+    log "Worker ID: $(cat "$CONFIG_DIR/worker-id" 2>/dev/null || echo 'N/A')"
+    log "Device Fingerprint: $DEVICE_ID"
     echo ""
     
     echo -e "${CYAN}Management Commands:${NC}"
@@ -751,13 +751,11 @@ show_completion() {
     echo "  $CONFIG_DIR/manage.sh logs          # View logs"
     echo "  $CONFIG_DIR/manage.sh restart       # Restart worker"
     echo ""
-    echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
-    echo ""
-
-    # === ADD THIS INTERACTIVE EXIT PROMPT ===
+    
+    # Interactive exit prompt
     echo ""
     echo -e "${CYAN}Press Enter to exit, or type 'm' to view management commands again.${NC}"
-    read -p "> " exit_choice
+    read -r -p "> " exit_choice < /dev/tty
     
     if [ "$exit_choice" = "m" ]; then
         echo ""
@@ -768,14 +766,13 @@ show_completion() {
         echo "  $CONFIG_DIR/manage.sh uninstall"
         echo ""
         echo -e "${CYAN}Press Enter to finish.${NC}"
-        read
+        read -r < /dev/tty
     fi
-}
-    
+
     # Show live status
     info "Checking worker status..."
     sleep 2
-    docker ps -f name=$CONTAINER_NAME --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    docker ps -f name="$CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 }
 
 # Main Installation Flow
@@ -793,5 +790,4 @@ main() {
     show_completion
 }
 
-# Run installer
 main "$@"
