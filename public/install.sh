@@ -419,61 +419,137 @@ register_worker() {
     
     info "Registering device with network..."
     
-    # Build JSON payload
-    local payload=$(cat <<EOF
-{
-  "name": "${HOSTNAME}-worker",
-  "hostname": "$HOSTNAME",
-  "platform": "$OS",
-  "architecture": "$ARCH",
-  "macAddress": $([ -n "$MAC_ADDRESS" ] && echo "\"$MAC_ADDRESS\"" || echo "null"),
-  "cpuCores": $CPU_CORES,
-  "cpuModel": "$CPU_MODEL",
-  "ramTotal": $RAM_TOTAL,
-  "ramAvailable": $RAM_AVAILABLE,
-  "gpuAvailable": $GPU_AVAILABLE,
-  "gpuModel": $([ -n "$GPU_MODEL" ] && echo "\"$GPU_MODEL\"" || echo "null"),
-  "gpuMemory": $([ "$GPU_MEMORY" -gt 0 ] && echo "$GPU_MEMORY" || echo "null"),
-  "gpuCount": $GPU_COUNT,
-  "gpuDriverVersion": $([ -n "$GPU_DRIVER" ] && echo "\"$GPU_DRIVER\"" || echo "null"),
-  "gpuCudaVersion": $([ -n "$GPU_CUDA" ] && echo "\"$GPU_CUDA\"" || echo "null"),
-  "storageTotal": $STORAGE_TOTAL,
-  "storageAvailable": $STORAGE_AVAILABLE,
-  "cpuSharePercent": $CPU_SHARE,
-  "ramSharePercent": $RAM_SHARE,
-  "gpuSharePercent": $GPU_SHARE,
-  "storageSharePercent": $STORAGE_SHARE
-}
-EOF
-)
+    # Escape JSON strings to prevent invalid JSON
+    escape_json() {
+        local str="$1"
+        # Escape backslashes, quotes, newlines, tabs
+        echo "$str" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr '\n' ' ' | tr '\t' ' '
+    }
+    
+    # Build safe JSON payload with proper escaping
+    SAFE_HOSTNAME=$(escape_json "$HOSTNAME")
+    SAFE_CPU_MODEL=$(escape_json "$CPU_MODEL")
+    SAFE_GPU_MODEL=$(escape_json "$GPU_MODEL")
+    SAFE_GPU_DRIVER=$(escape_json "$GPU_DRIVER")
+    SAFE_GPU_CUDA=$(escape_json "$GPU_CUDA")
+    
+    # CRITICAL: Ensure MAC address is included
+    if [ -z "$MAC_ADDRESS" ]; then
+        error "MAC address detection failed - cannot register worker"
+    fi
+    
+    # Build JSON using jq to ensure validity
+    local payload=$(jq -n \
+        --arg name "${HOSTNAME}-worker" \
+        --arg hostname "$SAFE_HOSTNAME" \
+        --arg platform "$OS" \
+        --arg arch "$ARCH" \
+        --arg mac "$MAC_ADDRESS" \
+        --arg cpuModel "$SAFE_CPU_MODEL" \
+        --argjson cpuCores "$CPU_CORES" \
+        --argjson ramTotal "$RAM_TOTAL" \
+        --argjson ramAvailable "$RAM_AVAILABLE" \
+        --argjson storageTotal "$STORAGE_TOTAL" \
+        --argjson storageAvailable "$STORAGE_AVAILABLE" \
+        --argjson cpuSharePercent "$CPU_SHARE" \
+        --argjson ramSharePercent "$RAM_SHARE" \
+        --argjson storageSharePercent "$STORAGE_SHARE" \
+        '{
+            name: $name,
+            hostname: $hostname,
+            platform: $platform,
+            architecture: $arch,
+            macAddress: $mac,
+            cpuCores: $cpuCores,
+            cpuModel: $cpuModel,
+            ramTotal: $ramTotal,
+            ramAvailable: $ramAvailable,
+            storageTotal: $storageTotal,
+            storageAvailable: $storageAvailable,
+            cpuSharePercent: $cpuSharePercent,
+            ramSharePercent: $ramSharePercent,
+            storageSharePercent: $storageSharePercent
+        }' | \
+        # Add GPU fields conditionally
+        if [ "$GPU_AVAILABLE" = true ]; then
+            jq --arg gpuModel "$SAFE_GPU_MODEL" \
+               --argjson gpuMemory "${GPU_MEMORY:-0}" \
+               --argjson gpuCount "${GPU_COUNT:-0}" \
+               --arg gpuDriver "$SAFE_GPU_DRIVER" \
+               --arg gpuCuda "$SAFE_GPU_CUDA" \
+               --argjson gpuSharePercent "$GPU_SHARE" \
+               '. + {
+                   gpuAvailable: true,
+                   gpuModel: $gpuModel,
+                   gpuMemory: $gpuMemory,
+                   gpuCount: $gpuCount,
+                   gpuDriverVersion: $gpuDriver,
+                   gpuCudaVersion: $gpuCuda,
+                   gpuSharePercent: $gpuSharePercent
+               }'
+        else
+            jq '. + { gpuAvailable: false, gpuSharePercent: 0 }'
+        fi
+    )
 
-    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
+    # Debug output (can be removed in production)
+    echo "DEBUG: Registration payload:"
+    echo "$payload" | jq '.'
+
+    # Make API request with proper error handling
+    echo ""
+    info "Sending registration request..."
+    
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "$payload")
+        -d "$payload" 2>&1)
 
     HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
     HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
 
+    # Debug output
+    echo "DEBUG: HTTP Code: $HTTP_CODE"
+    echo "DEBUG: Response Body: $HTTP_BODY"
+
+    # Check for errors
     if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-        error "Worker registration failed ($HTTP_CODE): $(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')"
+        error "Worker registration failed (HTTP $HTTP_CODE)
+        
+Response: $HTTP_BODY
+
+Possible causes:
+1. MAC address not detected (MAC: ${MAC_ADDRESS:-NOT DETECTED})
+2. Invalid JSON payload
+3. API authentication issue
+4. Network connectivity problem
+
+Please check the debug output above and report this issue."
     fi
 
+    # Parse worker ID
     WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id')
-    IS_NEW=$(echo "$HTTP_BODY" | jq -r '.isNew')
+    IS_NEW=$(echo "$HTTP_BODY" | jq -r '.isNew // true')
 
     if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
-        error "Worker registration succeeded but no ID was returned"
+        error "Worker registration succeeded but no ID was returned
+
+Response: $HTTP_BODY"
     fi
 
+    # Save worker ID
     echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
     chmod 600 "$CONFIG_DIR/worker-id"
 
+    # Success message
     if [ "$IS_NEW" = "true" ]; then
         log "Worker registered successfully: $WORKER_ID"
     else
         log "Worker reconnected (existing device): $WORKER_ID"
     fi
+    
+    echo ""
 }
 
 # Pull Docker Image
