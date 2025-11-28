@@ -35,16 +35,16 @@ show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗         ║
-║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗        ║
-║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║        ║
-║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║        ║
-║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝        ║
-║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝         ║
+║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗        ║
+║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗       ║
+║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║       ║
+║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║       ║
+║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝       ║
+║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝        ║
 ║                                                           ║
-║              DistributeX Cloud Network                    ║
-║           Distributed Computing Platform                  ║
-║                                                           ║
+║              DistributeX Cloud Network                   ║
+║          Distributed Computing Platform                  ║
+║          ALWAYS-ON PERSISTENT WORKER MODE                ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
@@ -252,18 +252,29 @@ select_role() {
     echo "     • Lightweight agent runs 24/7 in background"
     echo "     • Zero impact on your daily use"
     echo ""
+    echo "  2) ${BLUE}Developer${NC} - Use pooled computing resources"
+    echo "     • Run scripts and code on distributed network"
+    echo "     • Access global pool of CPU/GPU/Storage"
+    echo "     • Pay-as-you-go or free tier available"
+    echo ""
     
     while true; do
-        read -r -p "Enter choice [1]: " ROLE_CHOICE </dev/tty
-        case "${ROLE_CHOICE:-1}" in
+        read -r -p "Enter choice [1-2]: " ROLE_CHOICE </dev/tty
+        case "$ROLE_CHOICE" in
             1)
                 USER_ROLE="contributor"
                 echo "$USER_ROLE" > "$CONFIG_DIR/role"
                 log "Role set to: Contributor"
                 break
                 ;;
+            2)
+                USER_ROLE="developer"
+                echo "$USER_ROLE" > "$CONFIG_DIR/role"
+                log "Role set: Developer"
+                break
+                ;;
             *)
-                echo -e "${RED}Invalid choice. Please enter 1${NC}"
+                echo -e "${RED}Invalid choice. Please enter 1 or 2${NC}"
                 ;;
         esac
     done
@@ -303,6 +314,38 @@ detect_system() {
 }
 
 # Register Worker (omitted for brevity - same as before)
+
+# Setup Developer Environment
+setup_developer() {
+    section "Setting Up Developer Environment"
+    
+    info "Installing DistributeX CLI..."
+    
+    # Save API key
+    echo "$API_TOKEN" > "$CONFIG_DIR/api-key"
+    chmod 600 "$CONFIG_DIR/api-key"
+    
+    # Create CLI wrapper
+    cat > "$CONFIG_DIR/distributex-cli" << 'EOF'
+#!/bin/bash
+# DistributeX CLI Wrapper
+API_KEY=$(cat ~/.distributex/api-key)
+export DISTRIBUTEX_API_KEY="$API_KEY"
+# Add CLI commands here
+echo "DistributeX Developer CLI"
+echo "API Key configured: ${API_KEY:0:10}..."
+EOF
+    
+    chmod +x "$CONFIG_DIR/distributex-cli"
+    
+    log "Developer environment configured"
+    log "API Key saved to: $CONFIG_DIR/api-key"
+    echo ""
+    echo -e "${CYAN}Usage Examples:${NC}"
+    echo "  • API Documentation: $DISTRIBUTEX_API_URL/docs"
+    echo "  • Your API Key: ${API_TOKEN:0:20}..."
+    echo ""
+}
 
 # Start Worker Container with ALWAYS-ON restart policy
 start_contributor() {
@@ -464,25 +507,38 @@ show_completion() {
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║     DistributeX Successfully Installed!               ║${NC}"
-    echo -e "${GREEN}║     ALWAYS-ON MODE: Worker runs 24/7                  ║${NC}"
+    if [ "$USER_ROLE" = "contributor" ]; then
+        echo -e "${GREEN}║     ALWAYS-ON MODE: Worker runs 24/7                  ║${NC}"
+    fi
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    log "Role: Contributor (Resource Sharing)"
-    log "Device ID: $DEVICE_ID"
-    log "Restart Policy: ALWAYS (survives reboots, logouts, crashes)"
-    echo ""
-    echo -e "${CYAN}Management Commands:${NC}"
-    echo "  $CONFIG_DIR/manage.sh status   # Check worker status"
-    echo "  $CONFIG_DIR/manage.sh logs     # View worker logs"
-    echo "  $CONFIG_DIR/manage.sh restart  # Restart worker"
-    echo ""
-    echo -e "${CYAN}Container Details:${NC}"
-    echo "  • Runs 24/7 in background"
-    echo "  • Auto-restarts on system reboot"
-    echo "  • Auto-restarts if it crashes"
-    echo "  • Runs even when you log out"
-    echo "  • Zero impact on system performance"
+    if [ "$USER_ROLE" = "contributor" ]; then
+        log "Role: Contributor (Resource Sharing)"
+        log "Device ID: $DEVICE_ID"
+        log "Restart Policy: ALWAYS (survives reboots, logouts, crashes)"
+        echo ""
+        echo -e "${CYAN}Management Commands:${NC}"
+        echo "  $CONFIG_DIR/manage.sh status   # Check worker status"
+        echo "  $CONFIG_DIR/manage.sh logs     # View worker logs"
+        echo "  $CONFIG_DIR/manage.sh restart  # Restart worker"
+        echo ""
+        echo -e "${CYAN}Container Details:${NC}"
+        echo "  • Runs 24/7 in background"
+        echo "  • Auto-restarts on system reboot"
+        echo "  • Auto-restarts if it crashes"
+        echo "  • Runs even when you log out"
+        echo "  • Zero impact on system performance"
+    else
+        log "Role: Developer (Resource Consumer)"
+        log "API Key: ${API_TOKEN:0:20}..."
+        echo ""
+        echo -e "${CYAN}Next Steps:${NC}"
+        echo "  • View API Documentation: $DISTRIBUTEX_API_URL/docs"
+        echo "  • Your API Key is saved in: $CONFIG_DIR/api-key"
+        echo "  • Dashboard: $DISTRIBUTEX_API_URL/dashboard"
+    fi
+    
     echo ""
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
@@ -495,10 +551,16 @@ main() {
     authenticate_user
     select_role
     detect_system
-    start_contributor
+    
+    if [ "$USER_ROLE" = "contributor" ]; then
+        start_contributor
+        create_management_script
+        setup_autostart
+    else
+        setup_developer
+    fi
+    
     save_config
-    create_management_script
-    setup_autostart
     show_completion
 }
 
