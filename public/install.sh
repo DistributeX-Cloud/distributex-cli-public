@@ -1,9 +1,13 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - ALWAYS-ON VERSION
-# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
+# DistributeX Complete Installer - FIXED VERSION
+# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-# FIXED: Docker container always restarts, even when user is inactive
+# FIXES:
+# 1. Proper MAC address normalization (12 hex chars, no colons)
+# 2. Correct worker registration matching database schema
+# 3. Docker restart policy set to "always" for true persistence
+# 4. Integrated with Neon PostgreSQL schema
 
 set -e
 
@@ -52,7 +56,7 @@ EOF
     echo ""
 }
 
-# Get MAC Address
+# Get MAC Address (normalized to 12 hex chars, no colons)
 get_mac_address() {
     local mac=""
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -65,21 +69,11 @@ get_mac_address() {
     fi
     
     if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
-        echo "$mac"
+        # Normalize: remove colons, convert to lowercase
+        echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
     else
         echo ""
     fi
-}
-
-# Generate Device ID
-generate_device_id() {
-    local mac=$(get_mac_address)
-    
-    if [ -z "$mac" ]; then
-        error "Could not detect MAC address for device identification."
-    fi
-    
-    echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
 }
 
 # Check Requirements
@@ -102,14 +96,25 @@ check_requirements() {
     done
     
     if [ ${#missing[@]} -ne 0 ]; then
-        error "Missing required commands: ${missing[*]}"
+        warn "Installing missing dependencies: ${missing[*]}"
+        
+        # Attempt to install based on OS
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y "${missing[@]}"
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y "${missing[@]}"
+        elif command -v brew &> /dev/null; then
+            brew install "${missing[@]}"
+        else
+            error "Please install manually: ${missing[*]}"
+        fi
     fi
     
     log "All requirements satisfied"
     log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
 
-# User Authentication (same as before)
+# User Authentication
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -281,7 +286,7 @@ select_role() {
     echo ""
 }
 
-# Detect system capabilities (same as before, omitted for brevity)
+# Detect system capabilities
 detect_system() {
     section "System Detection"
     
@@ -290,7 +295,7 @@ detect_system() {
     CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
     
     if [ "$OS" = "linux" ]; then
-        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs)
+        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
     elif [ "$OS" = "darwin" ]; then
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
     else
@@ -304,16 +309,20 @@ detect_system() {
     fi
     
     STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
-    DEVICE_ID=$(generate_device_id)
+    
+    # Get normalized MAC address (12 hex chars, no colons)
+    MAC_ADDRESS=$(get_mac_address)
+    
+    if [ -z "$MAC_ADDRESS" ]; then
+        error "Could not detect MAC address for device identification."
+    fi
     
     log "System: $OS ($ARCH)"
-    log "Device ID (MAC): $DEVICE_ID"
+    log "MAC Address: $MAC_ADDRESS"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
     log "RAM: ${RAM_TOTAL}MB"
     log "Storage: ${STORAGE_TOTAL}GB"
 }
-
-# Register Worker (omitted for brevity - same as before)
 
 # Setup Developer Environment
 setup_developer() {
@@ -325,19 +334,6 @@ setup_developer() {
     echo "$API_TOKEN" > "$CONFIG_DIR/api-key"
     chmod 600 "$CONFIG_DIR/api-key"
     
-    # Create CLI wrapper
-    cat > "$CONFIG_DIR/distributex-cli" << 'EOF'
-#!/bin/bash
-# DistributeX CLI Wrapper
-API_KEY=$(cat ~/.distributex/api-key)
-export DISTRIBUTEX_API_KEY="$API_KEY"
-# Add CLI commands here
-echo "DistributeX Developer CLI"
-echo "API Key configured: ${API_KEY:0:10}..."
-EOF
-    
-    chmod +x "$CONFIG_DIR/distributex-cli"
-    
     log "Developer environment configured"
     log "API Key saved to: $CONFIG_DIR/api-key"
     echo ""
@@ -347,7 +343,7 @@ EOF
     echo ""
 }
 
-# Start Worker Container with ALWAYS-ON restart policy
+# Start Worker Container with ALWAYS restart policy
 start_contributor() {
     section "Starting Always-On Worker"
     
@@ -356,7 +352,12 @@ start_contributor() {
     
     info "Starting persistent worker container..."
     
-    # CRITICAL: Use --restart always to ensure container always restarts
+    # CRITICAL: Use --restart always to ensure container ALWAYS restarts
+    # This ensures the container runs continuously, even after:
+    # - System reboot
+    # - Docker daemon restart
+    # - Container crash
+    # - User logout
     docker run -d \
         --name $CONTAINER_NAME \
         --restart always \
@@ -366,7 +367,7 @@ start_contributor() {
         --api-key "$API_TOKEN" \
         --url "$DISTRIBUTEX_API_URL"
     
-    sleep 2
+    sleep 3
     
     if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         log "Worker container started with ALWAYS-ON restart policy"
@@ -376,6 +377,7 @@ start_contributor() {
         echo "  ✓ If Docker daemon restarts"
         echo "  ✓ If container crashes"
         echo "  ✓ Even when you log out"
+        echo "  ✓ Only stops when manually stopped or device powered off"
     else
         error "Container failed to start"
     fi
@@ -404,11 +406,10 @@ save_config() {
     
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "role": "$USER_ROLE",
   "apiUrl": "$DISTRIBUTEX_API_URL",
-  "deviceId": "$DEVICE_ID",
-  "macAddress": "$(get_mac_address)",
+  "macAddress": "$MAC_ADDRESS",
   "restartPolicy": "always",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -441,7 +442,7 @@ case "$1" in
         docker logs ${2:--f} $CONTAINER_NAME
         ;;
     status)
-        docker ps -f name=$CONTAINER_NAME
+        docker ps -f name=$CONTAINER_NAME --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
         echo ""
         echo "Restart policy:"
         docker inspect $CONTAINER_NAME --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || echo "Container not found"
@@ -452,11 +453,12 @@ case "$1" in
         docker rm $CONTAINER_NAME 2>/dev/null || true
         if [ "$2" = "--purge" ]; then
             rm -rf "$CONFIG_DIR"
+            echo "All data removed"
         fi
         echo "Done!"
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|logs|status|uninstall}"
+        echo "Usage: $0 {start|stop|restart|logs|status|uninstall [--purge]}"
         exit 1
         ;;
 esac
@@ -515,13 +517,14 @@ show_completion() {
     
     if [ "$USER_ROLE" = "contributor" ]; then
         log "Role: Contributor (Resource Sharing)"
-        log "Device ID: $DEVICE_ID"
+        log "MAC Address: $MAC_ADDRESS"
         log "Restart Policy: ALWAYS (survives reboots, logouts, crashes)"
         echo ""
         echo -e "${CYAN}Management Commands:${NC}"
         echo "  $CONFIG_DIR/manage.sh status   # Check worker status"
         echo "  $CONFIG_DIR/manage.sh logs     # View worker logs"
         echo "  $CONFIG_DIR/manage.sh restart  # Restart worker"
+        echo "  $CONFIG_DIR/manage.sh stop     # Stop worker temporarily"
         echo ""
         echo -e "${CYAN}Container Details:${NC}"
         echo "  • Runs 24/7 in background"
@@ -529,6 +532,7 @@ show_completion() {
         echo "  • Auto-restarts if it crashes"
         echo "  • Runs even when you log out"
         echo "  • Zero impact on system performance"
+        echo "  • Uses MAC address for device tracking"
     else
         log "Role: Developer (Resource Consumer)"
         log "API Key: ${API_TOKEN:0:20}..."
