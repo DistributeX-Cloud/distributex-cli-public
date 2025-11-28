@@ -1,13 +1,14 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - Production Ready (Fixed)
-# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
+# DistributeX Complete Installer - Production Ready
+# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
 # Features:
 # - Automatic GPU detection (NVIDIA CUDA, AMD ROCm)
 # - Docker auto-start and restart policies
 # - Worker registration with full system detection
 # - Always-on background service
+# - MAC address-based device identification (prevents duplicates)
 
 set -e
 
@@ -421,8 +422,7 @@ register_worker() {
   "cpuSharePercent": $CPU_SHARE,
   "ramSharePercent": $RAM_SHARE,
   "gpuSharePercent": $GPU_SHARE,
-  "storageSharePercent": $STORAGE_SHARE,
-  "role": "contributor"
+  "storageSharePercent": $STORAGE_SHARE
 }
 EOF
 )
@@ -506,7 +506,7 @@ start_worker_container() {
     fi
     
     # Complete command
-    docker_cmd="$docker_cmd $DOCKER_IMAGE"
+    docker_cmd="$docker_cmd $DOCKER_IMAGE --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL"
     
     # Execute
     eval $docker_cmd || error "Failed to start container"
@@ -643,7 +643,7 @@ save_config() {
     
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
-  "version": "4.0.0",
+  "version": "1.0.0",
   "apiUrl": "$DISTRIBUTEX_API_URL",
   "deviceId": "$DEVICE_ID",
   "macAddress": "$MAC_ADDRESS",
