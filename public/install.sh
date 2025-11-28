@@ -1,14 +1,8 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - Production Ready
+# DistributeX Complete Installer - Production Ready (Fixed Prompts)
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-# Features:
-# - Automatic GPU detection (NVIDIA CUDA, AMD ROCm)
-# - Docker auto-start and restart policies
-# - Worker registration with full system detection
-# - Always-on background service
-# - MAC address-based device identification (prevents duplicates)
 
 set -e
 
@@ -24,6 +18,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BLUE='\033[0;34m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 # Logging Functions
@@ -80,10 +75,12 @@ generate_device_id() {
     local mac=$(get_mac_address)
     
     if [ -z "$mac" ]; then
-        error "Could not detect MAC address for device identification."
+        # Fallback for VMs/Cloud instances without MAC
+        warn "MAC address not detected, using fallback identifier"
+        echo "$(hostname)-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo $(date +%s))" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback-$(date +%s)"
+    else
+        echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
     fi
-    
-    echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
 }
 
 # Check System Requirements
@@ -151,17 +148,29 @@ authenticate_user() {
     fi
 
     echo ""
-    echo -e "${CYAN}Choose an option:${NC}"
-    echo "  1) Sign up (New user)"
-    echo "  2) Login (Existing user)"
+    echo -e "${BOLD}${CYAN}╔════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${CYAN}║   Choose Authentication Method    ║${NC}"
+    echo -e "${BOLD}${CYAN}╚════════════════════════════════════╝${NC}"
     echo ""
+    echo -e "  ${GREEN}1)${NC} Sign up (New user)"
+    echo -e "  ${GREEN}2)${NC} Login (Existing user)"
+    echo ""
+    echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}"
     
     while true; do
-        read -r -p "Enter choice [1-2]: " choice
+        read -r choice
         case "$choice" in
-            1) signup_user; break ;;
-            2) login_user; break ;;
-            *) echo -e "${RED}Invalid choice. Please enter 1 or 2${NC}" ;;
+            1) 
+                signup_user
+                break 
+                ;;
+            2) 
+                login_user
+                break 
+                ;;
+            *) 
+                echo -e "${RED}Invalid choice. Please enter 1 or 2: ${NC}"
+                ;;
         esac
     done
 }
@@ -169,18 +178,24 @@ authenticate_user() {
 signup_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}     Create Your Account${NC}"
+    echo -e "${BOLD}${CYAN}     Create Your Account${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     local first_name last_name email password password_confirm
     
-    read -r -p "First Name: " first_name
-    read -r -p "Last Name: " last_name
-    read -r -p "Email: " email
+    echo -ne "${BOLD}First Name: ${NC}"
+    read -r first_name
+    
+    echo -ne "${BOLD}Last Name: ${NC}"
+    read -r last_name
+    
+    echo -ne "${BOLD}Email: ${NC}"
+    read -r email
     
     while true; do
-        read -s -r -p "Password (min 8 chars): " password
+        echo -ne "${BOLD}Password (min 8 chars): ${NC}"
+        read -s -r password
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -188,7 +203,8 @@ signup_user() {
             continue
         fi
         
-        read -s -r -p "Confirm Password: " password_confirm
+        echo -ne "${BOLD}Confirm Password: ${NC}"
+        read -s -r password_confirm
         echo ""
         
         if [ "$password" != "$password_confirm" ]; then
@@ -226,14 +242,17 @@ signup_user() {
 login_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}     Login to Your Account${NC}"
+    echo -e "${BOLD}${CYAN}     Login to Your Account${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     local email password
     
-    read -r -p "Email: " email
-    read -s -r -p "Password: " password
+    echo -ne "${BOLD}Email: ${NC}"
+    read -r email
+    
+    echo -ne "${BOLD}Password: ${NC}"
+    read -s -r password
     echo ""
     echo ""
     
@@ -344,7 +363,7 @@ detect_system() {
     # GPU Detection
     detect_gpu
     
-    # Device ID (MAC-based)
+    # Device ID (MAC-based with fallback)
     DEVICE_ID=$(generate_device_id)
     MAC_ADDRESS=$(get_mac_address)
     
@@ -370,7 +389,7 @@ detect_system() {
     log "System: $OS ($ARCH)"
     log "Hostname: $HOSTNAME"
     log "Device ID: $DEVICE_ID"
-    log "MAC Address: $MAC_ADDRESS"
+    [ -n "$MAC_ADDRESS" ] && log "MAC Address: $MAC_ADDRESS"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
     log "RAM: ${RAM_TOTAL}MB (${RAM_AVAILABLE}MB available)"
     log "Storage: ${STORAGE_TOTAL}GB (${STORAGE_AVAILABLE}GB available)"
@@ -406,7 +425,7 @@ register_worker() {
   "hostname": "$HOSTNAME",
   "platform": "$OS",
   "architecture": "$ARCH",
-  "macAddress": "$MAC_ADDRESS",
+  "macAddress": $([ -n "$MAC_ADDRESS" ] && echo "\"$MAC_ADDRESS\"" || echo "null"),
   "cpuCores": $CPU_CORES,
   "cpuModel": "$CPU_MODEL",
   "ramTotal": $RAM_TOTAL,
@@ -646,7 +665,7 @@ save_config() {
   "version": "1.0.0",
   "apiUrl": "$DISTRIBUTEX_API_URL",
   "deviceId": "$DEVICE_ID",
-  "macAddress": "$MAC_ADDRESS",
+  "macAddress": $([ -n "$MAC_ADDRESS" ] && echo "\"$MAC_ADDRESS\"" || echo "null"),
   "workerId": "$WORKER_ID",
   "hostname": "$HOSTNAME",
   "system": {
