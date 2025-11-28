@@ -1,19 +1,21 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - FIXED VERSION
+# DistributeX Complete Installer - STABLE VERSION (No Restart)
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-# FIXES:
-# 1. Proper MAC address normalization (12 hex chars, no colons)
-# 2. Correct worker registration matching database schema
-# 3. Docker restart policy set to "always" for true persistence
+# CHANGES:
+# 1. Removed --restart always (causes restart loops)
+# 2. Container runs once and stays up continuously
+# 3. Proper MAC address normalization
 # 4. Integrated with Neon PostgreSQL schema
 set -e
+
 # Configuration
 DISTRIBUTEX_API_URL="${DISTRIBUTEX_API_URL:-https://distributex-cloud-network.pages.dev}"
 DOCKER_IMAGE="distributexcloud/worker:latest"
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,12 +23,14 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
 # Logging Functions
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
+
 # Banner
 show_banner() {
     clear
@@ -50,6 +54,7 @@ EOF
     echo -e "${NC}"
     echo ""
 }
+
 # Get MAC Address (normalized to 12 hex chars, no colons)
 get_mac_address() {
     local mac=""
@@ -63,12 +68,12 @@ get_mac_address() {
     fi
    
     if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
-        # Normalize: remove colons, convert to lowercase
         echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
     else
         echo ""
     fi
 }
+
 # Check Requirements
 check_requirements() {
     section "Checking System Requirements"
@@ -91,7 +96,6 @@ check_requirements() {
     if [ ${#missing[@]} -ne 0 ]; then
         warn "Installing missing dependencies: ${missing[*]}"
        
-        # Attempt to install based on OS
         if command -v apt-get &> /dev/null; then
             sudo apt-get update && sudo apt-get install -y "${missing[@]}"
         elif command -v yum &> /dev/null; then
@@ -106,7 +110,8 @@ check_requirements() {
     log "All requirements satisfied"
     log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
-# User Authentication
+
+# User Authentication (same as before)
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -139,6 +144,7 @@ authenticate_user() {
         esac
     done
 }
+
 signup_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -193,6 +199,7 @@ signup_user() {
     echo ""
     sleep 1
 }
+
 login_user() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -229,7 +236,8 @@ login_user() {
     echo ""
     sleep 1
 }
-# Select Role
+
+# Select Role (same as before)
 select_role() {
     section "Select Your Role"
    
@@ -237,14 +245,7 @@ select_role() {
     echo -e "${CYAN}How do you want to use DistributeX?${NC}"
     echo ""
     echo " 1) ${GREEN}Contributor${NC} - Share my computer's resources"
-    echo " • Contribute CPU, RAM, GPU, Storage"
-    echo " • Lightweight agent runs 24/7 in background"
-    echo " • Zero impact on your daily use"
-    echo ""
     echo " 2) ${BLUE}Developer${NC} - Use pooled computing resources"
-    echo " • Run scripts and code on distributed network"
-    echo " • Access global pool of RAM/CPU/GPU/Storage"
-    echo " • Free"
     echo ""
    
     while true; do
@@ -269,7 +270,8 @@ select_role() {
     done
     echo ""
 }
-# Detect system capabilities
+
+# Detect system (same as before - keeping existing logic)
 detect_system() {
     section "System Detection"
    
@@ -293,7 +295,6 @@ detect_system() {
    
     STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
    
-    # Get normalized MAC address (12 hex chars, no colons)
     MAC_ADDRESS=$(get_mac_address)
    
     if [ -z "$MAC_ADDRESS" ]; then
@@ -318,7 +319,6 @@ detect_system() {
             GPU_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d, -f1 2>/dev/null || echo "")
         fi
     elif [ "$OS" = "darwin" ]; then
-        # Basic Mac GPU detection
         GPU_MODEL=$(system_profiler SPDisplaysDataType | grep "Chipset Model" | cut -d: -f2 | xargs || echo "Unknown GPU")
         if [ -n "$GPU_MODEL" ] && [ "$GPU_MODEL" != "Unknown GPU" ]; then
             GPU_AVAILABLE="true"
@@ -340,13 +340,13 @@ detect_system() {
         log "CUDA Version: $GPU_CUDA_VERSION"
     fi
 }
+
 # Setup Developer Environment
 setup_developer() {
     section "Setting Up Developer Environment"
    
     info "Installing DistributeX CLI..."
    
-    # Save API key
     echo "$API_TOKEN" > "$CONFIG_DIR/api-key"
     chmod 600 "$CONFIG_DIR/api-key"
    
@@ -358,20 +358,24 @@ setup_developer() {
     echo " • Your API Key: ${API_TOKEN:0:20}..."
     echo ""
 }
+
+# Start contributor - NO RESTART POLICY
 start_contributor() {
-    section "Starting Always-On Worker"
+    section "Starting Stable Worker Container"
 
     pull_docker_image
     stop_existing_container
 
-    info "Launching persistent worker container..."
+    info "Launching stable worker container (no restart policy)..."
+    # REMOVED --restart always
     docker run -d \
         --name $CONTAINER_NAME \
-        --restart always \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -v "$CONFIG_DIR:/config:ro" \
-        $DOCKER_IMAGE > /dev/null
+        $DOCKER_IMAGE \
+        --api-key "$API_TOKEN" \
+        --url "$DISTRIBUTEX_API_URL" > /dev/null
 
     sleep 10
 
@@ -405,20 +409,22 @@ start_contributor() {
 
     if [ "$HTTP_CODE" = "200" ]; then
         log "Worker successfully registered in database!"
-        log "You are now earning on DistributeX Cloud Network"
+        log "You are now contributing to DistributeX Cloud Network"
     else
-        warn "Registration call failed (HTTP $HTTP_CODE) — worker will retry every 30s automatically"
+        warn "Registration call failed (HTTP $HTTP_CODE) — worker will retry automatically"
     fi
 
-    log "Container running with --restart always"
+    log "Container running continuously (no restart policy)"
     info "Your device is now visible in the network"
 }
+
 # Pull Docker Image
 pull_docker_image() {
     info "Pulling Docker image..."
     docker pull $DOCKER_IMAGE || error "Failed to pull Docker image"
     log "Docker image ready"
 }
+
 # Stop Existing Container
 stop_existing_container() {
     if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -428,6 +434,7 @@ stop_existing_container() {
         log "Existing container removed"
     fi
 }
+
 # Save Configuration
 save_config() {
     section "Saving Configuration"
@@ -444,13 +451,14 @@ save_config() {
   "gpuCount": $GPU_COUNT,
   "gpuDriverVersion": "$GPU_DRIVER_VERSION",
   "gpuCudaVersion": "$GPU_CUDA_VERSION",
-  "restartPolicy": "always",
+  "restartPolicy": "none",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
     chmod 600 "$CONFIG_DIR/config.json"
     log "Configuration saved"
 }
+
 # Create Management Script
 create_management_script() {
     cat > "$CONFIG_DIR/manage.sh" <<'MGMT_EOF'
@@ -499,36 +507,12 @@ MGMT_EOF
     chmod +x "$CONFIG_DIR/manage.sh"
     log "Management script created"
 }
-# Create systemd service for auto-start on boot (Linux only)
+
+# NO systemd service - we're not using restart policies anymore
 setup_autostart() {
-    if [ "$OS" != "linux" ]; then
-        return
-    fi
-   
-    section "Setting Up Auto-Start on Boot"
-   
-    info "Creating systemd service..."
-   
-    sudo tee /etc/systemd/system/distributex-worker.service > /dev/null <<EOF
-[Unit]
-Description=DistributeX Worker Container
-After=docker.service
-Requires=docker.service
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/docker start $CONTAINER_NAME
-ExecStop=/usr/bin/docker stop $CONTAINER_NAME
-User=$USER
-[Install]
-WantedBy=multi-user.target
-EOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable distributex-worker.service
-   
-    log "Auto-start configured"
-    info "Worker will automatically start on system boot"
+    info "Skipping auto-start setup (using stable container)"
 }
+
 # Show Completion
 show_completion() {
     section "Installation Complete! 🎉"
@@ -537,7 +521,7 @@ show_completion() {
     echo -e "${GREEN}    ╔═══════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}    ║           DistributeX Successfully Installed!         ║${NC}"
     if [ "$USER_ROLE" = "contributor" ]; then
-        echo -e "${GREEN}║            ALWAYS-ON MODE: Worker runs 24/7           ║${NC}"
+        echo -e "${GREEN}║            STABLE MODE: Container runs continuously   ║${NC}"
     fi
     echo -e "${GREEN}    ╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -545,21 +529,19 @@ show_completion() {
     if [ "$USER_ROLE" = "contributor" ]; then
         log "Role: Contributor (Resource Sharing)"
         log "MAC Address: $MAC_ADDRESS"
-        log "Restart Policy: ALWAYS (survives reboots, logouts, crashes)"
+        log "Restart Policy: NONE (stable continuous operation)"
         echo ""
         echo -e "${CYAN}Management Commands:${NC}"
         echo " $CONFIG_DIR/manage.sh status # Check worker status"
         echo " $CONFIG_DIR/manage.sh logs # View worker logs"
-        echo " $CONFIG_DIR/manage.sh restart # Restart worker"
+        echo " $CONFIG_DIR/manage.sh restart # Restart worker if needed"
         echo " $CONFIG_DIR/manage.sh stop # Stop worker temporarily"
         echo ""
         echo -e "${CYAN}Container Details:${NC}"
-        echo " • Runs 24/7 in background"
-        echo " • Auto-restarts on system reboot"
-        echo " • Auto-restarts if it crashes"
-        echo " • Runs even when you log out"
-        echo " • Zero impact on system performance"
+        echo " • Runs continuously without restart loops"
+        echo " • Stable self-healing heartbeat system"
         echo " • Uses MAC address for device tracking"
+        echo " • Zero impact on system performance"
     else
         log "Role: Developer (Resource Consumer)"
         log "API Key: ${API_TOKEN:0:20}..."
@@ -574,6 +556,7 @@ show_completion() {
     echo -e "${GREEN}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
 }
+
 # Main Installation Flow
 main() {
     show_banner
@@ -593,5 +576,6 @@ main() {
     save_config
     show_completion
 }
+
 # Run
 main
