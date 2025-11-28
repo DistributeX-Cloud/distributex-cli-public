@@ -1216,29 +1216,32 @@ EOF
 # Ask user about autostart behavior (MUST be defined BEFORE main)
 # ──────────────────────────────────────────────────────────────
 ask_autostart_choice() {
+    # If running non-interactively (like curl | bash), default to always-on
+    if [ ! -t 0 ]; then
+        info "Non-interactive mode detected → enabling Always-on mode"
+        RESTART_POLICY="always"
+        [[ "$(uname -s | tr '[:upper:]' '[:lower:]')" == "linux" ]] && SETUP_SYSTEMD=true
+        echo ""
+        return
+    fi
+
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${CYAN}       Autostart / Always-on Mode${NC}"
+    echo -e "${BOLD}${CYAN} Autostart / Always-on Mode${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "Choose how you'd like the worker to run:"
-    echo "  1) Always-on → auto-restarts + starts on boot (best for servers/desktops)"
-    echo "  2) On-demand → runs only now, no auto-restart (best for laptops)"
+    echo " 1) Always-on → auto-restarts + starts on boot (best for servers/desktops)"
+    echo " 2) On-demand → runs only now, no auto-restart (best for laptops)"
     echo ""
-
     local choice=""
     while [[ -z "$choice" ]]; do
         choice=$(read_input "${BOLD}Enter your choice [1 or 2]: ${NC}")
         choice=$(echo "$choice" | tr -d '[:space:]')
-
         case "$choice" in
             1)
                 RESTART_POLICY="always"
-                if [[ "$(uname -s | tr '[:upper:]' '[:lower:]')" == "linux" ]]; then
-                    SETUP_SYSTEMD=true
-                else
-                    SETUP_SYSTEMD=false
-                fi
+                [[ "$(uname -s | tr '[:upper:]' '[:lower:]')" == "linux" ]] && SETUP_SYSTEMD=true
                 info "Mode → Always-on (restart policy: always)"
                 break
                 ;;
@@ -1279,15 +1282,13 @@ main() {
     check_requirements
     authenticate_user
     detect_system
-    ask_autostart_choice        # now defined before main → works!
+    ask_autostart_choice
     register_worker
     pull_docker_image
     start_worker_container
-
     if [[ "$SETUP_SYSTEMD" == true ]]; then
         setup_systemd_autostart
     fi
-
     create_management_script
     show_success
 }
