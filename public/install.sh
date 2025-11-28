@@ -3,7 +3,8 @@ set -e
 set -o pipefail
 
 #
-# DistributeX Complete Installer with Docker Auto-Install
+# DistributeX Universal Installer
+# Supports: Linux, macOS, Windows (via WSL/Git Bash)
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
 
@@ -13,14 +14,18 @@ DOCKER_IMAGE="distributexcloud/worker:latest"
 CONTAINER_NAME="distributex-worker"
 CONFIG_DIR="$HOME/.distributex"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
+# Colors (with Windows compatibility)
+if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BLUE=''; BOLD=''; NC=''
+else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    BLUE='\033[0;34m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+fi
 
 # Global variables
 declare OS ARCH HOSTNAME CPU_CORES CPU_MODEL RAM_TOTAL RAM_AVAILABLE
@@ -28,6 +33,8 @@ declare STORAGE_TOTAL STORAGE_AVAILABLE MAC_ADDRESS DEVICE_ID
 declare GPU_AVAILABLE GPU_MODEL GPU_MEMORY GPU_COUNT GPU_DRIVER GPU_CUDA
 declare CPU_SHARE RAM_SHARE STORAGE_SHARE GPU_SHARE
 declare API_TOKEN WORKER_ID
+declare IS_WSL=false
+declare IS_WINDOWS=false
 
 # Logging Functions
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
@@ -36,13 +43,20 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
 
-# Interactive input function with fallback
+# Enhanced input function with better terminal handling
 read_input() {
     local prompt="$1"
     local silent="$2"
     local value=""
     
+    # Save terminal state
+    if [ "$silent" = "true" ]; then
+        stty_orig=$(stty -g 2>/dev/null) || true
+    fi
+    
+    # Try multiple input methods
     if [ -t 0 ]; then
+        # Standard input available
         if [ "$silent" = "true" ]; then
             read -s -r -p "$prompt" value
             echo "" >&2
@@ -50,17 +64,41 @@ read_input() {
             read -r -p "$prompt" value
         fi
     elif [ -c /dev/tty ]; then
+        # Try /dev/tty
+        exec </dev/tty
         if [ "$silent" = "true" ]; then
-            read -s -r -p "$prompt" value < /dev/tty
+            read -s -r -p "$prompt" value
             echo "" >&2
         else
-            read -r -p "$prompt" value < /dev/tty
+            read -r -p "$prompt" value
         fi
     else
-        error "Cannot read input: no terminal available"
+        # Last resort
+        if [ "$silent" = "true" ]; then
+            read -s -r -p "$prompt" value
+            echo "" >&2
+        else
+            read -r -p "$prompt" value
+        fi
+    fi
+    
+    # Restore terminal state
+    if [ "$silent" = "true" ] && [ -n "$stty_orig" ]; then
+        stty "$stty_orig" 2>/dev/null || true
     fi
     
     echo "$value"
+}
+
+# Detect Windows/WSL
+detect_windows() {
+    if grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null; then
+        IS_WSL=true
+        info "Running in WSL (Windows Subsystem for Linux)"
+    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+        IS_WINDOWS=true
+        info "Running in Windows environment"
+    fi
 }
 
 # Banner
@@ -86,90 +124,57 @@ EOF
     echo ""
 }
 
-# Install Docker
-install_docker() {
-    section "Installing Docker"
+# Install dependencies
+install_dependencies() {
+    section "Installing Required Dependencies"
     
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     
     if [ "$OS" = "linux" ]; then
-        install_docker_linux
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y curl jq bc
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y curl jq bc
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y curl jq bc
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -Sy --noconfirm curl jq bc
+        else
+            warn "Could not install dependencies automatically"
+            info "Please install manually: curl, jq, bc"
+        fi
     elif [ "$OS" = "darwin" ]; then
-        install_docker_macos
-    else
-        error "Unsupported operating system: $OS"
-    fi
-}
-
-# Install Docker on Linux
-install_docker_linux() {
-    info "Detecting Linux distribution..."
-    
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        DISTRO=$ID
-    else
-        error "Cannot detect Linux distribution"
+        if ! command -v brew &> /dev/null; then
+            warn "Homebrew not found. Installing Homebrew..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        fi
+        brew install curl jq bc 2>/dev/null || true
     fi
     
-    info "Installing Docker on $DISTRO..."
-    
-    case "$DISTRO" in
-        ubuntu|debian)
-            install_docker_debian_based
-            ;;
-        fedora)
-            install_docker_fedora
-            ;;
-        centos|rhel)
-            install_docker_rhel
-            ;;
-        arch|manjaro)
-            install_docker_arch
-            ;;
-        *)
-            warn "Distribution $DISTRO not directly supported"
-            info "Attempting generic installation..."
-            install_docker_generic
-            ;;
-    esac
+    log "Dependencies installed"
 }
 
 # Docker installation for Debian/Ubuntu
 install_docker_debian_based() {
     info "Installing Docker on Debian/Ubuntu..."
     
-    # Remove old versions
     sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-    
-    # Update package index
     sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg lsb-release
     
-    # Install prerequisites
-    sudo apt-get install -y \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release
-    
-    # Add Docker's official GPG key
     sudo mkdir -p /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     
-    # Set up repository
     echo \
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
       $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
     
-    # Install Docker Engine
     sudo apt-get update
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Start and enable Docker
     sudo systemctl start docker
     sudo systemctl enable docker
-    
-    # Add current user to docker group
     sudo usermod -aG docker $USER
     
     log "Docker installed successfully!"
@@ -218,7 +223,7 @@ install_docker_arch() {
     log "Docker installed successfully!"
 }
 
-# Generic Docker installation (using convenience script)
+# Generic Docker installation
 install_docker_generic() {
     info "Using Docker convenience script..."
     
@@ -233,91 +238,208 @@ install_docker_generic() {
     log "Docker installed successfully!"
 }
 
-# Install Docker on macOS
-install_docker_macos() {
-    info "Docker Desktop required for macOS"
-    echo ""
-    echo "Please install Docker Desktop from:"
-    echo "  https://www.docker.com/products/docker-desktop"
-    echo ""
-    echo "After installation, restart this script."
-    error "Docker Desktop must be installed manually on macOS"
-}
-
-# Install required dependencies
-install_dependencies() {
-    section "Installing Required Dependencies"
+# Install Docker on Linux
+install_docker_linux() {
+    info "Detecting Linux distribution..."
     
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    
-    if [ "$OS" = "linux" ]; then
-        if command -v apt-get &> /dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y curl jq bc
-        elif command -v dnf &> /dev/null; then
-            sudo dnf install -y curl jq bc
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y curl jq bc
-        elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm curl jq bc
-        else
-            warn "Could not install dependencies automatically"
-            info "Please install manually: curl, jq, bc"
-        fi
-    elif [ "$OS" = "darwin" ]; then
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew not found. Installing Homebrew..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        brew install curl jq bc 2>/dev/null || true
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO=$ID
+    else
+        error "Cannot detect Linux distribution"
     fi
     
-    log "Dependencies installed"
+    info "Installing Docker on $DISTRO..."
+    
+    case "$DISTRO" in
+        ubuntu|debian)
+            install_docker_debian_based
+            ;;
+        fedora)
+            install_docker_fedora
+            ;;
+        centos|rhel)
+            install_docker_rhel
+            ;;
+        arch|manjaro)
+            install_docker_arch
+            ;;
+        *)
+            warn "Distribution $DISTRO not directly supported"
+            info "Attempting generic installation..."
+            install_docker_generic
+            ;;
+    esac
+}
+
+# Install Docker on macOS
+install_docker_macos() {
+    info "Checking for Docker Desktop on macOS..."
+    
+    if [ -d "/Applications/Docker.app" ]; then
+        info "Docker Desktop found, checking if running..."
+        
+        if ! docker ps &> /dev/null; then
+            warn "Docker Desktop is installed but not running"
+            echo ""
+            echo "Starting Docker Desktop..."
+            open -a Docker
+            
+            info "Waiting for Docker to start (this may take a minute)..."
+            local max_wait=120
+            local waited=0
+            while ! docker ps &> /dev/null && [ $waited -lt $max_wait ]; do
+                sleep 5
+                waited=$((waited + 5))
+                echo -n "."
+            done
+            echo ""
+            
+            if docker ps &> /dev/null; then
+                log "Docker Desktop started successfully"
+            else
+                error "Docker Desktop failed to start. Please start it manually and try again."
+            fi
+        else
+            log "Docker Desktop is already running"
+        fi
+    else
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║  Docker Desktop Required for macOS                        ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "Please install Docker Desktop:"
+        echo "  1. Visit: https://www.docker.com/products/docker-desktop"
+        echo "  2. Download Docker Desktop for Mac"
+        echo "  3. Install and start Docker Desktop"
+        echo "  4. Wait for Docker to be fully running"
+        echo "  5. Re-run this installer"
+        echo ""
+        
+        local open_browser=$(read_input "Open Docker Desktop download page? [y/N]: ")
+        if [[ "$open_browser" =~ ^[Yy]$ ]]; then
+            open "https://www.docker.com/products/docker-desktop"
+        fi
+        
+        error "Please install Docker Desktop and try again"
+    fi
+}
+
+# Install Docker on Windows
+install_docker_windows() {
+    if [ "$IS_WSL" = true ]; then
+        info "Running in WSL - checking for Docker Desktop..."
+        
+        if ! docker ps &> /dev/null; then
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════╗"
+            echo "║  Docker Desktop Required for WSL                          ║"
+            echo "╚════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "To use Docker in WSL, you need:"
+            echo "  1. Docker Desktop for Windows"
+            echo "  2. WSL integration enabled in Docker Desktop settings"
+            echo ""
+            echo "Installation steps:"
+            echo "  1. Download from: https://www.docker.com/products/docker-desktop"
+            echo "  2. Install Docker Desktop on Windows"
+            echo "  3. Open Docker Desktop"
+            echo "  4. Go to Settings > Resources > WSL Integration"
+            echo "  5. Enable integration with your WSL distro"
+            echo "  6. Restart WSL: wsl --shutdown (in PowerShell)"
+            echo "  7. Re-run this installer"
+            echo ""
+            error "Docker Desktop with WSL integration is required"
+        else
+            log "Docker is accessible from WSL"
+        fi
+    else
+        error "Native Windows installation not supported. Please use WSL2 or Git Bash with Docker Desktop"
+    fi
+}
+
+# Install Docker
+install_docker() {
+    section "Installing Docker"
+    
+    detect_windows
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$IS_WSL" = true ] || [ "$IS_WINDOWS" = true ]; then
+        install_docker_windows
+    elif [ "$OS" = "darwin" ]; then
+        install_docker_macos
+    elif [ "$OS" = "linux" ]; then
+        install_docker_linux
+    else
+        error "Unsupported operating system: $OS"
+    fi
 }
 
 # Check System Requirements
 check_requirements() {
     section "Checking System Requirements"
     
+    detect_windows
+    
     # Check Docker
     if ! command -v docker &> /dev/null; then
         warn "Docker is not installed"
         echo ""
-        local install_docker_choice=$(read_input "${BOLD}Would you like to install Docker now? [y/N]: ${NC}")
         
-        if [[ "$install_docker_choice" =~ ^[Yy]$ ]]; then
-            install_docker
+        local install_docker_choice=""
+        while [ -z "$install_docker_choice" ]; do
+            install_docker_choice=$(read_input "${BOLD}Would you like to install Docker now? [y/N]: ${NC}")
             
-            # Wait for Docker to start
-            info "Waiting for Docker to start..."
-            sleep 5
-            
-            # Verify installation
-            if ! command -v docker &> /dev/null; then
-                error "Docker installation failed"
+            if [[ "$install_docker_choice" =~ ^[Yy]$ ]]; then
+                install_docker
+                
+                info "Waiting for Docker to start..."
+                sleep 5
+                
+                if ! command -v docker &> /dev/null; then
+                    error "Docker installation failed"
+                fi
+                break
+            elif [[ "$install_docker_choice" =~ ^[Nn]$ ]] || [ -z "$install_docker_choice" ]; then
+                error "Docker is required. Please install it from: https://docs.docker.com/get-docker/"
+            else
+                warn "Please answer 'y' or 'n'"
+                install_docker_choice=""
             fi
-        else
-            error "Docker is required. Please install it from: https://docs.docker.com/get-docker/"
-        fi
+        done
     fi
     
-    # Check if Docker daemon is running
-    if ! docker ps &> /dev/null; then
-        warn "Docker daemon is not running. Attempting to start..."
+    # Check if Docker daemon is running - with retries
+    local docker_retry=0
+    local max_retries=3
+    while ! docker ps &> /dev/null && [ $docker_retry -lt $max_retries ]; do
+        docker_retry=$((docker_retry + 1))
+        warn "Docker daemon is not running (attempt $docker_retry/$max_retries)"
         
         if command -v systemctl &> /dev/null; then
+            info "Attempting to start Docker service..."
             sudo systemctl start docker 2>/dev/null || true
             sleep 3
         elif [ "$(uname)" = "Darwin" ]; then
+            info "Attempting to start Docker Desktop..."
             open -a Docker 2>/dev/null || true
-            info "Please start Docker Desktop manually if it didn't open"
-            sleep 10
+            info "Waiting for Docker Desktop to start..."
+            sleep 15
+        elif [ "$IS_WSL" = true ]; then
+            warn "Please ensure Docker Desktop is running on Windows with WSL integration enabled"
+            sleep 5
         fi
         
-        if ! docker ps &> /dev/null; then
+        if docker ps &> /dev/null; then
+            break
+        fi
+        
+        if [ $docker_retry -ge $max_retries ]; then
             error "Docker is not running. Please start Docker and try again."
         fi
-    fi
+    done
     
     # Check required commands
     local missing=()
@@ -330,13 +452,21 @@ check_requirements() {
     if [ ${#missing[@]} -ne 0 ]; then
         warn "Missing required commands: ${missing[*]}"
         echo ""
-        local install_deps_choice=$(read_input "${BOLD}Would you like to install missing dependencies? [y/N]: ${NC}")
         
-        if [[ "$install_deps_choice" =~ ^[Yy]$ ]]; then
-            install_dependencies
-        else
-            error "Required commands missing: ${missing[*]}"
-        fi
+        local install_deps_choice=""
+        while [ -z "$install_deps_choice" ]; do
+            install_deps_choice=$(read_input "${BOLD}Would you like to install missing dependencies? [y/N]: ${NC}")
+            
+            if [[ "$install_deps_choice" =~ ^[Yy]$ ]]; then
+                install_dependencies
+                break
+            elif [[ "$install_deps_choice" =~ ^[Nn]$ ]] || [ -z "$install_deps_choice" ]; then
+                error "Required commands missing: ${missing[*]}"
+            else
+                warn "Please answer 'y' or 'n'"
+                install_deps_choice=""
+            fi
+        done
     fi
     
     log "All requirements satisfied"
@@ -392,7 +522,7 @@ generate_device_id() {
     fi
 }
 
-# User Authentication
+# User Authentication with better input handling
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -422,8 +552,11 @@ authenticate_user() {
     echo -e "  ${GREEN}2)${NC} Login (Existing user)"
     echo ""
     
+    local choice=""
     while true; do
-        local choice=$(read_input "${BOLD}Enter your choice [1 or 2]: ${NC}")
+        choice=$(read_input "${BOLD}Enter your choice [1 or 2]: ${NC}")
+        
+        choice=$(echo "$choice" | tr -d '[:space:]')
         
         case "$choice" in
             1)
@@ -438,6 +571,7 @@ authenticate_user() {
                 ;;
             *)
                 warn "Invalid choice. Please enter 1 or 2."
+                sleep 1
                 ;;
         esac
     done
@@ -450,13 +584,31 @@ signup_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    local first_name=$(read_input "${BOLD}First Name: ${NC}")
-    local last_name=$(read_input "${BOLD}Last Name: ${NC}")
-    local email=$(read_input "${BOLD}Email: ${NC}")
+    local first_name=""
+    local last_name=""
+    local email=""
+    local password=""
+    local password_confirm=""
     
-    local password password_confirm
+    while [ -z "$first_name" ]; do
+        first_name=$(read_input "${BOLD}First Name: ${NC}")
+    done
+    
+    while [ -z "$last_name" ]; do
+        last_name=$(read_input "${BOLD}Last Name: ${NC}")
+    done
+    
+    while [ -z "$email" ]; do
+        email=$(read_input "${BOLD}Email: ${NC}")
+    done
+    
     while true; do
         password=$(read_input "${BOLD}Password (min 8 chars): ${NC}" "true")
+        
+        if [ -z "$password" ]; then
+            warn "Password cannot be empty"
+            continue
+        fi
         
         if [ ${#password} -lt 8 ]; then
             warn "Password must be at least 8 characters"
@@ -497,8 +649,16 @@ login_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    local email=$(read_input "${BOLD}Email: ${NC}")
-    local password=$(read_input "${BOLD}Password: ${NC}" "true")
+    local email=""
+    local password=""
+    
+    while [ -z "$email" ]; do
+        email=$(read_input "${BOLD}Email: ${NC}")
+    done
+    
+    while [ -z "$password" ]; do
+        password=$(read_input "${BOLD}Password: ${NC}" "true")
+    done
     
     info "Logging in..."
     local response=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
@@ -527,34 +687,84 @@ login_user() {
 # Detect GPU
 detect_gpu() {
     GPU_AVAILABLE=false
-    GPU_MODEL=""
+    GPU_MODEL="Unknown"
     GPU_MEMORY=0
     GPU_COUNT=0
-    GPU_DRIVER=""
+    GPU_DRIVER="Unknown"
     GPU_CUDA=""
-    
-    if command -v nvidia-smi &> /dev/null; then
-        if nvidia-smi &> /dev/null; then
+
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+    # ----------------------------
+    # 1. NVIDIA GPU (Best / Full)
+    # ----------------------------
+    if command -v nvidia-smi &>/dev/null; then
+        GPU_AVAILABLE=true
+        GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)
+        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1)
+        GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+        GPU_CUDA=$(nvidia-smi | grep "CUDA Version" | awk -F'CUDA Version:' '{print $2}' | xargs)
+        return
+    fi
+
+    # ----------------------------
+    # 2. AMD GPU (ROCm or lspci)
+    # ----------------------------
+    if command -v rocminfo &>/dev/null; then
+        GPU_AVAILABLE=true
+        GPU_MODEL=$(rocminfo | grep -m1 "Name:" | awk -F': ' '{print $2}')
+        GPU_COUNT=$(rocminfo | grep "Compute Unit:" | wc -l)
+        GPU_MEMORY=$(rocminfo | grep -m1 "Device Memory" | grep -o "[0-9]*")
+        GPU_DRIVER="ROCm"
+        return
+    fi
+
+    # Fallback AMD detection via lspci
+    if command -v lspci &>/dev/null; then
+        if lspci | grep -qiE "AMD.*(VGA|Display|3D)"; then
             GPU_AVAILABLE=true
-            GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -n1 || echo 1)
-            GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "NVIDIA GPU")
-            GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 || echo 0)
-            GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
-            
-            if command -v nvcc &> /dev/null; then
-                GPU_CUDA=$(nvcc --version 2>/dev/null | grep "release" | awk '{print $5}' | cut -d',' -f1)
-            else
-                GPU_CUDA=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}')
-            fi
+            GPU_MODEL=$(lspci | grep -iE "AMD.*(VGA|Display|3D)" | head -n1 | cut -d: -f3 | xargs)
+            GPU_COUNT=$(lspci | grep -iE "AMD.*(VGA|Display|3D)" | wc -l)
+            GPU_DRIVER="AMDGPU"
+            GPU_MEMORY=0
+            return
         fi
     fi
-    
-    if [ "$GPU_AVAILABLE" = false ] && command -v rocm-smi &> /dev/null; then
-        if rocm-smi &> /dev/null 2>&1; then
+
+    # ----------------------------
+    # 3. Intel GPU
+    # ----------------------------
+    if command -v lspci &>/dev/null; then
+        if lspci | grep -qiE "Intel.*(VGA|Display|3D)"; then
             GPU_AVAILABLE=true
-            GPU_MODEL=$(rocm-smi --showproductname 2>/dev/null | grep "Card series" | awk -F': ' '{print $2}' || echo "AMD GPU")
+            GPU_MODEL=$(lspci | grep -iE "Intel.*(VGA|Display|3D)" | head -n1 | cut -d: -f3 | xargs)
             GPU_COUNT=1
-            GPU_DRIVER=$(rocm-smi --showdriverversion 2>/dev/null | grep "Driver version" | awk '{print $3}' || echo "Unknown")
+            GPU_DRIVER="iGPU"
+            GPU_MEMORY=0
+            return
+        fi
+    fi
+
+    # ----------------------------
+    # 4. macOS GPU (Metal)
+    # ----------------------------
+    if [ "$OS" = "darwin" ]; then
+        GPU_AVAILABLE=true
+        GPU_MODEL=$(system_profiler SPDisplaysDataType | grep "Chipset Model" | head -n1 | awk -F': ' '{print $2}')
+        GPU_COUNT=1
+        GPU_DRIVER="Metal"
+        GPU_MEMORY=0
+        return
+    fi
+
+    # ----------------------------
+    # 5. No GPU detected
+    # ----------------------------
+    GPU_AVAILABLE=false
+}
+
+    print $3}' || echo "Unknown")
         fi
     fi
 }
@@ -673,7 +883,7 @@ register_worker() {
         --argjson storageSharePercent "${STORAGE_SHARE}" \
         --arg macAddress "${device_identifier}" \
         '{
-            name: $name
+            name: $name,
             hostname: $hostname,
             platform: $platform,
             architecture: $architecture,
@@ -696,7 +906,6 @@ register_worker() {
             macAddress: $macAddress
         }')
 
-    # Send registration request
     local response=$(curl -s -w "\n%{http_code}" -X POST \
         "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
@@ -759,7 +968,6 @@ start_worker_container() {
     
     info "Starting always-on worker container..."
     
-    # Build docker run command
     local docker_cmd="docker run -d \
         --name $CONTAINER_NAME \
         --restart always \
@@ -769,21 +977,17 @@ start_worker_container() {
         -e MAC_ADDRESS=\"${MAC_ADDRESS:-$DEVICE_ID}\" \
         -v \"$CONFIG_DIR:/config:ro\""
     
-    # Add GPU support if available
     if [ "$GPU_AVAILABLE" = true ]; then
         if command -v nvidia-smi &> /dev/null; then
             docker_cmd="$docker_cmd --gpus all"
         fi
     fi
     
-    # Complete command
     docker_cmd="$docker_cmd $DOCKER_IMAGE --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL"
     
-    # Execute
     if eval "$docker_cmd" &> /dev/null; then
         sleep 3
         
-        # Verify container is running
         if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             log "Worker container started successfully"
             echo ""
@@ -903,14 +1107,12 @@ case "$1" in
         echo "  uninstall  - Remove worker (add --purge to delete all data)"
         echo ""
         exit 1
-
         ;;
 esac
 MGMT_EOF
 
     chmod +x "$CONFIG_DIR/manage.sh"
     
-    # Create convenient aliases
     if ! grep -q "alias distributex=" "$HOME/.bashrc" 2>/dev/null; then
         echo "alias distributex='$CONFIG_DIR/manage.sh'" >> "$HOME/.bashrc"
     fi
