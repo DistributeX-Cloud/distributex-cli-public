@@ -201,11 +201,11 @@ signup_user() {
     read -r last_name < /dev/tty
     
     echo -ne "${BOLD}Email: ${NC}"
-    read -r email < /dev/tty
+    read -rp "Email: " email
     
     while true; do
         echo -ne "${BOLD}Password (min 8 chars): ${NC}"
-        read -s -r password < /dev/tty
+        read -rsp "Password: " password
         echo ""
         
         if [ ${#password} -lt 8 ]; then
