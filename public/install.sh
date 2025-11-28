@@ -1207,84 +1207,87 @@ EOF
     echo ""
 }
 
-# Ask user about autostart behavior
+# ──────────────────────────────────────────────────────────────
+# Ask user about autostart behavior (MUST be defined BEFORE main)
+# ──────────────────────────────────────────────────────────────
 ask_autostart_choice() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${CYAN}  Autostart / Always-on Configuration${NC}"
+    echo -e "${BOLD}${CYAN}       Autostart / Always-on Mode${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "Choose how you'd like the worker to run:"
-    echo "  1) Always-on: container restarts automatically and systemd service is set (recommended for servers)"
-    echo "  2) On-demand: run once now, no auto-restart nor systemd service (recommended for laptops/desktops)"
+    echo "  1) Always-on → auto-restarts + starts on boot (best for servers/desktops)"
+    echo "  2) On-demand → runs only now, no auto-restart (best for laptops)"
     echo ""
-    
+
     local choice=""
-    while [ -z "$choice" ]; do
-        choice=$(read_input "${BOLD}Enter your choice [1 (Always-on) / 2 (On-demand)]: ${NC}")
+    while [[ -z "$choice" ]]; do
+        choice=$(read_input "${BOLD}Enter your choice [1 or 2]: ${NC}")
         choice=$(echo "$choice" | tr -d '[:space:]')
+
         case "$choice" in
             1)
                 RESTART_POLICY="always"
-                # Only set up systemd if on Linux
-                if [ "$(uname -s | tr '[:upper:]' '[:lower:]')" = "linux" ]; then
+                if [[ "$(uname -s | tr '[:upper:]' '[:lower:]')" == "linux" ]]; then
                     SETUP_SYSTEMD=true
                 else
                     SETUP_SYSTEMD=false
                 fi
+                info "Mode → Always-on (restart policy: always)"
                 break
                 ;;
             2)
                 RESTART_POLICY="no"
                 SETUP_SYSTEMD=false
+                info "Mode → On-demand (no auto-restart)"
                 break
                 ;;
             *)
-                warn "Invalid choice. Please enter 1 or 2."
+                warn "Please enter 1 or 2"
                 choice=""
                 ;;
         esac
     done
-    
-    info "Selected restart policy: $RESTART_POLICY (systemd setup: $SETUP_SYSTEMD)"
+    echo ""
 }
 
-# Cleanup on Error
+# ──────────────────────────────────────────────────────────────
+# Cleanup on error
+# ──────────────────────────────────────────────────────────────
 cleanup_on_error() {
-    warn "Cleaning up after error..."
-    docker stop $CONTAINER_NAME &> /dev/null || true
-    docker rm $CONTAINER_NAME &> /dev/null || true
+    warn "An error occurred – cleaning up..."
+    docker stop "$CONTAINER_NAME" &>/dev/null || true
+    docker rm "$CONTAINER_NAME" &>/dev/null || true
 }
 
+# ──────────────────────────────────────────────────────────────
 # Error trap
+# ──────────────────────────────────────────────────────────────
 trap cleanup_on_error ERR
 
+# ──────────────────────────────────────────────────────────────
 # Main Installation Flow
+# ──────────────────────────────────────────────────────────────
 main() {
     show_banner
     check_requirements
     authenticate_user
     detect_system
-
-    # Ask user about autostart / always-on behavior
-    ask_autostart_choice
-
-    # Register device (needs API_TOKEN set by login)
+    ask_autostart_choice        # now defined before main → works!
     register_worker
-
-    # Pull and start container
     pull_docker_image
     start_worker_container
 
-    # If user requested systemd autostart and we're on Linux, set it up
-    if [ "$SETUP_SYSTEMD" = true ]; then
+    if [[ "$SETUP_SYSTEMD" == true ]]; then
         setup_systemd_autostart
     fi
 
-    # Create management tools and show final summary
     create_management_script
     show_success
 }
 
-# Run main function
+# ──────────────────────────────────────────────────────────────
+# Start the installer
+# ──────────────────────────────────────────────────────────────
 main "$@"
