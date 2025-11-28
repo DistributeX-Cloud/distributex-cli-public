@@ -630,12 +630,15 @@ signup_user() {
     echo ""
     info "Creating account..."
     
-    local response=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
+local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" -X POST \
+        "$DISTRIBUTEX_API_URL/api/workers/register" \
+        -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
-    
+        -d "$payload")
+    http_code=$(echo "$response" | tail -n1)
     local http_body=$(echo "$response" | head -n -1)
-    local http_code=$(echo "$response" | tail -n1)
     
     if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
         local error_msg=$(echo "$http_body" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Signup failed")
@@ -906,14 +909,15 @@ register_worker() {
             macAddress: $macAddress
         }')
 
-    local response=$(curl -s -w "\n%{http_code}" -X POST \
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" -X POST \
         "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "$payload" 2>&1)
-
+        -d "$payload")
+    http_code=$(echo "$response" | tail -n1)
     local http_body=$(echo "$response" | head -n -1)
-    local http_code=$(echo "$response" | tail -n 1)
 
     if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
         local error_msg=$(echo "$http_body" | jq -r '.message // .error // "Registration failed"' 2>/dev/null || echo "Registration failed")
