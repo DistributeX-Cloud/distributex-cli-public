@@ -549,7 +549,17 @@ case "$1" in
         echo ""
         if [ -f "$CONFIG_DIR/config.json" ]; then
             echo "Worker Details:"
-            cat "$CONFIG_DIR/config.json" | jq -r '"  Worker Name: \(.workerName)\n  Worker ID: \(.workerId)\n  Hostname: \(.hostname)\n  MAC: \(.macAddress)"'
+            if command -v jq &> /dev/null; then
+                cat "$CONFIG_DIR/config.json" | jq -r '"  Worker Name: \(.workerName)\n  Worker ID: \(.workerId)\n  Hostname: \(.hostname)\n  MAC: \(.macAddress)"' 2>/dev/null || {
+                    echo "  (Unable to parse config.json)"
+                    cat "$CONFIG_DIR/config.json"
+                }
+            else
+                # Fallback if jq not available
+                grep -E "workerName|workerId|hostname|macAddress" "$CONFIG_DIR/config.json" | sed 's/^/  /'
+            fi
+        else
+            echo "  Config file not found"
         fi
         ;;
     uninstall)
