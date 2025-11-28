@@ -313,7 +313,40 @@ detect_system() {
     log "Storage: ${STORAGE_TOTAL}GB"
 }
 
-# Register Worker (omitted for brevity - same as before)
+# Register Worker with API
+register_worker() {
+    section "Registering Worker"
+
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
+        -H "Authorization: Bearer $API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"macAddress\": \"$(get_mac_address)\",
+            \"deviceId\": \"$DEVICE_ID\",
+            \"cpu\": $CPU_CORES,
+            \"ram\": $RAM_TOTAL,
+            \"storage\": $STORAGE_TOTAL,
+            \"role\": \"$USER_ROLE\"
+        }")
+
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+
+    if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+        error "Worker registration failed ($HTTP_CODE): $(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"')"
+    fi
+
+    WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.worker.id // .workerId')
+
+    if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
+        error "Worker registration succeeded but no workerId was returned"
+    fi
+
+    echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
+    chmod 600 "$CONFIG_DIR/worker-id"
+
+    log "Worker registered successfully: $WORKER_ID"
+}
 
 # Setup Developer Environment
 setup_developer() {
@@ -356,16 +389,19 @@ start_contributor() {
     
     info "Starting persistent worker container..."
     
-    # CRITICAL: Use --restart always to ensure container always restarts
+    WORKER_ID=$(cat "$CONFIG_DIR/worker-id")
+
     docker run -d \
         --name $CONTAINER_NAME \
         --restart always \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
+        -e WORKER_ID="$WORKER_ID" \
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
+        --worker-id "$WORKER_ID" \
         --url "$DISTRIBUTEX_API_URL"
-    
+
     sleep 2
     
     if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -551,19 +587,20 @@ main() {
     authenticate_user
     select_role
     detect_system
-    
+
     if [ "$USER_ROLE" = "contributor" ]; then
-        start_contributor
+        register_worker                     # <-- REQUIRED: Register worker first
+        start_contributor                   # <-- Start Docker container
         create_management_script
         setup_autostart
 
-        # <-- FIX ADDED HERE
+        # Ensure container is definitely running
         info "Ensuring worker container is running..."
         docker start $CONTAINER_NAME >/dev/null 2>&1 || true
     else
         setup_developer
     fi
-    
+
     save_config
     show_completion
 }
