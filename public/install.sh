@@ -936,7 +936,7 @@ register_worker() {
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
 
-    # Full JSON config for UI / container
+    # Full JSON config for the app, dashboard, container, CLI, etc.
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
   "workerId": "$WORKER_ID",
@@ -954,12 +954,13 @@ register_worker() {
 EOF
     chmod 600 "$CONFIG_DIR/config.json"
 
+    # Output status
     if [ "$is_new" = "true" ]; then
         log "Worker registered successfully: $WORKER_ID"
     else
         log "Worker reconnected (existing device): $WORKER_ID"
     fi
-    
+
     echo ""
 }
 
