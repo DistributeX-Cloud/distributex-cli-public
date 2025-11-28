@@ -310,6 +310,26 @@ class PersistentWorker {
   }
 
   /**
+   * Load worker ID from config file
+   */
+  async loadWorkerIdFromConfig() {
+    try {
+      // Try to read from mounted config directory
+      const configPath = '/config/worker_id';
+      if (fs.existsSync(configPath)) {
+        const workerId = fs.readFileSync(configPath, 'utf8').trim();
+        if (workerId) {
+          console.log(`✅ Loaded worker ID from config: ${workerId}`);
+          return workerId;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️  Could not load worker ID from config:', error.message);
+    }
+    return null;
+  }
+
+  /**
    * Register worker - ONLY if not disabled and doesn't exist
    */
   async register() {
@@ -318,37 +338,31 @@ class PersistentWorker {
     // Check if self-registration is disabled
     if (CONFIG.DISABLE_SELF_REGISTER) {
       console.log('ℹ️  Self-registration disabled (DISABLE_SELF_REGISTER=true)');
-      console.log('ℹ️  Attempting to reconnect to existing worker...');
+      console.log('ℹ️  Worker should be pre-registered by installation script');
+      console.log('ℹ️  This agent will ONLY send heartbeats (no registration)');
       
-      // Try to register/reconnect - the backend will handle existing workers
-      try {
-        console.log('\n🔍 Detecting system capabilities...');
-        const capabilities = await this.detectSystem();
-        
-        console.log('\n🔌 Attempting to connect...');
-        const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
-        this.workerId = worker.workerId;
-        
-        console.log(`\n✅ Connected!`);
-        console.log(`  Worker ID: ${this.workerId}`);
-        console.log(`  Name: Worker-${this.macAddress}`);
-        console.log(`  Status: ${worker.isNew ? 'New registration' : 'Reconnected to existing'}`);
-        
-        return worker;
-      } catch (error) {
-        console.error('\n❌ Connection failed:', error.message);
-        console.error('   The worker may not be registered yet');
-        console.error('   Please ensure the installation completed successfully');
-        
-        // Don't exit immediately, retry
-        console.log('\n⏳ Retrying in 30 seconds...');
-        await new Promise(resolve => setTimeout(resolve, 30000));
-        
-        if (!this.isRunning) process.exit(1);
-        
-        // Try one more time
-        return await this.register();
+      // Try to load worker ID from config
+      this.workerId = await this.loadWorkerIdFromConfig();
+      
+      if (this.workerId) {
+        console.log(`✅ Using existing worker: ${this.workerId}`);
+        console.log(`   Name: Worker-${this.macAddress}`);
+        console.log(`   Hostname: ${this.hostname}`);
+        console.log(`   Mode: Heartbeat-only`);
+        return { workerId: this.workerId, isNew: false };
       }
+      
+      console.error('\n❌ Worker ID not found in config');
+      console.error('   Expected file: /config/worker_id');
+      console.error('   Please ensure installation completed successfully');
+      console.error('\n⏳ Retrying in 30 seconds...');
+      
+      await new Promise(resolve => setTimeout(resolve, 30000));
+      
+      if (!this.isRunning) process.exit(1);
+      
+      // Try one more time
+      return await this.register();
     }
     
     // Self-registration is enabled, proceed normally
