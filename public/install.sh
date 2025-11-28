@@ -33,18 +33,18 @@ show_banner() {
     echo -e "${CYAN}"
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
-║ ║
-║ ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗ ║
-║ ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗ ║
-║ ██║ ██║██║███████╗ ██║ ██████╔╝██║ ██║ ║
-║ ██║ ██║██║╚════██║ ██║ ██╔══██╗██║ ██║ ║
-║ ██████╔╝██║███████║ ██║ ██║ ██║██║██╔╝ ║
-║ ╚═════╝ ╚═╝╚══════╝ ╚═╝ ╚═╝ ╚═╝╚═╝╚═╝ ║
-║ ║
-║ DistributeX Cloud Network ║
-║ Distributed Computing Platform ║
-║ ALWAYS-ON PERSISTENT WORKER MODE ║
-║ ║
+║                                                           ║
+║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗         ║
+║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗        ║
+║        ██║ ██║██║███████╗ ██║ ██████╔╝██║ ██║             ║
+║        ██║ ██║██║╚════██║ ██║ ██╔══██╗██║ ██║             ║
+║        ██████╔╝██║███████║ ██║ ██║ ██║██║██╔╝             ║
+║        ╚═════╝ ╚═╝╚══════╝ ╚═╝ ╚═╝ ╚═╝╚═╝╚═╝              ║
+║                                                           ║
+║                DistributeX Cloud Network                  ║
+║             Distributed Computing Platform                ║
+║                                                           ║
+║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
@@ -555,12 +555,12 @@ show_completion() {
     section "Installation Complete! 🎉"
    
     echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║           DistributeX Successfully Installed!         ║${NC}"
+    echo -e "${GREEN}    ╔═══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}    ║           DistributeX Successfully Installed!         ║${NC}"
     if [ "$USER_ROLE" = "contributor" ]; then
-        echo -e "${GREEN}║ ALWAYS-ON MODE: Worker runs 24/7 ║${NC}"
+        echo -e "${GREEN}║            ALWAYS-ON MODE: Worker runs 24/7           ║${NC}"
     fi
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}    ╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
    
     if [ "$USER_ROLE" = "contributor" ]; then
