@@ -158,7 +158,7 @@ authenticate_user() {
     echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}"
     
     while true; do
-        read -r choice
+        read -r choice < /dev/tty
         case "$choice" in
             1) 
                 signup_user
