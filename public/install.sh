@@ -556,6 +556,10 @@ main() {
         start_contributor
         create_management_script
         setup_autostart
+
+        # <-- FIX ADDED HERE
+        info "Ensuring worker container is running..."
+        docker start $CONTAINER_NAME >/dev/null 2>&1 || true
     else
         setup_developer
     fi
