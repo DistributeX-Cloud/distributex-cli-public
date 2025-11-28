@@ -764,11 +764,6 @@ detect_gpu() {
     GPU_AVAILABLE=false
 }
 
-    print $3}' || echo "Unknown")
-        fi
-    fi
-}
-
 # Detect System Capabilities
 detect_system() {
     section "System Detection"
