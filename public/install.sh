@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
 set -o pipefail
+
 #
-# DistributeX Complete Installer - FIXED VERSION
+# DistributeX Complete Installer - Universal Version
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
 
@@ -27,6 +28,35 @@ info() { echo -e "${CYAN}[i]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
+
+# Interactive input function that works with piped execution
+read_input() {
+    local prompt="$1"
+    local silent="$2"
+    local value=""
+    
+    # Try to read from terminal device directly
+    if [ -t 0 ]; then
+        # Standard input is a terminal
+        if [ "$silent" = "true" ]; then
+            read -s -r -p "$prompt" value
+            echo "" >&2
+        else
+            read -r -p "$prompt" value
+        fi
+    else
+        # Standard input is redirected (piped), use /dev/tty
+        exec < /dev/tty
+        if [ "$silent" = "true" ]; then
+            read -s -r -p "$prompt" value
+            echo "" >&2
+        else
+            read -r -p "$prompt" value
+        fi
+    fi
+    
+    echo "$value"
+}
 
 # Banner
 show_banner() {
@@ -58,14 +88,14 @@ get_mac_address() {
     
     if [ "$os" = "linux" ]; then
         # Try multiple interfaces in order of preference
-        for interface in eth0 en0 wlan0 wlp0s20f3 enp0s3 ens33; do
+        for interface in eth0 en0 wlan0 wlp0s20f3 enp0s3 ens33 enp0s31f6; do
             mac=$(ip link show "$interface" 2>/dev/null | awk '/link\/ether/ {print $2}')
             [ -n "$mac" ] && break
         done
         
         # Fallback: get first non-loopback MAC
         if [ -z "$mac" ]; then
-            mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+            mac=$(ip link show 2>/dev/null | awk '/link\/ether/ {print $2; exit}')
         fi
     elif [ "$os" = "darwin" ]; then
         # macOS: try en0 first, then en1
@@ -88,7 +118,15 @@ generate_device_id() {
     if [ -z "$mac" ]; then
         # Fallback for VMs/Cloud instances without MAC
         warn "MAC address not detected, generating fallback identifier"
-        echo "$(hostname)-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo $(date +%s))" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback-$(date +%s)"
+        
+        # Try multiple methods for generating unique ID
+        if command -v md5sum &> /dev/null; then
+            echo "$(hostname)-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo $(date +%s))" | md5sum | cut -d' ' -f1
+        elif command -v md5 &> /dev/null; then
+            echo "$(hostname)-$(uuidgen 2>/dev/null || echo $(date +%s))" | md5 | cut -d' ' -f1
+        else
+            echo "fallback-$(date +%s)-$$"
+        fi
     else
         # Normalize MAC: lowercase, remove colons
         echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
@@ -114,20 +152,25 @@ check_requirements() {
         fi
         
         if ! docker ps &> /dev/null; then
-            error "Docker is not running. Please start Docker Desktop and try again."
+            error "Docker is not running. Please start Docker and try again."
         fi
     fi
     
     # Check required commands
     local missing=()
-    for cmd in curl jq bc; do
+    for cmd in curl jq; do
         if ! command -v $cmd &> /dev/null; then
             missing+=($cmd)
         fi
     done
     
+    # bc is optional, add fallback
+    if ! command -v bc &> /dev/null; then
+        warn "bc not found, using shell arithmetic (may be less precise)"
+    fi
+    
     if [ ${#missing[@]} -ne 0 ]; then
-        error "Missing required commands: ${missing[*]}. Install them first."
+        error "Missing required commands: ${missing[*]}. Please install them first."
     fi
     
     log "All requirements satisfied"
@@ -166,14 +209,15 @@ authenticate_user() {
     echo -e "  ${GREEN}2)${NC} Login (Existing user)"
     echo ""
     
+    local choice=""
     while true; do
-        echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}" > /dev/tty
-        read -r choice < /dev/tty
+        choice=$(read_input "${BOLD}Enter your choice [1 or 2]: ${NC}")
+        
         case "$choice" in
             1)
                 signup_user
                 log "Signup complete, now logging in..."
-                login_user  # automatically log in after signup
+                login_user
                 break
                 ;;
             2)
@@ -196,28 +240,19 @@ signup_user() {
     
     local first_name last_name email password password_confirm
     
-    echo -ne "${BOLD}First Name: ${NC}"
-    read -r first_name < /dev/tty
-    
-    echo -ne "${BOLD}Last Name: ${NC}"
-    read -r last_name < /dev/tty
-    
-    echo -ne "${BOLD}Email: ${NC}"
-    read -r email < /dev/tty
+    first_name=$(read_input "${BOLD}First Name: ${NC}")
+    last_name=$(read_input "${BOLD}Last Name: ${NC}")
+    email=$(read_input "${BOLD}Email: ${NC}")
     
     while true; do
-        echo -ne "${BOLD}Password (min 8 chars): ${NC}"
-        read -s -r password < /dev/tty
-        echo ""
+        password=$(read_input "${BOLD}Password (min 8 chars): ${NC}" "true")
         
         if [ ${#password} -lt 8 ]; then
             warn "Password must be at least 8 characters"
             continue
         fi
         
-        echo -ne "${BOLD}Confirm Password: ${NC}"
-        read -s -r password_confirm < /dev/tty
-        echo ""
+        password_confirm=$(read_input "${BOLD}Confirm Password: ${NC}" "true")
         
         if [ "$password" != "$password_confirm" ]; then
             warn "Passwords do not match. Please try again."
@@ -253,12 +288,8 @@ login_user() {
     
     local email password
     
-    echo -ne "${BOLD}Email: ${NC}"
-    read -r email < /dev/tty
-    
-    echo -ne "${BOLD}Password: ${NC}"
-    read -s -r password < /dev/tty
-    echo ""
+    email=$(read_input "${BOLD}Email: ${NC}")
+    password=$(read_input "${BOLD}Password: ${NC}" "true")
     
     info "Logging in..."
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
@@ -297,27 +328,27 @@ detect_gpu() {
     if command -v nvidia-smi &> /dev/null; then
         if nvidia-smi &> /dev/null; then
             gpu_available=true
-            gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -n1)
-            gpu_model=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
-            gpu_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
-            gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+            gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -n1 || echo 1)
+            gpu_model=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "NVIDIA GPU")
+            gpu_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 || echo 0)
+            gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
             
             # Get CUDA version
             if command -v nvcc &> /dev/null; then
-                gpu_cuda=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1)
+                gpu_cuda=$(nvcc --version 2>/dev/null | grep "release" | awk '{print $5}' | cut -d',' -f1)
             else
-                gpu_cuda=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}')
+                gpu_cuda=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}')
             fi
         fi
     fi
     
     # Check for AMD GPU (ROCm)
     if [ "$gpu_available" = false ] && command -v rocm-smi &> /dev/null; then
-        if rocm-smi &> /dev/null; then
+        if rocm-smi &> /dev/null 2>&1; then
             gpu_available=true
-            gpu_model=$(rocm-smi --showproductname 2>/dev/null | grep "Card series" | awk -F': ' '{print $2}')
+            gpu_model=$(rocm-smi --showproductname 2>/dev/null | grep "Card series" | awk -F': ' '{print $2}' || echo "AMD GPU")
             gpu_count=1
-            gpu_driver=$(rocm-smi --showdriverversion 2>/dev/null | grep "Driver version" | awk '{print $3}')
+            gpu_driver=$(rocm-smi --showdriverversion 2>/dev/null | grep "Driver version" | awk '{print $3}' || echo "Unknown")
         fi
     fi
     
@@ -340,7 +371,7 @@ detect_system() {
     
     # CPU Detection
     if [ "$OS" = "linux" ]; then
-        CPU_CORES=$(nproc 2>/dev/null || echo 4)
+        CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
         CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
     elif [ "$OS" = "darwin" ]; then
         CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -352,16 +383,21 @@ detect_system() {
     
     # RAM Detection
     if command -v free &> /dev/null; then
-        RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-        RAM_AVAILABLE=$(free -m | awk '/^Mem:/{print $7}')
+        RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
+        RAM_AVAILABLE=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo $((RAM_TOTAL * 80 / 100)))
     else
         RAM_TOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}' || echo 8192)
         RAM_AVAILABLE=$((RAM_TOTAL * 80 / 100))
     fi
     
     # Storage Detection
-    STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
-    STORAGE_AVAILABLE=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//' || echo 80)
+    if [ "$OS" = "darwin" ]; then
+        STORAGE_TOTAL=$(df -g / 2>/dev/null | tail -1 | awk '{print $2}' || echo 100)
+        STORAGE_AVAILABLE=$(df -g / 2>/dev/null | tail -1 | awk '{print $4}' || echo 80)
+    else
+        STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
+        STORAGE_AVAILABLE=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//' || echo 80)
+    fi
     
     # GPU Detection
     detect_gpu
@@ -416,9 +452,11 @@ register_worker() {
     
     info "Registering device with network..."
     
-    # Validate MAC address exists
-    if [ -z "$MAC_ADDRESS" ]; then
-        error "MAC address detection failed - cannot register worker"
+    # Use device ID if MAC address is not available
+    local device_identifier="${MAC_ADDRESS:-$DEVICE_ID}"
+    
+    if [ -z "$device_identifier" ]; then
+        error "Unable to generate device identifier"
     fi
 
     # Build registration payload matching the API schema
@@ -443,7 +481,7 @@ register_worker() {
         --argjson ramSharePercent "${RAM_SHARE}" \
         --argjson gpuSharePercent "${GPU_SHARE}" \
         --argjson storageSharePercent "${STORAGE_SHARE}" \
-        --arg macAddress "${MAC_ADDRESS}" \
+        --arg macAddress "${device_identifier}" \
         '{
             name: $name,
             hostname: $hostname,
@@ -509,7 +547,7 @@ pull_docker_image() {
     section "Preparing Docker Image"
     info "Pulling latest worker image..."
     
-    if docker pull $DOCKER_IMAGE 2>&1; then
+    if docker pull $DOCKER_IMAGE 2>&1 | grep -v "^$"; then
         log "Docker image ready: $DOCKER_IMAGE"
     else
         error "Failed to pull Docker image"
@@ -518,7 +556,7 @@ pull_docker_image() {
 
 # Stop Existing Container
 stop_existing_container() {
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
         warn "Stopping existing container..."
         docker stop $CONTAINER_NAME &> /dev/null || true
         docker rm $CONTAINER_NAME &> /dev/null || true
@@ -543,7 +581,7 @@ start_worker_container() {
         -e DISTRIBUTEX_API_URL=\"$DISTRIBUTEX_API_URL\" \
         -e API_TOKEN=\"$API_TOKEN\" \
         -e WORKER_ID=\"$WORKER_ID\" \
-        -e MAC_ADDRESS=\"$MAC_ADDRESS\" \
+        -e MAC_ADDRESS=\"${MAC_ADDRESS:-$DEVICE_ID}\" \
         -v \"$CONFIG_DIR:/config:ro\""
     
     # Add GPU support if available
@@ -557,11 +595,11 @@ start_worker_container() {
     docker_cmd="$docker_cmd $DOCKER_IMAGE --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL"
     
     # Execute
-    if eval $docker_cmd 2>&1; then
+    if eval $docker_cmd 2>&1 | grep -v "^$"; then
         sleep 3
         
         # Verify container is running
-        if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             log "Worker container started successfully"
             echo ""
             info "Container configured with:"
@@ -674,97 +712,122 @@ case "$1" in
         echo "  start      - Start the worker"
         echo "  stop       - Stop the worker"
         echo "  restart    - Restart the worker"
-        echo "  logs       - View worker logs (add -f to follow)"
-        echo "  status     - Show worker status"
-        echo "  stats      - Show resource usage"
-        echo "  uninstall  - Remove worker (add --purge to delete config)"
+        echo "  logs       - View worker logs"
+        echo "  status     - Check worker status"
+        echo "  stats      - View resource usage"
+        echo "  uninstall  - Remove worker (add --purge to delete all data)"
+        echo ""
         exit 1
         ;;
 esac
 MGMT_EOF
-    
+
     chmod +x "$CONFIG_DIR/manage.sh"
-    log "Management script created: $CONFIG_DIR/manage.sh"
-}
-
-# Save Configuration
-save_config() {
-    section "Saving Configuration"
     
-    cat > "$CONFIG_DIR/config.json" <<EOF
-{
-  "version": "1.0.0",
-  "apiUrl": "$DISTRIBUTEX_API_URL",
-  "deviceId": "$DEVICE_ID",
-  "macAddress": $([ -n "$MAC_ADDRESS" ] && echo "\"$MAC_ADDRESS\"" || echo "null"),
-  "workerId": "$WORKER_ID",
-  "hostname": "$HOSTNAME",
-  "system": {
-    "os": "$OS",
-    "arch": "$ARCH",
-    "cpuCores": $CPU_CORES,
-    "cpuModel": "$CPU_MODEL",
-    "ramTotal": $RAM_TOTAL,
-    "storageTotal": $STORAGE_TOTAL,
-    "gpuAvailable": $([ "$GPU_AVAILABLE" = true ] && echo true || echo false),
-    "gpuModel": $([ -n "$GPU_MODEL" ] && echo "\"$GPU_MODEL\"" || echo "null"),
-    "gpuCount": $GPU_COUNT
-  },
-  "sharing": {
-    "cpuPercent": $CPU_SHARE,
-    "ramPercent": $RAM_SHARE,
-    "storagePercent": $STORAGE_SHARE,
-    "gpuPercent": $GPU_SHARE
-  },
-  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
-    chmod 600 "$CONFIG_DIR/config.json"
-    log "Configuration saved"
+    # Create symlink for easy access
+    if [ -w "/usr/local/bin" ]; then
+        sudo ln -sf "$CONFIG_DIR/manage.sh" /usr/local/bin/distributex 2>/dev/null || true
+    fi
+    
+    log "Management script created: $CONFIG_DIR/manage.sh"
+    
+    if [ -L "/usr/local/bin/distributex" ]; then
+        log "Global command available: distributex"
+    else
+        info "Run with: $CONFIG_DIR/manage.sh"
+    fi
 }
 
-# Show Completion Summary
-show_completion() {
+# Show Installation Summary
+show_summary() {
     section "Installation Complete! 🎉"
     
+    echo -e "${GREEN}${BOLD}✓ DistributeX Worker is now running!${NC}"
     echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║     DistributeX Worker Successfully Installed!        ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    log "Worker is running and contributing to the network"
-    log "Worker ID: $(cat "$CONFIG_DIR/worker-id" 2>/dev/null || echo 'N/A')"
-    log "Device Fingerprint: $DEVICE_ID"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}Quick Reference:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    echo -e "${CYAN}Management Commands:${NC}"
-    echo "  $CONFIG_DIR/manage.sh status        # Check worker status"
-    echo "  $CONFIG_DIR/manage.sh logs          # View logs"
-    echo "  $CONFIG_DIR/manage.sh restart       # Restart worker"
-    echo ""
-    
-    # Interactive exit prompt
-    echo ""
-    echo -e "${CYAN}Press Enter to exit, or type 'm' to view management commands again.${NC}"
-    read -r -p "> " exit_choice < /dev/tty
-    
-    if [ "$exit_choice" = "m" ]; then
-        echo ""
-        echo -e "${CYAN}Management Commands:${NC}"
-        echo "  $CONFIG_DIR/manage.sh status"
-        echo "  $CONFIG_DIR/manage.sh logs"
-        echo "  $CONFIG_DIR/manage.sh restart"
-        echo "  $CONFIG_DIR/manage.sh uninstall"
-        echo ""
-        echo -e "${CYAN}Press Enter to finish.${NC}"
-        read -r < /dev/tty
+    if [ -L "/usr/local/bin/distributex" ]; then
+        echo "  ${GREEN}distributex status${NC}   - Check worker status"
+        echo "  ${GREEN}distributex logs${NC}     - View live logs"
+        echo "  ${GREEN}distributex restart${NC}  - Restart worker"
+        echo "  ${GREEN}distributex stop${NC}     - Stop worker"
+        echo "  ${GREEN}distributex stats${NC}    - View resource usage"
+    else
+        echo "  ${GREEN}$CONFIG_DIR/manage.sh status${NC}   - Check worker status"
+        echo "  ${GREEN}$CONFIG_DIR/manage.sh logs${NC}     - View live logs"
+        echo "  ${GREEN}$CONFIG_DIR/manage.sh restart${NC}  - Restart worker"
+        echo "  ${GREEN}$CONFIG_DIR/manage.sh stop${NC}     - Stop worker"
+        echo "  ${GREEN}$CONFIG_DIR/manage.sh stats${NC}    - View resource usage"
     fi
-
-    # Show live status
-    info "Checking worker status..."
-    sleep 2
-    docker ps -f name="$CONTAINER_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}Your Configuration:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  Worker ID:    $(cat "$CONFIG_DIR/worker-id")"
+    echo "  Device ID:    $DEVICE_ID"
+    echo "  API URL:      $DISTRIBUTEX_API_URL"
+    echo "  Auto-start:   ✓ Enabled (survives reboots)"
+    echo ""
+    echo "  Resources:"
+    echo "    CPU:        ${CPU_SHARE}% of $CPU_CORES cores"
+    echo "    RAM:        ${RAM_SHARE}% of ${RAM_TOTAL}MB"
+    echo "    Storage:    ${STORAGE_SHARE}% of ${STORAGE_TOTAL}GB"
+    
+    if [ "$GPU_AVAILABLE" = true ]; then
+        echo "    GPU:        ${GPU_SHARE}% - $GPU_MODEL"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}Important Notes:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  • Worker will automatically restart if it crashes"
+    echo "  • Worker will start automatically on system boot"
+    echo "  • Your credentials are stored securely in: $CONFIG_DIR"
+    echo "  • Monitor your earnings at: $DISTRIBUTEX_API_URL"
+    echo ""
+    echo -e "${GREEN}${BOLD}Thank you for joining DistributeX! 🚀${NC}"
+    echo ""
 }
+
+# Health Check
+perform_health_check() {
+    section "Performing Health Check"
+    
+    sleep 5  # Give container time to initialize
+    
+    if ! docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+        error "Container is not running after startup"
+    fi
+    
+    # Check container logs for errors
+    if docker logs $CONTAINER_NAME 2>&1 | grep -qi "error\|fatal\|exception" | head -5; then
+        warn "Detected errors in container logs:"
+        docker logs $CONTAINER_NAME 2>&1 | grep -i "error\|fatal\|exception" | head -5
+        echo ""
+        warn "Worker may need attention. Check logs with: docker logs $CONTAINER_NAME"
+        echo ""
+    else
+        log "Container health check passed"
+    fi
+}
+
+# Cleanup on Error
+cleanup_on_error() {
+    if [ $? -ne 0 ]; then
+        warn "Installation encountered an error"
+        docker stop $CONTAINER_NAME &>/dev/null || true
+        docker rm $CONTAINER_NAME &>/dev/null || true
+    fi
+}
+
+trap cleanup_on_error EXIT
 
 # Main Installation Flow
 main() {
@@ -777,8 +840,9 @@ main() {
     start_worker_container
     setup_systemd_autostart
     create_management_script
-    save_config
-    show_completion
+    perform_health_check
+    show_summary
 }
 
-main "$@"
+# Run installation
+main
