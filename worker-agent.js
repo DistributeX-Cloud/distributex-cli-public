@@ -72,7 +72,6 @@ class DistributeXWorker {
       }
       
       // CRITICAL FIX: Use consistent, deterministic fingerprint components
-      // Remove any timestamp or random elements that would cause duplicates
       const fingerprintComponents = [
         macAddress.toLowerCase().trim(),
         cpuModel.toLowerCase().trim().replace(/\s+/g, '-'),
@@ -80,7 +79,6 @@ class DistributeXWorker {
         arch.toLowerCase().trim()
       ];
       
-      // Create deterministic fingerprint from components
       const fingerprintString = fingerprintComponents.join('|');
       const fingerprint = crypto
         .createHash('sha256')
@@ -99,7 +97,6 @@ class DistributeXWorker {
       return fingerprint;
     } catch (error) {
       console.error('❌ Error generating fingerprint:', error);
-      // Fallback to basic fingerprint
       const fallback = crypto
         .createHash('sha256')
         .update(`${os.hostname()}-${os.platform()}-${os.arch()}`)
@@ -110,124 +107,7 @@ class DistributeXWorker {
     }
   }
 
-  /**
-   * Detect GPU devices and capabilities
-   */
-  async detectGPU() {
-    let gpuInfo = { 
-      available: false, 
-      model: null, 
-      memory: null,
-      count: 0,
-      driverVersion: null,
-      cudaVersion: null
-    };
-    
-    try {
-      const platform = os.platform();
-      
-      if (platform === 'linux') {
-        // Try NVIDIA first
-        try {
-          const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version,count --format=csv,noheader');
-          const lines = stdout.trim().split('\n');
-          
-          if (lines.length > 0 && lines[0]) {
-            const [name, memory, driverVersion] = lines[0].split(',').map(s => s.trim());
-            gpuInfo.available = true;
-            gpuInfo.model = name;
-            gpuInfo.memory = parseInt(memory);
-            gpuInfo.driverVersion = driverVersion;
-            gpuInfo.count = lines.length;
-            
-            // Try to get CUDA version
-            try {
-              const { stdout: cudaOut } = await execAsync('nvcc --version 2>/dev/null || nvidia-smi | grep "CUDA Version"');
-              const cudaMatch = cudaOut.match(/CUDA Version[:\s]+(\d+\.\d+)/i);
-              if (cudaMatch) {
-                gpuInfo.cudaVersion = cudaMatch[1];
-              }
-            } catch (e) {
-              console.log('Could not detect CUDA version');
-            }
-            
-            console.log(`✓ Detected ${gpuInfo.count} NVIDIA GPU(s): ${gpuInfo.model}`);
-          }
-        } catch (e) {
-          // Try AMD ROCm
-          try {
-            const { stdout } = await execAsync('rocm-smi --showproductname 2>/dev/null');
-            const gpuMatches = stdout.match(/GPU\[(\d+)\].*:\s*(.+)/g);
-            if (gpuMatches && gpuMatches.length > 0) {
-              gpuInfo.available = true;
-              gpuInfo.model = gpuMatches[0].split(':')[1].trim();
-              gpuInfo.count = gpuMatches.length;
-              
-              const { stdout: memOut } = await execAsync('rocm-smi --showmeminfo vram 2>/dev/null');
-              const memMatch = memOut.match(/Total.*?(\d+)/);
-              if (memMatch) {
-                gpuInfo.memory = parseInt(memMatch[1]);
-              }
-              
-              console.log(`✓ Detected ${gpuInfo.count} AMD GPU(s): ${gpuInfo.model}`);
-            }
-          } catch (e) {
-            // No AMD GPU found
-          }
-        }
-      } else if (platform === 'darwin') {
-        // macOS Metal detection
-        try {
-          const { stdout } = await execAsync('system_profiler SPDisplaysDataType 2>/dev/null');
-          const gpuMatch = stdout.match(/Chipset Model:\s*(.+)/);
-          if (gpuMatch) {
-            gpuInfo.available = true;
-            gpuInfo.model = gpuMatch[1].trim();
-            gpuInfo.count = 1;
-            
-            const totalRam = os.totalmem();
-            gpuInfo.memory = Math.floor(totalRam / (1024 * 1024) * 0.5);
-            
-            console.log(`✓ Detected Metal GPU: ${gpuInfo.model}`);
-          }
-        } catch (e) {
-          // No GPU detection on macOS
-        }
-      } else if (platform === 'win32') {
-        // Windows GPU detection
-        try {
-          const { stdout } = await execAsync('wmic path win32_VideoController get name,AdapterRAM');
-          const lines = stdout.trim().split('\n').slice(1).filter(l => l.trim());
-          
-          if (lines.length > 0) {
-            const firstGpu = lines[0].trim().split(/\s{2,}/);
-            gpuInfo.available = true;
-            gpuInfo.model = firstGpu[1] || 'Unknown GPU';
-            gpuInfo.memory = firstGpu[0] ? Math.floor(parseInt(firstGpu[0]) / (1024 * 1024)) : null;
-            gpuInfo.count = lines.length;
-            
-            console.log(`✓ Detected ${gpuInfo.count} GPU(s): ${gpuInfo.model}`);
-          }
-        } catch (e) {
-          // No GPU detection on Windows
-        }
-      }
-    } catch (error) {
-      console.log('GPU detection failed:', error.message);
-    }
-    
-    if (!gpuInfo.available) {
-      console.log('ℹ No GPU detected or GPU tools not installed');
-    }
-    
-    return gpuInfo;
-  }
-
-  /**
-   * Detect system capabilities
-   */
-
-    async getDockerId() {
+  async getDockerId() {
     try {
       const cgroup = await fsPromises.readFile('/proc/self/cgroup', 'utf8');
       const match = cgroup.match(/docker\/([a-f0-9]+)/i);
@@ -237,18 +117,13 @@ class DistributeXWorker {
     }
   }
 
-    async getStableHostname() {
-    // 1. Prefer Docker container ID if inside Docker
+  async getStableHostname() {
     const dockerId = await this.getDockerId();
     if (dockerId) {
       return `docker-${dockerId}`;
     }
-
-    // 2. Otherwise use OS hostname
     const h = os.hostname();
     if (h) return h.toLowerCase();
-
-    // 3. Absolute fallback
     return 'unknown';
   }
   
@@ -398,26 +273,7 @@ class DistributeXWorker {
     
     if (capabilities.gpuAvailable) {
       console.log(`  GPU: ${capabilities.gpuCount}x ${capabilities.gpuModel}`);
-      if (capabilities.gpuMemory) {
-        console.log(`       ${Math.floor(capabilities.gpuMemory / 1024)} GB VRAM per GPU`);
-      }
-      if (capabilities.gpuDriverVersion) {
-        console.log(`       Driver: ${capabilities.gpuDriverVersion}`);
-      }
-      if (capabilities.gpuCudaVersion) {
-        console.log(`       CUDA: ${capabilities.gpuCudaVersion}`);
-      }
-    } else {
-      console.log(`  GPU: Not available`);
     }
-    
-    console.log(`  Storage: ${capabilities.storageTotal} GB total`);
-    
-    console.log('\n📤 Sharing Configuration:');
-    console.log(`  CPU: ${capabilities.cpuSharePercent}% (${Math.floor(capabilities.cpuCores * capabilities.cpuSharePercent / 100)} cores)`);
-    console.log(`  RAM: ${capabilities.ramSharePercent}% (~${Math.floor(capabilities.ramAvailable * capabilities.ramSharePercent / 100 / 1024)} GB)`);
-    console.log(`  GPU: ${capabilities.gpuSharePercent}% (${Math.ceil(capabilities.gpuCount * capabilities.gpuSharePercent / 100)} devices)`);
-    console.log(`  Storage: ${capabilities.storageSharePercent}% (~${Math.floor(capabilities.storageTotal * capabilities.storageSharePercent / 100)} GB)`);
 
     console.log('\n🚀 Registering worker...');
     const worker = await this.makeRequest('POST', '/api/workers/register', capabilities);
