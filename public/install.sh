@@ -359,12 +359,13 @@ start_contributor() {
     stop_existing_container
 
     info "Launching stable worker container (no restart policy)..."
-    # REMOVED --restart always
+    
     docker run -d \
         --name $CONTAINER_NAME \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
+        -e NEXT_PUBLIC_DISABLE_SELF_REGISTER=true \   # ← THE FIX IS HERE
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
