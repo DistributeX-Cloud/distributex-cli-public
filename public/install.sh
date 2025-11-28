@@ -365,7 +365,7 @@ start_contributor() {
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
-        -e NEXT_PUBLIC_DISABLE_SELF_REGISTER=true \   # ← THE FIX IS HERE
+        -e NEXT_PUBLIC_DISABLE_SELF_REGISTER=true \ 
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
