@@ -274,33 +274,31 @@ select_role() {
 # Detect system (same as before - keeping existing logic)
 detect_system() {
     section "System Detection"
-   
+
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
     CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-   
-    if [ "$OS" = "linux" ]; then
-        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
-    elif [ "$OS" = "darwin" ]; then
-        CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
-    else
-        CPU_MODEL="Unknown CPU"
-    fi
-   
-    if command -v free &> /dev/null; then
-        RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-    else
-        RAM_TOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}' || echo 8192)
-    fi
-   
-    STORAGE_TOTAL=$(df -BG / 2>/dev/null | tail -1 | awk '{print $2}' | sed 's/G//' || echo 100)
-   
+    CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:\s*//' || sysctl -n machdep.cpu.brand_string 2>/dev/null)
+
+    # Total RAM (MB)
+    RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+
+    # Total Storage (MB)
+    STORAGE_TOTAL=$(df -m / | tail -1 | awk '{print $2}')
+
+    # Calculate Real Available Resources
+    RAM_AVAILABLE=$(free -m | awk '/^Mem:/{print $7}')
+    STORAGE_AVAILABLE=$(df -m / | tail -1 | awk '{print $4}')
+    CPU_AVAILABLE=$CPU_CORES
+
+    # Convert storage for display only
+    STORAGE_TOTAL_GB=$((STORAGE_TOTAL / 1024))
+
     MAC_ADDRESS=$(get_mac_address)
-   
     if [ -z "$MAC_ADDRESS" ]; then
         error "Could not detect MAC address for device identification."
     fi
-   
+
     # GPU Detection
     GPU_AVAILABLE="false"
     GPU_MODEL=""
@@ -308,29 +306,23 @@ detect_system() {
     GPU_COUNT=0
     GPU_DRIVER_VERSION=""
     GPU_CUDA_VERSION=""
-   
+
     if command -v nvidia-smi &> /dev/null; then
         GPU_AVAILABLE="true"
-        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 2>/dev/null || echo "Unknown GPU")
-        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 2>/dev/null | sed 's/ MiB//' || echo 0)
-        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l | xargs || echo 0)
-        GPU_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader -i 0 2>/dev/null || echo "")
+        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)
+        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 | sed 's/ MiB//')
+        GPU_COUNT=$(nvidia-smi -L | wc -l | xargs)
+        GPU_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader -i 0)
         if command -v nvcc &> /dev/null; then
-            GPU_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d, -f1 2>/dev/null || echo "")
-        fi
-    elif [ "$OS" = "darwin" ]; then
-        GPU_MODEL=$(system_profiler SPDisplaysDataType | grep "Chipset Model" | cut -d: -f2 | xargs || echo "Unknown GPU")
-        if [ -n "$GPU_MODEL" ] && [ "$GPU_MODEL" != "Unknown GPU" ]; then
-            GPU_AVAILABLE="true"
-            GPU_COUNT=1
+            GPU_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d, -f1)
         fi
     fi
-   
+
     log "System: $OS ($ARCH)"
     log "MAC Address: $MAC_ADDRESS"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
     log "RAM: ${RAM_TOTAL}MB"
-    log "Storage: ${STORAGE_TOTAL}GB"
+    log "Storage: ${STORAGE_TOTAL_GB}GB"
     log "GPU Available: $GPU_AVAILABLE"
     if [ "$GPU_AVAILABLE" = "true" ]; then
         log "GPU Model: $GPU_MODEL"
@@ -372,6 +364,7 @@ start_contributor() {
         --name $CONTAINER_NAME \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
+        -e DISABLE_SELF_REGISTER=true \
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
@@ -385,22 +378,22 @@ start_contributor() {
         -H "Content-Type: application/json" \
         -d '{
           "macAddress": "'"$MAC_ADDRESS"'",
-          "name": "Worker-'"$MAC_ADDRESS"'", 
+          "name": "Worker-'"$MAC_ADDRESS"'",
           "hostname": "'"$(hostname)"'",
           "platform": "'"$OS"'",
           "architecture": "'"$ARCH"'",
           "cpuCores": '"$CPU_CORES"',
           "cpuModel": "'"$CPU_MODEL"'",
           "ramTotal": '"$RAM_TOTAL"',
-          "ramAvailable": '"$RAM_TOTAL"',
+          "ramAvailable": '"$RAM_AVAILABLE"',
           "gpuAvailable": '"$GPU_AVAILABLE"',
           "gpuModel": "'"$GPU_MODEL"'",
           "gpuMemory": '"$GPU_MEMORY"',
           "gpuCount": '"$GPU_COUNT"',
           "gpuDriverVersion": "'"$GPU_DRIVER_VERSION"'",
           "gpuCudaVersion": "'"$GPU_CUDA_VERSION"'",
-          "storageTotal": '"$((STORAGE_TOTAL * 1024))"',
-          "storageAvailable": '"$((STORAGE_TOTAL * 1024))"',
+          "storageTotal": '"$STORAGE_TOTAL"',
+          "storageAvailable": '"$STORAGE_AVAILABLE"',
           "cpuSharePercent": 90,
           "ramSharePercent": 80,
           "gpuSharePercent": 70,
