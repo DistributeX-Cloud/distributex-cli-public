@@ -633,10 +633,10 @@ signup_user() {
 local response
     local http_code
     response=$(curl -s -w "\n%{http_code}" -X POST \
-        "$DISTRIBUTEX_API_URL/api/workers/register" \
-        -H "Authorization: Bearer $API_TOKEN" \
+        "$DISTRIBUTEX_API_URL/api/auth/register" \
         -H "Content-Type: application/json" \
-        -d "$payload")
+        -d "{\"firstName\":\"$first_name\",\"lastName\":\"$last_name\",\"email\":\"$email\",\"password\":\"$password\"}")
+        
     http_code=$(echo "$response" | tail -n1)
     local http_body=$(echo "$response" | head -n -1)
     
