@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - STABLE VERSION (No Restart)
+# DistributeX Complete Installer - FIXED SINGLE WORKER VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-# CHANGES:
-# 1. Removed --restart always (causes restart loops)
-# 2. Container runs once and stays up continuously
-# 3. Proper MAC address normalization
-# 4. Integrated with Neon PostgreSQL schema
+# FIXES:
+# 1. Only ONE worker registration per device
+# 2. Worker name: Worker-{MAC_ADDRESS}
+# 3. Hostname: Actual device hostname
+# 4. Worker agent disabled from self-registering
 set -e
 
 # Configuration
@@ -40,26 +40,26 @@ show_banner() {
 ║                                                           ║
 ║        ██████╗ ██╗███████╗████████╗██████╗ ██╗██╗         ║
 ║        ██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║╚██╗        ║
-║        ██║ ██║██║███████╗ ██║ ██████╔╝██║ ██║             ║
-║        ██║ ██║██║╚════██║ ██║ ██╔══██╗██║ ██║             ║
-║        ██████╔╝██║███████║ ██║ ██║ ██║██║██╔╝             ║
-║        ╚═════╝ ╚═╝╚══════╝ ╚═╝ ╚═╝ ╚═╝╚═╝╚═╝              ║
+║        ██║  ██║██║███████╗   ██║   ██████╔╝██║ ██║        ║
+║        ██║  ██║██║╚════██║   ██║   ██╔══██╗██║ ██║        ║
+║        ██████╔╝██║███████║   ██║   ██║  ██║██║██╔╝        ║
+║        ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝         ║
 ║                                                           ║
 ║                DistributeX Cloud Network                  ║
 ║             Distributed Computing Platform                ║
-║                                                           ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
     echo ""
 }
+
 # Get MAC Address (normalized to 12 hex chars, no colons)
 get_mac_address() {
     local mac=""
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-    # --- Get raw MAC ---
+    # Get raw MAC
     if [ "$os" = "linux" ]; then
         mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
     elif [ "$os" = "darwin" ]; then
@@ -117,7 +117,7 @@ check_requirements() {
     log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
 
-# User Authentication (same as before)
+# User Authentication
 authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -243,7 +243,7 @@ login_user() {
     sleep 1
 }
 
-# Select Role (same as before)
+# Select Role
 select_role() {
     section "Select Your Role"
    
@@ -277,24 +277,25 @@ select_role() {
     echo ""
 }
 
-# Detect system (same as before - keeping existing logic)
+# Detect system
 detect_system() {
     section "System Detection"
 
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
     CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-    CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:\s*//' || sysctl -n machdep.cpu.brand_string 2>/dev/null)
+    CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:\s*//' || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
+    HOSTNAME=$(hostname)
 
     # Total RAM (MB)
-    RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+    RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 4096)
 
     # Total Storage (MB)
-    STORAGE_TOTAL=$(df -m / | tail -1 | awk '{print $2}')
+    STORAGE_TOTAL=$(df -m / 2>/dev/null | tail -1 | awk '{print $2}' || echo 100000)
 
     # Calculate Real Available Resources
-    RAM_AVAILABLE=$(free -m | awk '/^Mem:/{print $7}')
-    STORAGE_AVAILABLE=$(df -m / | tail -1 | awk '{print $4}')
+    RAM_AVAILABLE=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 2048)
+    STORAGE_AVAILABLE=$(df -m / 2>/dev/null | tail -1 | awk '{print $4}' || echo 50000)
     CPU_AVAILABLE=$CPU_CORES
 
     # Convert storage for display only
@@ -315,16 +316,17 @@ detect_system() {
 
     if command -v nvidia-smi &> /dev/null; then
         GPU_AVAILABLE="true"
-        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)
-        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 | sed 's/ MiB//')
-        GPU_COUNT=$(nvidia-smi -L | wc -l | xargs)
-        GPU_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader -i 0)
+        GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 2>/dev/null || echo "")
+        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 2>/dev/null | sed 's/ MiB//' || echo 0)
+        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l | xargs || echo 0)
+        GPU_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader -i 0 2>/dev/null || echo "")
         if command -v nvcc &> /dev/null; then
-            GPU_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d, -f1)
+            GPU_CUDA_VERSION=$(nvcc --version 2>/dev/null | grep "release" | awk '{print $5}' | cut -d, -f1 || echo "")
         fi
     fi
 
     log "System: $OS ($ARCH)"
+    log "Hostname: $HOSTNAME"
     log "MAC Address: $MAC_ADDRESS"
     log "CPU: $CPU_CORES cores - $CPU_MODEL"
     log "RAM: ${RAM_TOTAL}MB"
@@ -357,65 +359,119 @@ setup_developer() {
     echo ""
 }
 
-# Start contributor - NO RESTART POLICY
+# Check if worker already exists
+check_existing_worker() {
+    section "Checking for Existing Worker"
+    
+    info "Checking if worker already registered..."
+    
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$DISTRIBUTEX_API_URL/api/workers/check/$MAC_ADDRESS" \
+        -H "Authorization: Bearer $API_TOKEN")
+    
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    
+    if [ "$HTTP_CODE" = "200" ]; then
+        WORKER_EXISTS=$(echo "$HTTP_BODY" | jq -r '.exists')
+        if [ "$WORKER_EXISTS" = "true" ]; then
+            WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId')
+            log "Worker already exists: $WORKER_ID"
+            echo "true" > "$CONFIG_DIR/worker_exists"
+            echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
+            return 0
+        fi
+    fi
+    
+    echo "false" > "$CONFIG_DIR/worker_exists"
+    return 1
+}
+
+# Register worker ONLY during installation
+register_worker() {
+    section "Registering Worker"
+    
+    # Check if already exists first
+    if check_existing_worker; then
+        warn "Worker already registered, skipping registration"
+        return 0
+    fi
+    
+    info "Registering new worker..."
+    
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
+        -H "Authorization: Bearer $API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"macAddress\": \"$MAC_ADDRESS\",
+          \"name\": \"Worker-$MAC_ADDRESS\",
+          \"hostname\": \"$HOSTNAME\",
+          \"platform\": \"$OS\",
+          \"architecture\": \"$ARCH\",
+          \"cpuCores\": $CPU_CORES,
+          \"cpuModel\": \"$CPU_MODEL\",
+          \"ramTotal\": $RAM_TOTAL,
+          \"ramAvailable\": $RAM_AVAILABLE,
+          \"gpuAvailable\": $GPU_AVAILABLE,
+          \"gpuModel\": \"$GPU_MODEL\",
+          \"gpuMemory\": $GPU_MEMORY,
+          \"gpuCount\": $GPU_COUNT,
+          \"gpuDriverVersion\": \"$GPU_DRIVER_VERSION\",
+          \"gpuCudaVersion\": \"$GPU_CUDA_VERSION\",
+          \"storageTotal\": $STORAGE_TOTAL,
+          \"storageAvailable\": $STORAGE_AVAILABLE,
+          \"cpuSharePercent\": 90,
+          \"ramSharePercent\": 80,
+          \"gpuSharePercent\": 70,
+          \"storageSharePercent\": 50
+        }")
+    
+    HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+        WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.workerId')
+        echo "$WORKER_ID" > "$CONFIG_DIR/worker_id"
+        log "Worker successfully registered!"
+        log "Worker ID: $WORKER_ID"
+        log "Worker Name: Worker-$MAC_ADDRESS"
+        log "Hostname: $HOSTNAME"
+    else
+        error "Worker registration failed (HTTP $HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
+    fi
+}
+
+# Start contributor - Container runs continuously, sends only heartbeats
 start_contributor() {
-    section "Starting Stable Worker Container"
+    section "Starting Worker Container"
 
     pull_docker_image
     stop_existing_container
-
-    info "Launching stable worker container (no restart policy)..."
     
+    # Register worker ONCE during installation
+    register_worker
+
+    info "Launching worker container (heartbeat-only mode)..."
+    
+    # Container runs with DISABLE_SELF_REGISTER=true to prevent double registration
     docker run -d \
         --name $CONTAINER_NAME \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
-        -e NEXT_PUBLIC_DISABLE_SELF_REGISTER=true \
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
         --url "$DISTRIBUTEX_API_URL" > /dev/null
 
-    sleep 10
+    sleep 5
     
-    info "Registering your device in DistributeX network..."
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
-        -H "Authorization: Bearer $API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{
-          "macAddress": "'"$MAC_ADDRESS"'",
-          "name": "Worker-'"$MAC_ADDRESS"'",
-          "hostname": "'"$(hostname)"'",
-          "platform": "'"$OS"'",
-          "architecture": "'"$ARCH"'",
-          "cpuCores": '"$CPU_CORES"',
-          "cpuModel": "'"$CPU_MODEL"'",
-          "ramTotal": '"$RAM_TOTAL"',
-          "ramAvailable": '"$RAM_AVAILABLE"',
-          "gpuAvailable": '"$GPU_AVAILABLE"',
-          "gpuModel": "'"$GPU_MODEL"'",
-          "gpuMemory": '"$GPU_MEMORY"',
-          "gpuCount": '"$GPU_COUNT"',
-          "gpuDriverVersion": "'"$GPU_DRIVER_VERSION"'",
-          "gpuCudaVersion": "'"$GPU_CUDA_VERSION"'",
-          "storageTotal": '"$STORAGE_TOTAL"',
-          "storageAvailable": '"$STORAGE_AVAILABLE"',
-          "cpuSharePercent": 90,
-          "ramSharePercent": 80,
-          "gpuSharePercent": 70,
-          "storageSharePercent": 50
-        }')
-
-    if [ "$HTTP_CODE" = "200" ]; then
-        log "Worker successfully registered in database!"
-        log "You are now contributing to DistributeX Cloud Network"
+    if docker ps | grep -q $CONTAINER_NAME; then
+        log "Worker container running"
+        log "Worker will send heartbeats to maintain online status"
+        log "No duplicate registrations will occur"
     else
-        warn "Registration call failed (HTTP $HTTP_CODE) — worker will retry automatically"
+        error "Failed to start worker container"
     fi
-
-    log "Container running continuously (no restart policy)"
-    info "Your device is now visible in the network"
 }
 
 # Pull Docker Image
@@ -428,7 +484,7 @@ pull_docker_image() {
 # Stop Existing Container
 stop_existing_container() {
     local containers
-    containers=$(docker ps -a --format '{{.Names}}' | grep "^${CONTAINER_NAME}")
+    containers=$(docker ps -a --format '{{.Names}}' | grep "^${CONTAINER_NAME}" || true)
     
     if [ -n "$containers" ]; then
         warn "Stopping old worker containers..."
@@ -446,17 +502,19 @@ save_config() {
    
     cat > "$CONFIG_DIR/config.json" <<EOF
 {
-  "version": "3.2.0",
+  "version": "3.3.0",
   "role": "$USER_ROLE",
   "apiUrl": "$DISTRIBUTEX_API_URL",
   "macAddress": "$MAC_ADDRESS",
+  "hostname": "$HOSTNAME",
+  "workerId": "$(cat $CONFIG_DIR/worker_id 2>/dev/null || echo '')",
+  "workerName": "Worker-$MAC_ADDRESS",
   "gpuAvailable": $GPU_AVAILABLE,
   "gpuModel": "$GPU_MODEL",
   "gpuMemory": $GPU_MEMORY,
   "gpuCount": $GPU_COUNT,
   "gpuDriverVersion": "$GPU_DRIVER_VERSION",
   "gpuCudaVersion": "$GPU_CUDA_VERSION",
-  "restartPolicy": "none",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
@@ -489,8 +547,10 @@ case "$1" in
     status)
         docker ps -f name=$CONTAINER_NAME --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
         echo ""
-        echo "Restart policy:"
-        docker inspect $CONTAINER_NAME --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || echo "Container not found"
+        if [ -f "$CONFIG_DIR/config.json" ]; then
+            echo "Worker Details:"
+            cat "$CONFIG_DIR/config.json" | jq -r '"  Worker Name: \(.workerName)\n  Worker ID: \(.workerId)\n  Hostname: \(.hostname)\n  MAC: \(.macAddress)"'
+        fi
         ;;
     uninstall)
         echo "Uninstalling..."
@@ -513,11 +573,6 @@ MGMT_EOF
     log "Management script created"
 }
 
-# NO systemd service - we're not using restart policies anymore
-setup_autostart() {
-    info "Skipping auto-start setup (using stable container)"
-}
-
 # Show Completion
 show_completion() {
     section "Installation Complete! 🎉"
@@ -525,16 +580,17 @@ show_completion() {
     echo ""
     echo -e "${GREEN}    ╔═══════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}    ║           DistributeX Successfully Installed!         ║${NC}"
-    if [ "$USER_ROLE" = "contributor" ]; then
-        echo -e "${GREEN}║            STABLE MODE: Container runs continuously   ║${NC}"
-    fi
     echo -e "${GREEN}    ╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
    
     if [ "$USER_ROLE" = "contributor" ]; then
         log "Role: Contributor (Resource Sharing)"
+        log "Worker Name: Worker-$MAC_ADDRESS"
+        log "Hostname: $HOSTNAME"
         log "MAC Address: $MAC_ADDRESS"
-        log "Restart Policy: NONE (stable continuous operation)"
+        if [ -f "$CONFIG_DIR/worker_id" ]; then
+            log "Worker ID: $(cat $CONFIG_DIR/worker_id)"
+        fi
         echo ""
         echo -e "${CYAN}Management Commands:${NC}"
         echo " $CONFIG_DIR/manage.sh status # Check worker status"
@@ -542,11 +598,11 @@ show_completion() {
         echo " $CONFIG_DIR/manage.sh restart # Restart worker if needed"
         echo " $CONFIG_DIR/manage.sh stop # Stop worker temporarily"
         echo ""
-        echo -e "${CYAN}Container Details:${NC}"
-        echo " • Runs continuously without restart loops"
-        echo " • Stable self-healing heartbeat system"
-        echo " • Uses MAC address for device tracking"
-        echo " • Zero impact on system performance"
+        echo -e "${CYAN}Important Notes:${NC}"
+        echo " • Single worker registered per device"
+        echo " • Worker sends heartbeats to maintain online status"
+        echo " • No duplicate registrations"
+        echo " • Container runs continuously"
     else
         log "Role: Developer (Resource Consumer)"
         log "API Key: ${API_TOKEN:0:20}..."
@@ -573,7 +629,6 @@ main() {
     if [ "$USER_ROLE" = "contributor" ]; then
         start_contributor
         create_management_script
-        setup_autostart
     else
         setup_developer
     fi
