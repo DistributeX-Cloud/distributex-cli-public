@@ -50,60 +50,61 @@ class PersistentWorker {
     
     this.setupProcessHandlers();
   }
-
-  /**
-   * Setup graceful shutdown handlers
-   */
-  setupProcessHandlers() {
-    const shutdown = async (signal) => {
-      if (this.isShuttingDown) {
-        console.log('⚠️  Forced shutdown');
-        process.exit(1);
-      }
-      
-      console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
-      this.isShuttingDown = true;
-      this.isRunning = false;
-      
-      // Clear heartbeat timer
-      if (this.heartbeatTimer) {
-        clearTimeout(this.heartbeatTimer);
-      }
-      
-      // Send offline status
-      if (this.macAddress && this.workerId) {
-        try {
-          await this.makeRequest('POST', `/api/workers/${this.workerId}/heartbeat`, {
-            macAddress: this.macAddress,
-            status: 'offline'
-          });
-          console.log('✅ Graceful shutdown complete');
-        } catch (e) {
-          console.log('⚠️  Could not send offline status');
-        }
-      }
-      
-      // Wait for cleanup
-      setTimeout(() => {
-        process.exit(0);
-      }, CONFIG.SHUTDOWN_GRACE_PERIOD);
-    };
-
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
+/**
+ * Setup graceful shutdown handlers - FIXED
+ */
+setupProcessHandlers() {
+  const shutdown = async (signal) => {
+    if (this.isShuttingDown) {
+      console.log('⚠️  Forced shutdown');
+      process.exit(1);
+    }
     
-    process.on('uncaughtException', (error) => {
-      console.error('❌ Uncaught exception:', error.message);
-      if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
-        console.error('💥 Fatal error, exiting...');
-        process.exit(1);
-      }
-    });
+    // FIXED: Changed from console.log` to console.log(
+    console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+    this.isShuttingDown = true;
+    this.isRunning = false;
     
-    process.on('unhandledRejection', (reason) => {
-      console.error('❌ Unhandled rejection:', reason);
-    });
-  }
+    // Clear heartbeat timer
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+    }
+    
+    // Send offline status
+    if (this.macAddress) {
+      try {
+        // FIXED: Use /api/workers/heartbeat (not /:id/heartbeat)
+        await this.makeRequest('POST', '/api/workers/heartbeat', {
+          macAddress: this.macAddress,
+          status: 'offline'
+        });
+        console.log('✅ Graceful shutdown complete');
+      } catch (e) {
+        console.log('⚠️  Could not send offline status');
+      }
+    }
+    
+    // Wait for cleanup
+    setTimeout(() => {
+      process.exit(0);
+    }, CONFIG.SHUTDOWN_GRACE_PERIOD);
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  
+  process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught exception:', error.message);
+    if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
+      console.error('💥 Fatal error, exiting...');
+      process.exit(1);
+    }
+  });
+  
+  process.on('unhandledRejection', (reason) => {
+    console.error('❌ Unhandled rejection:', reason);
+  });
+}
 
   /**
    * Get MAC address (normalized to 12 hex chars)
