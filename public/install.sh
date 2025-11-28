@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - Production Ready (Fixed Prompts)
+# DistributeX Complete Installer - FIXED VERSION
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
 
@@ -57,12 +57,23 @@ get_mac_address() {
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
     
     if [ "$os" = "linux" ]; then
-        mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+        # Try multiple interfaces in order of preference
+        for interface in eth0 en0 wlan0 wlp0s20f3 enp0s3 ens33; do
+            mac=$(ip link show "$interface" 2>/dev/null | awk '/link\/ether/ {print $2}')
+            [ -n "$mac" ] && break
+        done
+        
+        # Fallback: get first non-loopback MAC
+        if [ -z "$mac" ]; then
+            mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
+        fi
     elif [ "$os" = "darwin" ]; then
-        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
-        [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2; exit}')
+        # macOS: try en0 first, then en1
+        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2}')
+        [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2}')
     fi
     
+    # Validate MAC address format
     if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
         echo "$mac"
     else
@@ -76,9 +87,10 @@ generate_device_id() {
     
     if [ -z "$mac" ]; then
         # Fallback for VMs/Cloud instances without MAC
-        warn "MAC address not detected, using fallback identifier"
+        warn "MAC address not detected, generating fallback identifier"
         echo "$(hostname)-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo $(date +%s))" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "fallback-$(date +%s)"
     else
+        # Normalize MAC: lowercase, remove colons
         echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
     fi
 }
@@ -96,17 +108,13 @@ check_requirements() {
     if ! docker ps &> /dev/null; then
         warn "Docker daemon is not running. Attempting to start..."
         
-        # Try to start Docker
         if command -v systemctl &> /dev/null; then
-            sudo systemctl start docker || error "Failed to start Docker. Please start it manually."
+            sudo systemctl start docker 2>/dev/null || true
             sleep 3
-        else
-            error "Docker daemon is not running. Please start Docker and try again."
         fi
         
-        # Verify Docker is now running
         if ! docker ps &> /dev/null; then
-            error "Docker is still not running after start attempt."
+            error "Docker is not running. Please start Docker Desktop and try again."
         fi
     fi
     
@@ -134,6 +142,8 @@ authenticate_user() {
     # Check for existing token
     if [ -f "$CONFIG_DIR/token" ]; then
         API_TOKEN=$(cat "$CONFIG_DIR/token")
+        
+        # Verify token is still valid
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $API_TOKEN" \
             "$DISTRIBUTEX_API_URL/api/auth/user" 2>/dev/null || echo "000")
@@ -155,10 +165,10 @@ authenticate_user() {
     echo -e "  ${GREEN}1)${NC} Sign up (New user)"
     echo -e "  ${GREEN}2)${NC} Login (Existing user)"
     echo ""
-    echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}"
     
     while true; do
-        read -r choice < /dev/tty
+        echo -ne "${BOLD}Enter your choice [1 or 2]: ${NC}"
+        read -r choice
         case "$choice" in
             1) 
                 signup_user
@@ -169,7 +179,7 @@ authenticate_user() {
                 break 
                 ;;
             *) 
-                echo -e "${RED}Invalid choice. Please enter 1 or 2: ${NC}"
+                echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
                 ;;
         esac
     done
@@ -185,17 +195,17 @@ signup_user() {
     local first_name last_name email password password_confirm
     
     echo -ne "${BOLD}First Name: ${NC}"
-    read -r first_name < /dev/tty
+    read -r first_name
     
     echo -ne "${BOLD}Last Name: ${NC}"
-    read -r last_name < /dev/tty
+    read -r last_name
     
     echo -ne "${BOLD}Email: ${NC}"
-    read -r email < /dev/tty
+    read -r email
     
     while true; do
         echo -ne "${BOLD}Password (min 8 chars): ${NC}"
-        read -s -r password < /dev/tty
+        read -s -r password
         echo ""
         
         if [ ${#password} -lt 8 ]; then
@@ -204,8 +214,7 @@ signup_user() {
         fi
         
         echo -ne "${BOLD}Confirm Password: ${NC}"
-        echo -ne "${BOLD}Confirm Password: ${NC}"
-        read -s -r password_confirm < /dev/tty
+        read -s -r password_confirm
         echo ""
         
         if [ "$password" != "$password_confirm" ]; then
@@ -217,6 +226,7 @@ signup_user() {
 
     echo ""
     info "Creating account..."
+    
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
         -H "Content-Type: application/json" \
         -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\",\"lastName\":\"$last_name\"}")
@@ -225,10 +235,11 @@ signup_user() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
     if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-        error "Signup failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Unknown error"')"
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Signup failed")
+        error "Signup failed: $ERROR_MSG"
     fi
 
-    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token' 2>/dev/null)
     if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
         error "No authentication token returned"
     fi
@@ -250,10 +261,10 @@ login_user() {
     local email password
     
     echo -ne "${BOLD}Email: ${NC}"
-    read -r email < /dev/tty
+    read -r email
     
     echo -ne "${BOLD}Password: ${NC}"
-    read -s -r password < /dev/tty
+    read -s -r password
     echo ""
     echo ""
     
@@ -266,10 +277,11 @@ login_user() {
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     
     if [ "$HTTP_CODE" != "200" ]; then
-        error "Login failed ($HTTP_CODE): $(echo $HTTP_BODY | jq -r '.message // "Invalid credentials"')"
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // "Invalid credentials"' 2>/dev/null || echo "Login failed")
+        error "Login failed: $ERROR_MSG"
     fi
 
-    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token')
+    API_TOKEN=$(echo "$HTTP_BODY" | jq -r '.token' 2>/dev/null)
     if [ -z "$API_TOKEN" ] || [ "$API_TOKEN" = "null" ]; then
         error "No authentication token returned"
     fi
@@ -299,11 +311,10 @@ detect_gpu() {
             gpu_memory=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
             gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
             
-            # Get CUDA version if available
+            # Get CUDA version
             if command -v nvcc &> /dev/null; then
                 gpu_cuda=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1)
             else
-                # Try to get CUDA version from nvidia-smi
                 gpu_cuda=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}')
             fi
         fi
@@ -313,9 +324,9 @@ detect_gpu() {
     if [ "$gpu_available" = false ] && command -v rocm-smi &> /dev/null; then
         if rocm-smi &> /dev/null; then
             gpu_available=true
-            gpu_model=$(rocm-smi --showproductname | grep "Card series" | awk -F': ' '{print $2}')
+            gpu_model=$(rocm-smi --showproductname 2>/dev/null | grep "Card series" | awk -F': ' '{print $2}')
             gpu_count=1
-            gpu_driver=$(rocm-smi --showdriverversion | grep "Driver version" | awk '{print $3}')
+            gpu_driver=$(rocm-smi --showdriverversion 2>/dev/null | grep "Driver version" | awk '{print $3}')
         fi
     fi
     
@@ -339,7 +350,7 @@ detect_system() {
     # CPU Detection
     if [ "$OS" = "linux" ]; then
         CPU_CORES=$(nproc 2>/dev/null || echo 4)
-        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs)
+        CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
     elif [ "$OS" = "darwin" ]; then
         CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
         CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
@@ -364,11 +375,11 @@ detect_system() {
     # GPU Detection
     detect_gpu
     
-    # Device ID (MAC-based with fallback)
-    DEVICE_ID=$(generate_device_id)
+    # Device ID and MAC Address
     MAC_ADDRESS=$(get_mac_address)
+    DEVICE_ID=$(generate_device_id)
     
-    # Calculate sharing percentages (intelligent defaults)
+    # Calculate sharing percentages
     if [ "$CPU_CORES" -ge 8 ]; then
         CPU_SHARE=40
     elif [ "$CPU_CORES" -ge 4 ]; then
@@ -379,12 +390,7 @@ detect_system() {
     
     RAM_SHARE=30
     STORAGE_SHARE=20
-    
-    if [ "$GPU_AVAILABLE" = true ]; then
-        GPU_SHARE=50
-    else
-        GPU_SHARE=0
-    fi
+    GPU_SHARE=$( [ "$GPU_AVAILABLE" = true ] && echo 50 || echo 0 )
     
     # Display detected capabilities
     log "System: $OS ($ARCH)"
@@ -419,69 +425,91 @@ register_worker() {
     
     info "Registering device with network..."
     
-    # Ensure MAC address is available
+    # Validate MAC address exists
     if [ -z "$MAC_ADDRESS" ]; then
         error "MAC address detection failed - cannot register worker"
     fi
 
-    # Build payload with correct Neon field names
-    payload=$(jq -n \
-        --arg p_user_id "$API_TOKEN" \
-        --arg p_worker_id "$DEVICE_ID" \
-        --arg p_mac_address "$MAC_ADDRESS" \
-        --argjson p_cpu_cores "$CPU_CORES" \
-        --argjson p_ram_total "$RAM_TOTAL" \
-        --argjson p_disk_total "$STORAGE_TOTAL" \
-        --argjson p_gpu_available "$GPU_AVAILABLE" \
-        --arg p_gpu_name "$GPU_MODEL" \
-        --argjson p_gpu_memory "${GPU_MEMORY:-0}" \
+    # Build registration payload matching the API schema
+    PAYLOAD=$(jq -n \
+        --arg name "${HOSTNAME}" \
+        --arg hostname "${HOSTNAME}" \
+        --arg platform "${OS}" \
+        --arg architecture "${ARCH}" \
+        --argjson cpuCores "${CPU_CORES}" \
+        --arg cpuModel "${CPU_MODEL}" \
+        --argjson ramTotal "${RAM_TOTAL}" \
+        --argjson ramAvailable "${RAM_AVAILABLE}" \
+        --argjson gpuAvailable "$([ "$GPU_AVAILABLE" = true ] && echo true || echo false)" \
+        --arg gpuModel "${GPU_MODEL:-null}" \
+        --argjson gpuMemory "${GPU_MEMORY:-0}" \
+        --argjson gpuCount "${GPU_COUNT:-0}" \
+        --arg gpuDriverVersion "${GPU_DRIVER:-null}" \
+        --arg gpuCudaVersion "${GPU_CUDA:-null}" \
+        --argjson storageTotal "${STORAGE_TOTAL}" \
+        --argjson storageAvailable "${STORAGE_AVAILABLE}" \
+        --argjson cpuSharePercent "${CPU_SHARE}" \
+        --argjson ramSharePercent "${RAM_SHARE}" \
+        --argjson gpuSharePercent "${GPU_SHARE}" \
+        --argjson storageSharePercent "${STORAGE_SHARE}" \
+        --arg macAddress "${MAC_ADDRESS}" \
         '{
-            p_user_id: $p_user_id,
-            p_worker_id: $p_worker_id,
-            p_mac_address: $p_mac_address,
-            p_cpu_cores: $p_cpu_cores,
-            p_ram_total: $p_ram_total,
-            p_disk_total: $p_disk_total,
-            p_gpu_available: $p_gpu_available,
-            p_gpu_name: $p_gpu_name,
-            p_gpu_memory: $p_gpu_memory
-        }'
-    )
-
-    # Debug output (optional)
-    echo "DEBUG: Registration payload:"
-    echo "$payload" | jq '.'
+            name: $name,
+            hostname: $hostname,
+            platform: $platform,
+            architecture: $architecture,
+            cpuCores: $cpuCores,
+            cpuModel: $cpuModel,
+            ramTotal: $ramTotal,
+            ramAvailable: $ramAvailable,
+            gpuAvailable: $gpuAvailable,
+            gpuModel: $gpuModel,
+            gpuMemory: $gpuMemory,
+            gpuCount: $gpuCount,
+            gpuDriverVersion: $gpuDriverVersion,
+            gpuCudaVersion: $gpuCudaVersion,
+            storageTotal: $storageTotal,
+            storageAvailable: $storageAvailable,
+            cpuSharePercent: $cpuSharePercent,
+            ramSharePercent: $ramSharePercent,
+            gpuSharePercent: $gpuSharePercent,
+            storageSharePercent: $storageSharePercent,
+            macAddress: $macAddress
+        }')
 
     # Send registration request
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
         "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "$payload" 2>&1)
+        -d "$PAYLOAD" 2>&1)
 
     HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
     HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
 
     # Check for errors
     if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-        error "Worker registration failed (HTTP $HTTP_CODE)
-        
-Response: $HTTP_BODY
-
-Please verify API token, MAC detection, and network connectivity."
+        ERROR_MSG=$(echo "$HTTP_BODY" | jq -r '.message // .error // "Registration failed"' 2>/dev/null || echo "Registration failed")
+        error "Worker registration failed (HTTP $HTTP_CODE): $ERROR_MSG"
     fi
 
     # Parse worker ID from response
-    WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.id')
+    WORKER_ID=$(echo "$HTTP_BODY" | jq -r '.worker.id // .id' 2>/dev/null)
+    IS_NEW=$(echo "$HTTP_BODY" | jq -r '.isNew // false' 2>/dev/null)
+    
     if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
-        error "Worker registered but no ID returned. Response: $HTTP_BODY"
+        error "Worker registered but no ID returned"
     fi
 
     # Save worker ID locally
     echo "$WORKER_ID" > "$CONFIG_DIR/worker-id"
     chmod 600 "$CONFIG_DIR/worker-id"
 
-    log "Worker registered successfully: $WORKER_ID"
+    if [ "$IS_NEW" = "true" ]; then
+        log "Worker registered successfully: $WORKER_ID"
+    else
+        log "Worker reconnected (existing device): $WORKER_ID"
+    fi
     echo ""
 }
 
@@ -490,7 +518,7 @@ pull_docker_image() {
     section "Preparing Docker Image"
     info "Pulling latest worker image..."
     
-    if docker pull $DOCKER_IMAGE; then
+    if docker pull $DOCKER_IMAGE 2>&1; then
         log "Docker image ready: $DOCKER_IMAGE"
     else
         error "Failed to pull Docker image"
@@ -538,21 +566,23 @@ start_worker_container() {
     docker_cmd="$docker_cmd $DOCKER_IMAGE --api-key $API_TOKEN --url $DISTRIBUTEX_API_URL"
     
     # Execute
-    eval $docker_cmd || error "Failed to start container"
-    
-    sleep 3
-    
-    # Verify container is running
-    if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log "Worker container started successfully"
-        echo ""
-        info "Container configured with:"
-        echo "  ✓ Always-on restart policy (survives reboots)"
-        echo "  ✓ Auto-restart on failure"
-        echo "  ✓ Background daemon mode"
-        [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU access enabled"
+    if eval $docker_cmd 2>&1; then
+        sleep 3
+        
+        # Verify container is running
+        if docker ps --filter "name=$CONTAINER_NAME" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+            log "Worker container started successfully"
+            echo ""
+            info "Container configured with:"
+            echo "  ✓ Always-on restart policy (survives reboots)"
+            echo "  ✓ Auto-restart on failure"
+            echo "  ✓ Background daemon mode"
+            [ "$GPU_AVAILABLE" = true ] && echo "  ✓ GPU access enabled"
+        else
+            error "Container started but is not running"
+        fi
     else
-        error "Container failed to start"
+        error "Failed to start container"
     fi
 }
 
@@ -685,7 +715,7 @@ save_config() {
     "cpuModel": "$CPU_MODEL",
     "ramTotal": $RAM_TOTAL,
     "storageTotal": $STORAGE_TOTAL,
-    "gpuAvailable": $GPU_AVAILABLE,
+    "gpuAvailable": $([ "$GPU_AVAILABLE" = true ] && echo true || echo false),
     "gpuModel": $([ -n "$GPU_MODEL" ] && echo "\"$GPU_MODEL\"" || echo "null"),
     "gpuCount": $GPU_COUNT
   },
