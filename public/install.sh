@@ -54,24 +54,30 @@ EOF
     echo -e "${NC}"
     echo ""
 }
-
 # Get MAC Address (normalized to 12 hex chars, no colons)
 get_mac_address() {
     local mac=""
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
-   
+
+    # --- Get raw MAC ---
     if [ "$os" = "linux" ]; then
         mac=$(ip link show | awk '/link\/ether/ {print $2; exit}')
     elif [ "$os" = "darwin" ]; then
         mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2; exit}')
         [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2; exit}')
     fi
-   
-    if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
-        echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
-    else
+
+    # Remove colons, lowercase
+    mac=$(echo "$mac" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+
+    # Validate hex-only
+    if [[ ! "$mac" =~ ^[0-9a-f]{1,12}$ ]]; then
         echo ""
+        return
     fi
+
+    # Pad to full 12 chars (left-pad with zeros)
+    printf "%012s\n" "$mac" | tr ' ' '0'
 }
 
 # Check Requirements
@@ -421,11 +427,16 @@ pull_docker_image() {
 
 # Stop Existing Container
 stop_existing_container() {
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        warn "Stopping existing container..."
-        docker stop $CONTAINER_NAME &> /dev/null || true
-        docker rm $CONTAINER_NAME &> /dev/null || true
-        log "Existing container removed"
+    local containers
+    containers=$(docker ps -a --format '{{.Names}}' | grep "^${CONTAINER_NAME}")
+    
+    if [ -n "$containers" ]; then
+        warn "Stopping old worker containers..."
+        for c in $containers; do
+            docker stop "$c" >/dev/null 2>&1 || true
+            docker rm "$c" >/dev/null 2>&1 || true
+        done
+        log "All old worker containers removed"
     fi
 }
 
