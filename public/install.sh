@@ -3,7 +3,7 @@ set -e
 set -o pipefail
 
 #
-# DistributeX Complete Installer - Fixed Version
+# DistributeX Complete Installer with Docker Auto-Install
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
 
@@ -22,7 +22,7 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Global variables for system detection
+# Global variables
 declare OS ARCH HOSTNAME CPU_CORES CPU_MODEL RAM_TOTAL RAM_AVAILABLE
 declare STORAGE_TOTAL STORAGE_AVAILABLE MAC_ADDRESS DEVICE_ID
 declare GPU_AVAILABLE GPU_MODEL GPU_MEMORY GPU_COUNT GPU_DRIVER GPU_CUDA
@@ -42,9 +42,7 @@ read_input() {
     local silent="$2"
     local value=""
     
-    # Redirect input from terminal if available
     if [ -t 0 ]; then
-        # Terminal is available
         if [ "$silent" = "true" ]; then
             read -s -r -p "$prompt" value
             echo "" >&2
@@ -52,7 +50,6 @@ read_input() {
             read -r -p "$prompt" value
         fi
     elif [ -c /dev/tty ]; then
-        # Try /dev/tty
         if [ "$silent" = "true" ]; then
             read -s -r -p "$prompt" value < /dev/tty
             echo "" >&2
@@ -89,13 +86,269 @@ EOF
     echo ""
 }
 
+# Install Docker
+install_docker() {
+    section "Installing Docker"
+    
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$OS" = "linux" ]; then
+        install_docker_linux
+    elif [ "$OS" = "darwin" ]; then
+        install_docker_macos
+    else
+        error "Unsupported operating system: $OS"
+    fi
+}
+
+# Install Docker on Linux
+install_docker_linux() {
+    info "Detecting Linux distribution..."
+    
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO=$ID
+    else
+        error "Cannot detect Linux distribution"
+    fi
+    
+    info "Installing Docker on $DISTRO..."
+    
+    case "$DISTRO" in
+        ubuntu|debian)
+            install_docker_debian_based
+            ;;
+        fedora)
+            install_docker_fedora
+            ;;
+        centos|rhel)
+            install_docker_rhel
+            ;;
+        arch|manjaro)
+            install_docker_arch
+            ;;
+        *)
+            warn "Distribution $DISTRO not directly supported"
+            info "Attempting generic installation..."
+            install_docker_generic
+            ;;
+    esac
+}
+
+# Docker installation for Debian/Ubuntu
+install_docker_debian_based() {
+    info "Installing Docker on Debian/Ubuntu..."
+    
+    # Remove old versions
+    sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+    
+    # Update package index
+    sudo apt-get update
+    
+    # Install prerequisites
+    sudo apt-get install -y \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release
+    
+    # Add Docker's official GPG key
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    
+    # Set up repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Install Docker Engine
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    # Start and enable Docker
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    
+    # Add current user to docker group
+    sudo usermod -aG docker $USER
+    
+    log "Docker installed successfully!"
+    warn "You may need to log out and back in for group changes to take effect"
+}
+
+# Docker installation for Fedora
+install_docker_fedora() {
+    info "Installing Docker on Fedora..."
+    
+    sudo dnf -y install dnf-plugins-core
+    sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+    sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    sudo usermod -aG docker $USER
+    
+    log "Docker installed successfully!"
+}
+
+# Docker installation for RHEL/CentOS
+install_docker_rhel() {
+    info "Installing Docker on RHEL/CentOS..."
+    
+    sudo yum install -y yum-utils
+    sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    sudo yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    sudo usermod -aG docker $USER
+    
+    log "Docker installed successfully!"
+}
+
+# Docker installation for Arch Linux
+install_docker_arch() {
+    info "Installing Docker on Arch Linux..."
+    
+    sudo pacman -Sy --noconfirm docker docker-compose
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    sudo usermod -aG docker $USER
+    
+    log "Docker installed successfully!"
+}
+
+# Generic Docker installation (using convenience script)
+install_docker_generic() {
+    info "Using Docker convenience script..."
+    
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sudo sh /tmp/get-docker.sh
+    rm /tmp/get-docker.sh
+    
+    sudo systemctl start docker 2>/dev/null || true
+    sudo systemctl enable docker 2>/dev/null || true
+    sudo usermod -aG docker $USER 2>/dev/null || true
+    
+    log "Docker installed successfully!"
+}
+
+# Install Docker on macOS
+install_docker_macos() {
+    info "Docker Desktop required for macOS"
+    echo ""
+    echo "Please install Docker Desktop from:"
+    echo "  https://www.docker.com/products/docker-desktop"
+    echo ""
+    echo "After installation, restart this script."
+    error "Docker Desktop must be installed manually on macOS"
+}
+
+# Install required dependencies
+install_dependencies() {
+    section "Installing Required Dependencies"
+    
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$OS" = "linux" ]; then
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y curl jq bc
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y curl jq bc
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y curl jq bc
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -Sy --noconfirm curl jq bc
+        else
+            warn "Could not install dependencies automatically"
+            info "Please install manually: curl, jq, bc"
+        fi
+    elif [ "$OS" = "darwin" ]; then
+        if ! command -v brew &> /dev/null; then
+            warn "Homebrew not found. Installing Homebrew..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        fi
+        brew install curl jq bc 2>/dev/null || true
+    fi
+    
+    log "Dependencies installed"
+}
+
+# Check System Requirements
+check_requirements() {
+    section "Checking System Requirements"
+    
+    # Check Docker
+    if ! command -v docker &> /dev/null; then
+        warn "Docker is not installed"
+        echo ""
+        local install_docker_choice=$(read_input "${BOLD}Would you like to install Docker now? [y/N]: ${NC}")
+        
+        if [[ "$install_docker_choice" =~ ^[Yy]$ ]]; then
+            install_docker
+            
+            # Wait for Docker to start
+            info "Waiting for Docker to start..."
+            sleep 5
+            
+            # Verify installation
+            if ! command -v docker &> /dev/null; then
+                error "Docker installation failed"
+            fi
+        else
+            error "Docker is required. Please install it from: https://docs.docker.com/get-docker/"
+        fi
+    fi
+    
+    # Check if Docker daemon is running
+    if ! docker ps &> /dev/null; then
+        warn "Docker daemon is not running. Attempting to start..."
+        
+        if command -v systemctl &> /dev/null; then
+            sudo systemctl start docker 2>/dev/null || true
+            sleep 3
+        elif [ "$(uname)" = "Darwin" ]; then
+            open -a Docker 2>/dev/null || true
+            info "Please start Docker Desktop manually if it didn't open"
+            sleep 10
+        fi
+        
+        if ! docker ps &> /dev/null; then
+            error "Docker is not running. Please start Docker and try again."
+        fi
+    fi
+    
+    # Check required commands
+    local missing=()
+    for cmd in curl jq; do
+        if ! command -v $cmd &> /dev/null; then
+            missing+=($cmd)
+        fi
+    done
+    
+    if [ ${#missing[@]} -ne 0 ]; then
+        warn "Missing required commands: ${missing[*]}"
+        echo ""
+        local install_deps_choice=$(read_input "${BOLD}Would you like to install missing dependencies? [y/N]: ${NC}")
+        
+        if [[ "$install_deps_choice" =~ ^[Yy]$ ]]; then
+            install_dependencies
+        else
+            error "Required commands missing: ${missing[*]}"
+        fi
+    fi
+    
+    log "All requirements satisfied"
+    log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
+}
+
 # Get MAC Address
 get_mac_address() {
     local mac=""
     local os_type=$(uname -s | tr '[:upper:]' '[:lower:]')
     
     if [ "$os_type" = "linux" ]; then
-        # Try multiple interfaces
         for interface in eth0 en0 wlan0 wlp0s20f3 enp0s3 ens33 enp0s31f6 eno1; do
             if command -v ip &> /dev/null; then
                 mac=$(ip link show "$interface" 2>/dev/null | awk '/link\/ether/ {print $2}')
@@ -105,17 +358,14 @@ get_mac_address() {
             [ -n "$mac" ] && break
         done
         
-        # Fallback: get first non-loopback MAC
         if [ -z "$mac" ] && command -v ip &> /dev/null; then
             mac=$(ip link show 2>/dev/null | awk '/link\/ether/ {print $2; exit}')
         fi
     elif [ "$os_type" = "darwin" ]; then
-        # macOS
         mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2}')
         [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {print $2}')
     fi
     
-    # Validate MAC address format
     if [[ $mac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
         echo "$mac"
     else
@@ -138,48 +388,8 @@ generate_device_id() {
             echo "fallback-$(date +%s)-$$"
         fi
     else
-        # Normalize MAC
         echo "$mac" | tr '[:upper:]' '[:lower:]' | tr -d ':'
     fi
-}
-
-# Check System Requirements
-check_requirements() {
-    section "Checking System Requirements"
-    
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        error "Docker is not installed. Install from: https://docs.docker.com/get-docker/"
-    fi
-    
-    # Check if Docker daemon is running
-    if ! docker ps &> /dev/null; then
-        warn "Docker daemon is not running. Attempting to start..."
-        
-        if command -v systemctl &> /dev/null; then
-            sudo systemctl start docker 2>/dev/null || true
-            sleep 3
-        fi
-        
-        if ! docker ps &> /dev/null; then
-            error "Docker is not running. Please start Docker and try again."
-        fi
-    fi
-    
-    # Check required commands
-    local missing=()
-    for cmd in curl jq; do
-        if ! command -v $cmd &> /dev/null; then
-            missing+=($cmd)
-        fi
-    done
-    
-    if [ ${#missing[@]} -ne 0 ]; then
-        error "Missing required commands: ${missing[*]}. Please install them first."
-    fi
-    
-    log "All requirements satisfied"
-    log "Docker version: $(docker --version | cut -d' ' -f3 | cut -d',' -f1)"
 }
 
 # User Authentication
@@ -187,11 +397,9 @@ authenticate_user() {
     section "User Authentication"
     mkdir -p "$CONFIG_DIR"
 
-    # Check for existing token
     if [ -f "$CONFIG_DIR/token" ]; then
         API_TOKEN=$(cat "$CONFIG_DIR/token")
         
-        # Verify token
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $API_TOKEN" \
             "$DISTRIBUTEX_API_URL/api/auth/user" 2>/dev/null || echo "000")
@@ -325,7 +533,6 @@ detect_gpu() {
     GPU_DRIVER=""
     GPU_CUDA=""
     
-    # Check for NVIDIA GPU
     if command -v nvidia-smi &> /dev/null; then
         if nvidia-smi &> /dev/null; then
             GPU_AVAILABLE=true
@@ -334,7 +541,6 @@ detect_gpu() {
             GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 || echo 0)
             GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
             
-            # Get CUDA version
             if command -v nvcc &> /dev/null; then
                 GPU_CUDA=$(nvcc --version 2>/dev/null | grep "release" | awk '{print $5}' | cut -d',' -f1)
             else
@@ -343,7 +549,6 @@ detect_gpu() {
         fi
     fi
     
-    # Check for AMD GPU (ROCm)
     if [ "$GPU_AVAILABLE" = false ] && command -v rocm-smi &> /dev/null; then
         if rocm-smi &> /dev/null 2>&1; then
             GPU_AVAILABLE=true
@@ -362,7 +567,6 @@ detect_system() {
     ARCH=$(uname -m)
     HOSTNAME=$(hostname)
     
-    # CPU Detection
     if [ "$OS" = "linux" ]; then
         CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
         CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
@@ -374,7 +578,6 @@ detect_system() {
         CPU_MODEL="Unknown CPU"
     fi
     
-    # RAM Detection
     if command -v free &> /dev/null; then
         RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
         RAM_AVAILABLE=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo $((RAM_TOTAL * 80 / 100)))
@@ -383,7 +586,6 @@ detect_system() {
         RAM_AVAILABLE=$((RAM_TOTAL * 80 / 100))
     fi
     
-    # Storage Detection
     if [ "$OS" = "darwin" ]; then
         STORAGE_TOTAL=$(df -g / 2>/dev/null | tail -1 | awk '{print $2}' || echo 100)
         STORAGE_AVAILABLE=$(df -g / 2>/dev/null | tail -1 | awk '{print $4}' || echo 80)
@@ -392,14 +594,11 @@ detect_system() {
         STORAGE_AVAILABLE=$(df -BG / 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//' || echo 80)
     fi
     
-    # GPU Detection
     detect_gpu
     
-    # Device ID and MAC Address
     MAC_ADDRESS=$(get_mac_address)
     DEVICE_ID=$(generate_device_id)
     
-    # Calculate sharing percentages
     if [ "$CPU_CORES" -ge 8 ]; then
         CPU_SHARE=40
     elif [ "$CPU_CORES" -ge 4 ]; then
@@ -413,7 +612,6 @@ detect_system() {
     GPU_SHARE=0
     [ "$GPU_AVAILABLE" = true ] && GPU_SHARE=50
     
-    # Display detected capabilities
     log "System: $OS ($ARCH)"
     log "Hostname: $HOSTNAME"
     log "Device ID: $DEVICE_ID"
@@ -452,7 +650,6 @@ register_worker() {
         error "Unable to generate device identifier"
     fi
 
-    # Build registration payload
     local payload=$(jq -n \
         --arg name "${HOSTNAME}" \
         --arg hostname "${HOSTNAME}" \
@@ -476,7 +673,7 @@ register_worker() {
         --argjson storageSharePercent "${STORAGE_SHARE}" \
         --arg macAddress "${device_identifier}" \
         '{
-            name: $name,
+            name: $name
             hostname: $hostname,
             platform: $platform,
             architecture: $architecture,
