@@ -42,7 +42,7 @@ https://distributex-cloud-network.pages.dev/api-docs
 #### Python SDK
 
 ```bash
-pip install distributex
+pip install distributex-cloud
 ```
 
 ```python
@@ -61,7 +61,7 @@ result = dx.run(train_model, args=(data,), gpu=True, workers=4)
 #### JavaScript/Node.js SDK
 
 ```bash
-npm install distributex
+npm install distributex  # or npm install -g distributex
 ```
 
 ```javascript
