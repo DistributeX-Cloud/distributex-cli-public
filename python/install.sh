@@ -1,99 +1,50 @@
-"""
-DistributeX Python SDK Setup - FIXED
-Package name: distributex-cloud (to avoid PyPI conflict)
-"""
+#!/bin/bash
+#
+# DistributeX Python SDK Installer (Corrected)
+# This file must be a Bash script, NOT Python.
+#
 
-from setuptools import setup, find_packages
-from pathlib import Path
+set -e
+set -o pipefail
 
-# Read README
-readme_file = Path(__file__).parent / "README.md"
-if readme_file.exists():
-    with open(readme_file, "r", encoding="utf-8") as f:
-        long_description = f.read()
-else:
-    long_description = """
-# DistributeX Cloud SDK
+echo ""
+echo "██████╗ ██╗███████╗████████╗██████╗ ██╗   ██╗████████╗███████╗██╗  ██╗"
+echo "██╔══██╗██║██╔════╝╚══██╔══╝██╔══██╗██║   ██║╚══██╔══╝██╔════╝██║ ██╔╝"
+echo "██████╔╝██║█████╗     ██║   ██████╔╝██║   ██║   ██║   █████╗  █████╔╝ "
+echo "██╔══██╗██║██╔══╝     ██║   ██╔══██╗██║   ██║   ██║   ██╔══╝  ██╔═██╗ "
+echo "██║  ██║██║███████╗   ██║   ██║  ██║╚██████╔╝   ██║   ███████╗██║  ██╗"
+echo "╚═╝  ╚═╝╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝"
+echo ""
 
-Distributed computing platform for Python. Run code on a global pool of CPU, RAM, GPU, and storage.
+echo "📦 Installing DistributeX Python SDK…"
+echo ""
 
-## Installation
+# Ensure Python exists
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "❌ Python3 not found. Install Python 3.8+ first."
+    exit 1
+fi
 
-```bash
-pip install distributex-cloud
-```
+if ! command -v pip3 >/dev/null 2>&1; then
+    echo "❌ pip3 not found. Install pip first."
+    exit 1
+fi
 
-## Quick Start
+PACKAGE="distributex-cloud"
 
-```python
-from distributex import DistributeX
+echo "Installing package: $PACKAGE"
+pip3 install --upgrade "$PACKAGE"
 
-dx = DistributeX(api_key="your_api_key")
-
-# Run any Python function
-def my_function(data):
-    return processed_data
-
-result = dx.run(my_function, args=(data,))
-```
-
-Get your API key at: https://distributex-cloud-network.pages.dev
-"""
-
-setup(
-    name="distributex-cloud",  # NEW NAME to avoid conflict
-    version="1.0.0",
-    author="DistributeX Team",
-    author_email="support@distributex.io",
-    description="Distributed computing platform - run code on global resource pool",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    url="https://github.com/DistributeX-Cloud/distributex-cli-public",
-    project_urls={
-        "Documentation": "https://distributex.io/docs",
-        "Dashboard": "https://distributex-cloud-network.pages.dev",
-        "Source": "https://github.com/DistributeX-Cloud/distributex-cli-public",
-        "Bug Reports": "https://github.com/DistributeX-Cloud/distributex-cli-public/issues",
-    },
-    packages=find_packages(),
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Intended Audience :: Developers",
-        "Topic :: Software Development :: Libraries :: Python Modules",
-        "Topic :: System :: Distributed Computing",
-        "License :: OSI Approved :: MIT License",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
-        "Operating System :: OS Independent",
-    ],
-    python_requires=">=3.8",
-    install_requires=[
-        "requests>=2.28.0",
-    ],
-    extras_require={
-        "dev": [
-            "pytest>=7.0.0",
-            "black>=22.0.0",
-            "flake8>=4.0.0",
-        ],
-    },
-    keywords=[
-        "distributed",
-        "computing",
-        "cloud",
-        "parallel",
-        "processing",
-        "gpu",
-        "cpu",
-        "machine-learning",
-        "ml",
-        "ai",
-        "distributex",
-    ],
-    include_package_data=True,
-    zip_safe=False,
-)
+echo ""
+echo "✅ DistributeX Python SDK installed successfully!"
+echo ""
+echo "Usage example:"
+echo "-------------------------------------------"
+echo "from distributex import DistributeX"
+echo "dx = DistributeX(api_key='your_api_key')"
+echo "result = dx.run(lambda x: x*2, args=(5,))"
+echo "-------------------------------------------"
+echo ""
+echo "Get your API key at:"
+echo "👉 https://distributex-cloud-network.pages.dev"
+echo ""
