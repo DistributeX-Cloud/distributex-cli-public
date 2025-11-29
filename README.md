@@ -36,7 +36,7 @@ curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-pu
 
 After installing, get your API key at:
 ```
-https://distributex-cloud-network.pages.dev/auth
+https://distributex-cloud-network.pages.dev/api-docs
 ```
 
 #### Python SDK
