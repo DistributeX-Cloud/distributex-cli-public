@@ -1,19 +1,3 @@
-/**
- * DistributeX JavaScript/Node.js SDK
- * ===================================
- * Easy integration for JavaScript developers
- * 
- * Installation:
- *   npm install distributex
- * 
- * Usage:
- *   const DistributeX = require('distributex');
- *   const dx = new DistributeX('your_api_key');
- *   
- *   // Run any script
- *   const result = await dx.runScript('process.js', { workers: 4, gpu: true });
- */
-
 #!/usr/bin/env node
 /**
  * DistributeX JavaScript/Node.js SDK
