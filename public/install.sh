@@ -611,7 +611,14 @@ show_completion() {
     if [ "$USER_ROLE" = "contributor" ]; then
         log "Role: Contributor (Resource Sharing)"
         log "Worker Name: Worker-$MAC_ADDRESS"
-        log "Hostname: $HOSTNAME"
+        
+        # Get actual hostname from config if available
+        ACTUAL_HOSTNAME="$HOSTNAME"
+        if [ -f "$CONFIG_DIR/config.json" ] && command -v jq &> /dev/null; then
+            ACTUAL_HOSTNAME=$(jq -r '.hostname // "unknown"' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$HOSTNAME")
+        fi
+        log "Hostname: $ACTUAL_HOSTNAME"
+        
         log "MAC Address: $MAC_ADDRESS"
         if [ -f "$CONFIG_DIR/worker_id" ]; then
             log "Worker ID: $(cat $CONFIG_DIR/worker_id)"
