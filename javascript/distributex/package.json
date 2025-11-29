@@ -1,5 +1,5 @@
 {
-  "name": "distributex",
+  "name": "distributex-cloud",
   "version": "1.0.0",
   "description": "DistributeX JavaScript/Node.js SDK for distributed computing",
   "main": "src/index.js",
