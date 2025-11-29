@@ -17,7 +17,7 @@ After installing DistributeX, you have access to a global pool of computing reso
 ## 🐍 Step 2: Install SDK (Python)
 
 ```bash
-pip install distributex
+pip install distributex-cloud
 ```
 
 ### Basic Python Example
@@ -63,7 +63,7 @@ result = dx.run_script('train_model.py',
 ## 📦 Step 3: Install SDK (JavaScript/Node.js)
 
 ```bash
-npm install distributex
+npm install distributex  # or npm install -g distributex
 ```
 
 ### Basic JavaScript Example
