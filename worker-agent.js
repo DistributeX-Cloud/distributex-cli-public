@@ -389,49 +389,90 @@ setupProcessHandlers() {
     
     return worker;
   }
+/**
+ * Send heartbeat - WITH DEBUG LOGGING
+ */
+async sendHeartbeat() {
+  if (!this.isRunning || this.isShuttingDown) return;
+  
+  try {
+    const freeRam = Math.floor(os.freemem() / (1024 * 1024));
+    const storage = await this.detectStorage();
 
-  /**
-   * Send heartbeat
-   */
-  async sendHeartbeat() {
-    if (!this.isRunning || this.isShuttingDown) return;
+    const heartbeatData = {
+      macAddress: this.macAddress,
+      ramAvailable: freeRam,
+      storageAvailable: storage.available * 1024,
+      status: 'online'
+    };
+
+    // DEBUG: Log what we're sending
+    if (this.metrics.successfulHeartbeats === 0) {
+      console.log('🔍 First heartbeat payload:', {
+        mac: this.macAddress,
+        macLength: this.macAddress?.length,
+        hasToken: !!this.apiKey,
+        endpoint: '/api/workers/heartbeat'
+      });
+    }
+
+    await this.makeRequest(
+      'POST',
+      '/api/workers/heartbeat',
+      heartbeatData
+    );
+
+    this.metrics.successfulHeartbeats++;
+    this.metrics.consecutiveFailures = 0;
     
-    try {
-      const freeRam = Math.floor(os.freemem() / (1024 * 1024));
-      const storage = await this.detectStorage();
-
-      await this.makeRequest(
-        'POST',
-        `/api/workers/${this.workerId}/heartbeat`,
-        {
-          macAddress: this.macAddress,
-          ramAvailable: freeRam,
-          storageAvailable: storage.available * 1024,
-          status: 'online'
+    // Log every 5th heartbeat
+    if (this.metrics.successfulHeartbeats % 5 === 0) {
+      console.log(`💓 Heartbeat #${this.metrics.successfulHeartbeats}`);
+    }
+    
+  } catch (error) {
+    this.metrics.failedHeartbeats++;
+    this.metrics.consecutiveFailures++;
+    
+    console.error(`❌ Heartbeat failed (${this.metrics.consecutiveFailures}/${CONFIG.MAX_CONSECUTIVE_FAILURES}):`, error.message);
+    
+    // DEBUG: On first failure, show more details
+    if (this.metrics.consecutiveFailures === 1) {
+      console.error('🔍 Debug info:', {
+        macAddress: this.macAddress,
+        macLength: this.macAddress?.length,
+        workerId: this.workerId,
+        hostname: this.hostname,
+        hasApiKey: !!this.apiKey
+      });
+    }
+    
+    // Try to reconnect if too many failures
+    if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
+      console.warn('⚠️  Too many failures, checking registration...');
+      
+      // Check if worker still exists in DB
+      try {
+        const check = await this.makeRequest('GET', '/api/workers/my');
+        console.log(`📊 Found ${check.length} workers in database:`, 
+          check.map(w => ({ id: w.id, mac: w.macAddress, name: w.name }))
+        );
+        
+        // See if our MAC is in the list
+        const ourWorker = check.find(w => w.macAddress === this.macAddress);
+        if (ourWorker) {
+          console.log('✅ Worker exists in DB:', ourWorker.id);
+          this.workerId = ourWorker.id;
+        } else {
+          console.error('❌ Worker NOT in database! MAC:', this.macAddress);
+          console.error('   Available MACs:', check.map(w => w.macAddress));
         }
-      );
-
-      this.metrics.successfulHeartbeats++;
-      this.metrics.consecutiveFailures = 0;
-      
-      // Log every 5th heartbeat
-      if (this.metrics.successfulHeartbeats % 5 === 0) {
-        console.log(`💓 Heartbeat #${this.metrics.successfulHeartbeats}`);
-      }
-      
-    } catch (error) {
-      this.metrics.failedHeartbeats++;
-      this.metrics.consecutiveFailures++;
-      
-      console.error(`❌ Heartbeat failed (${this.metrics.consecutiveFailures}/${CONFIG.MAX_CONSECUTIVE_FAILURES}):`, error.message);
-      
-      // Try to reconnect if too many failures
-      if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
-        console.warn('⚠️  Too many failures, attempting to reconnect...');
-        await this.checkExisting();
+      } catch (e) {
+        console.error('❌ Could not check workers:', e.message);
       }
     }
   }
+}
 
   /**
    * Schedule next heartbeat
