@@ -61,7 +61,7 @@ result = dx.run(train_model, args=(data,), gpu=True, workers=4)
 #### JavaScript/Node.js SDK
 
 ```bash
-npm install distributex  # or npm install -g distributex
+npm install distributex-cloud
 ```
 
 ```javascript
