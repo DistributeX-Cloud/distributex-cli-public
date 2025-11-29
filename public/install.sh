@@ -279,6 +279,23 @@ select_role() {
     echo ""
 }
 
+detect_all_drives() {
+    # Returns ALL drives, including NVMe, SATA, SSD/HDD, USB
+    DRIVES_JSON=$(lsblk -b -o NAME,TYPE,SIZE,MOUNTPOINT,MODEL,TRAN --json)
+
+    # Calculate total physical storage (excluding loop and ram devices)
+    STORAGE_TOTAL_BYTES=$(lsblk -b -d -o TYPE,SIZE | awk '$1=="disk"{sum+=$2}END{print sum}')
+
+    # Convert to MB
+    STORAGE_TOTAL=$(( STORAGE_TOTAL_BYTES / 1024 / 1024 ))
+
+    # Calculate available storage (sum of free space of mounted filesystems)
+    STORAGE_AVAILABLE=$(df -m | awk 'NR>1{sum+=$4}END{print sum}')
+
+    # Export for use in detect_system and worker registration
+    BLOCK_DEVICES="$DRIVES_JSON"
+}
+
 # Detect system
 detect_system() {
     section "System Detection"
@@ -289,18 +306,15 @@ detect_system() {
     CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | sed 's/Model name:\s*//' || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
     HOSTNAME=$(hostname)
 
-    # Total RAM (MB)
+    # Total RAM
     RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 4096)
 
-    # Total Storage (MB)
-    STORAGE_TOTAL=$(df -m / 2>/dev/null | tail -1 | awk '{print $2}' || echo 100000)
+    # NEW: detect ALL drives
+    detect_all_drives
 
-    # Calculate Real Available Resources
     RAM_AVAILABLE=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 2048)
-    STORAGE_AVAILABLE=$(df -m / 2>/dev/null | tail -1 | awk '{print $4}' || echo 50000)
     CPU_AVAILABLE=$CPU_CORES
 
-    # Convert storage for display only
     STORAGE_TOTAL_GB=$((STORAGE_TOTAL / 1024))
 
     MAC_ADDRESS=$(get_mac_address)
