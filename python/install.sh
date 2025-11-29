@@ -1,58 +1,26 @@
-#!/bin/bash
-#
-# DistributeX Python SDK Installer
-# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/python/install.sh | bash
-#
+"""
+DistributeX Python SDK Setup - FIXED
+Package name: distributex-cloud (to avoid PyPI conflict)
+"""
 
-set -e
+from setuptools import setup, find_packages
+from pathlib import Path
 
-REPO_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main"
-INSTALL_DIR="/tmp/distributex-python-sdk"
+# Read README
+readme_file = Path(__file__).parent / "README.md"
+if readme_file.exists():
+    with open(readme_file, "r", encoding="utf-8") as f:
+        long_description = f.read()
+else:
+    long_description = """
+# DistributeX Cloud SDK
 
-echo "🐍 Installing DistributeX Python SDK..."
-echo ""
-
-# Check Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Python 3 is required but not found"
-    echo "   Install from: https://www.python.org/downloads/"
-    exit 1
-fi
-
-PYTHON_VERSION=$(python3 --version | cut -d' ' -f2)
-echo "✓ Found Python $PYTHON_VERSION"
-
-# Check pip
-if ! command -v pip3 &> /dev/null; then
-    echo "❌ pip3 is required but not found"
-    echo "   Install: python3 -m ensurepip --upgrade"
-    exit 1
-fi
-
-echo "✓ Found pip3"
-echo ""
-
-# Create temporary directory
-rm -rf "$INSTALL_DIR"
-mkdir -p "$INSTALL_DIR/distributex"
-
-# Download files
-echo "📥 Downloading SDK files..."
-
-curl -sSL "$REPO_URL/python/distributex/__init__.py" -o "$INSTALL_DIR/distributex/__init__.py"
-curl -sSL "$REPO_URL/python/distributex/client.py" -o "$INSTALL_DIR/distributex/client.py"
-curl -sSL "$REPO_URL/python/distributex/setup.py" -o "$INSTALL_DIR/setup.py"
-
-# Create README
-cat > "$INSTALL_DIR/README.md" << 'EOF'
-# DistributeX Python SDK
-
-Distributed computing platform for Python.
+Distributed computing platform for Python. Run code on a global pool of CPU, RAM, GPU, and storage.
 
 ## Installation
 
 ```bash
-pip install distributex
+pip install distributex-cloud
 ```
 
 ## Quick Start
@@ -66,34 +34,66 @@ dx = DistributeX(api_key="your_api_key")
 def my_function(data):
     return processed_data
 
-result = dx.run(my_function, args=(data,), workers=4)
+result = dx.run(my_function, args=(data,))
 ```
 
-## Documentation
+Get your API key at: https://distributex-cloud-network.pages.dev
+"""
 
-https://distributex.io/docs
-EOF
-
-# Install
-echo "📦 Installing package..."
-cd "$INSTALL_DIR"
-
-# Install in user space (no sudo required)
-pip3 install --user -e .
-
-echo ""
-echo "✅ Installation Complete!"
-echo ""
-echo "Quick Start:"
-echo "  python3 -c 'from distributex import DistributeX; print(\"SDK Ready!\")'"
-echo ""
-echo "Get your API key at:"
-echo "  https://distributex-cloud-network.pages.dev/auth"
-echo ""
-echo "Documentation:"
-echo "  https://distributex.io/docs"
-echo ""
-
-# Cleanup
-cd /tmp
-rm -rf "$INSTALL_DIR"
+setup(
+    name="distributex-cloud",  # NEW NAME to avoid conflict
+    version="1.0.0",
+    author="DistributeX Team",
+    author_email="support@distributex.io",
+    description="Distributed computing platform - run code on global resource pool",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/DistributeX-Cloud/distributex-cli-public",
+    project_urls={
+        "Documentation": "https://distributex.io/docs",
+        "Dashboard": "https://distributex-cloud-network.pages.dev",
+        "Source": "https://github.com/DistributeX-Cloud/distributex-cli-public",
+        "Bug Reports": "https://github.com/DistributeX-Cloud/distributex-cli-public/issues",
+    },
+    packages=find_packages(),
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Distributed Computing",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Operating System :: OS Independent",
+    ],
+    python_requires=">=3.8",
+    install_requires=[
+        "requests>=2.28.0",
+    ],
+    extras_require={
+        "dev": [
+            "pytest>=7.0.0",
+            "black>=22.0.0",
+            "flake8>=4.0.0",
+        ],
+    },
+    keywords=[
+        "distributed",
+        "computing",
+        "cloud",
+        "parallel",
+        "processing",
+        "gpu",
+        "cpu",
+        "machine-learning",
+        "ml",
+        "ai",
+        "distributex",
+    ],
+    include_package_data=True,
+    zip_safe=False,
+)
