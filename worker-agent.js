@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * DistributeX Persistent Worker Agent - HEARTBEAT ONLY VERSION
+ * DistributeX Persistent Worker Agent - COMPLETE FIXED VERSION
  * 
  * FIXES:
- * 1. Respects DISABLE_SELF_REGISTER flag
- * 2. Only sends heartbeats if already registered
- * 3. Worker name: Worker-{MAC_ADDRESS}
- * 4. Hostname: Actual device hostname
+ * 1. MAC address normalized to exactly 12 hex chars
+ * 2. Heartbeat uses MAC authentication (NO JWT required)
+ * 3. Fixed syntax error in setupProcessHandlers
+ * 4. Proper error handling and logging
+ * 5. Graceful shutdown sends offline status
  */
 
 const os = require('os');
@@ -50,79 +51,83 @@ class PersistentWorker {
     
     this.setupProcessHandlers();
   }
-/**
- * Setup graceful shutdown handlers - FIXED
- */
-setupProcessHandlers() {
-  const shutdown = async (signal) => {
-    if (this.isShuttingDown) {
-      console.log('⚠️  Forced shutdown');
-      process.exit(1);
-    }
-    
-    // FIXED: Changed from console.log` to console.log(
-    console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
-    this.isShuttingDown = true;
-    this.isRunning = false;
-    
-    // Clear heartbeat timer
-    if (this.heartbeatTimer) {
-      clearTimeout(this.heartbeatTimer);
-    }
-    
-    // Send offline status
-    if (this.macAddress) {
-      try {
-        // FIXED: Use /api/workers/heartbeat (not /:id/heartbeat)
-        await this.makeRequest('POST', '/api/workers/heartbeat', {
-          macAddress: this.macAddress,
-          status: 'offline'
-        });
-        console.log('✅ Graceful shutdown complete');
-      } catch (e) {
-        console.log('⚠️  Could not send offline status');
-      }
-    }
-    
-    // Wait for cleanup
-    setTimeout(() => {
-      process.exit(0);
-    }, CONFIG.SHUTDOWN_GRACE_PERIOD);
-  };
-
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  
-  process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught exception:', error.message);
-    if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
-      console.error('💥 Fatal error, exiting...');
-      process.exit(1);
-    }
-  });
-  
-  process.on('unhandledRejection', (reason) => {
-    console.error('❌ Unhandled rejection:', reason);
-  });
-}
 
   /**
-   * Get MAC address (normalized to 12 hex chars)
+   * Setup graceful shutdown handlers - FIXED
+   */
+  setupProcessHandlers() {
+    const shutdown = async (signal) => {
+      if (this.isShuttingDown) {
+        console.log('⚠️  Forced shutdown');
+        process.exit(1);
+      }
+      
+      // FIXED: Changed from console.log` to console.log(
+      console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+      this.isShuttingDown = true;
+      this.isRunning = false;
+      
+      // Clear heartbeat timer
+      if (this.heartbeatTimer) {
+        clearTimeout(this.heartbeatTimer);
+      }
+      
+      // Send offline status (NO JWT needed - uses MAC)
+      if (this.macAddress) {
+        try {
+          await this.sendHeartbeat('offline');
+          console.log('✅ Graceful shutdown complete');
+        } catch (e) {
+          console.log('⚠️  Could not send offline status');
+        }
+      }
+      
+      // Wait for cleanup
+      setTimeout(() => {
+        process.exit(0);
+      }, CONFIG.SHUTDOWN_GRACE_PERIOD);
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    
+    process.on('uncaughtException', (error) => {
+      console.error('❌ Uncaught exception:', error.message);
+      if (error.message.includes('ECONNREFUSED') || error.message.includes('API key')) {
+        console.error('💥 Fatal error, exiting...');
+        process.exit(1);
+      }
+    });
+    
+    process.on('unhandledRejection', (reason) => {
+      console.error('❌ Unhandled rejection:', reason);
+    });
+  }
+
+  /**
+   * Get MAC address - Returns EXACTLY 12 hex characters (no colons/dashes)
    */
   async getMacAddress() {
     try {
       const interfaces = os.networkInterfaces();
       
       for (const [name, ifaces] of Object.entries(interfaces)) {
+        if (!ifaces) continue;
+        
         for (const iface of ifaces) {
-          if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
-            const mac = iface.mac.toLowerCase().replace(/[:-]/g, '');
-            
-            if (/^[0-9a-f]{12}$/.test(mac)) {
-              console.log(`📌 MAC: ${mac} (${name})`);
-              console.log(`📌 Hostname: ${this.hostname}`);
-              return mac;
-            }
+          // Skip internal interfaces and invalid MACs
+          if (iface.internal || !iface.mac || iface.mac === '00:00:00:00:00:00') {
+            continue;
+          }
+          
+          // Normalize: lowercase, remove colons/dashes
+          const mac = iface.mac.toLowerCase().replace(/[:-]/g, '');
+          
+          // Validate: must be exactly 12 hex characters
+          if (/^[0-9a-f]{12}$/.test(mac)) {
+            console.log(`📌 MAC: ${mac} (${name})`);
+            console.log(`📌 Hostname: ${this.hostname}`);
+            return mac;
           }
         }
       }
@@ -230,7 +235,7 @@ setupProcessHandlers() {
       gpuCount: gpu.count,
       gpuDriverVersion: gpu.driverVersion,
       gpuCudaVersion: gpu.cudaVersion,
-      storageTotal: storage.total * 1024, // Convert GB to MB for database
+      storageTotal: storage.total * 1024, // Convert GB to MB
       storageAvailable: storage.available * 1024,
       cpuSharePercent: cpuShare,
       ramSharePercent: ramShare,
@@ -242,19 +247,26 @@ setupProcessHandlers() {
   }
 
   /**
-   * Make HTTP request with timeout
+   * Make HTTP request
+   * IMPORTANT: Heartbeat endpoint does NOT use Authorization header
    */
   async makeRequest(method, path, data = null) {
     return new Promise((resolve, reject) => {
       const url = new URL(path, this.baseUrl);
       
+      const headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'DistributeX-Worker/3.4'
+      };
+      
+      // Only add JWT for non-heartbeat endpoints
+      if (!path.includes('/heartbeat')) {
+        headers['Authorization'] = `Bearer ${this.apiKey}`;
+      }
+      
       const options = {
         method,
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'DistributeX-Worker/3.3'
-        },
+        headers,
         timeout: 30000
       };
 
@@ -304,8 +316,7 @@ setupProcessHandlers() {
       
       return false;
     } catch (error) {
-      // If endpoint doesn't exist (404) or other error, try alternate method
-      console.warn('⚠️  Check endpoint failed, trying to register/reconnect...');
+      console.warn('⚠️  Check endpoint failed, will try to register...');
       return false;
     }
   }
@@ -315,7 +326,6 @@ setupProcessHandlers() {
    */
   async loadWorkerIdFromConfig() {
     try {
-      // Try to read from mounted config directory
       const configPath = '/config/worker_id';
       if (fs.existsSync(configPath)) {
         const workerId = fs.readFileSync(configPath, 'utf8').trim();
@@ -389,90 +399,74 @@ setupProcessHandlers() {
     
     return worker;
   }
-/**
- * Send heartbeat - WITH DEBUG LOGGING
- */
-async sendHeartbeat() {
-  if (!this.isRunning || this.isShuttingDown) return;
-  
-  try {
-    const freeRam = Math.floor(os.freemem() / (1024 * 1024));
-    const storage = await this.detectStorage();
 
-    const heartbeatData = {
-      macAddress: this.macAddress,
-      ramAvailable: freeRam,
-      storageAvailable: storage.available * 1024,
-      status: 'online'
-    };
-
-    // DEBUG: Log what we're sending
-    if (this.metrics.successfulHeartbeats === 0) {
-      console.log('🔍 First heartbeat payload:', {
-        mac: this.macAddress,
-        macLength: this.macAddress?.length,
-        hasToken: !!this.apiKey,
-        endpoint: '/api/workers/heartbeat'
-      });
-    }
-
-    await this.makeRequest(
-      'POST',
-      '/api/workers/heartbeat',
-      heartbeatData
-    );
-
-    this.metrics.successfulHeartbeats++;
-    this.metrics.consecutiveFailures = 0;
+  /**
+   * Send heartbeat - NO JWT REQUIRED
+   * Uses MAC address for authentication
+   */
+  async sendHeartbeat(status = 'online') {
+    if (!this.isRunning && status !== 'offline') return;
     
-    // Log every 5th heartbeat
-    if (this.metrics.successfulHeartbeats % 5 === 0) {
-      console.log(`💓 Heartbeat #${this.metrics.successfulHeartbeats}`);
-    }
-    
-  } catch (error) {
-    this.metrics.failedHeartbeats++;
-    this.metrics.consecutiveFailures++;
-    
-    console.error(`❌ Heartbeat failed (${this.metrics.consecutiveFailures}/${CONFIG.MAX_CONSECUTIVE_FAILURES}):`, error.message);
-    
-    // DEBUG: On first failure, show more details
-    if (this.metrics.consecutiveFailures === 1) {
-      console.error('🔍 Debug info:', {
-        macAddress: this.macAddress,
-        macLength: this.macAddress?.length,
-        workerId: this.workerId,
-        hostname: this.hostname,
-        hasApiKey: !!this.apiKey
-      });
-    }
-    
-    // Try to reconnect if too many failures
-    if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
-      console.warn('⚠️  Too many failures, checking registration...');
+    try {
+      // Validate MAC address format
+      if (!this.macAddress || !/^[0-9a-f]{12}$/.test(this.macAddress)) {
+        throw new Error(`Invalid MAC format: ${this.macAddress}`);
+      }
       
-      // Check if worker still exists in DB
-      try {
-        const check = await this.makeRequest('GET', '/api/workers/my');
-        console.log(`📊 Found ${check.length} workers in database:`, 
-          check.map(w => ({ id: w.id, mac: w.macAddress, name: w.name }))
-        );
-        
-        // See if our MAC is in the list
-        const ourWorker = check.find(w => w.macAddress === this.macAddress);
-        if (ourWorker) {
-          console.log('✅ Worker exists in DB:', ourWorker.id);
-          this.workerId = ourWorker.id;
-        } else {
-          console.error('❌ Worker NOT in database! MAC:', this.macAddress);
-          console.error('   Available MACs:', check.map(w => w.macAddress));
-        }
-      } catch (e) {
-        console.error('❌ Could not check workers:', e.message);
+      const freeRam = Math.floor(os.freemem() / (1024 * 1024));
+      const storage = await this.detectStorage();
+
+      const heartbeatData = {
+        macAddress: this.macAddress,
+        ramAvailable: freeRam,
+        storageAvailable: storage.available * 1024,
+        status: status
+      };
+
+      // NO Authorization header - endpoint uses MAC for identification
+      const response = await this.makeRequest(
+        'POST',
+        '/api/workers/heartbeat',
+        heartbeatData
+      );
+
+      this.metrics.successfulHeartbeats++;
+      this.metrics.consecutiveFailures = 0;
+      
+      // Log every 5th heartbeat
+      if (this.metrics.successfulHeartbeats % 5 === 0) {
+        console.log(`💓 Heartbeat #${this.metrics.successfulHeartbeats} - ${response.workerName || 'OK'}`);
+      }
+      
+    } catch (error) {
+      this.metrics.failedHeartbeats++;
+      this.metrics.consecutiveFailures++;
+      
+      console.error(`❌ Heartbeat failed (${this.metrics.consecutiveFailures}/${CONFIG.MAX_CONSECUTIVE_FAILURES}):`, error.message);
+      
+      // Debug info on first failure
+      if (this.metrics.consecutiveFailures === 1) {
+        console.error('🔍 Debug info:', {
+          macAddress: this.macAddress,
+          macLength: this.macAddress?.length,
+          workerId: this.workerId,
+          hostname: this.hostname,
+          endpoint: `${this.baseUrl}/api/workers/heartbeat`
+        });
+      }
+      
+      // Too many failures
+      if (this.metrics.consecutiveFailures >= CONFIG.MAX_CONSECUTIVE_FAILURES) {
+        console.error('\n⚠️  Too many consecutive failures!');
+        console.error('   Possible causes:');
+        console.error('   1. Worker not registered in database');
+        console.error('   2. MAC address mismatch');
+        console.error('   3. API endpoint not deployed');
+        console.error('   4. Network connectivity issues');
+        console.error('\n   Action: Check database for MAC:', this.macAddress);
       }
     }
   }
-}
 
   /**
    * Schedule next heartbeat
@@ -491,9 +485,9 @@ async sendHeartbeat() {
    */
   async runForever() {
     console.log('\n╔═══════════════════════════════════════════════════════════╗');
-    console.log('║         DistributeX Persistent Worker v3.3              ║');
-    console.log('║         Heartbeat-Only Mode (No Duplicate Registration)  ║');
-    console.log('╚═══════════════════════════════════════════════════════════╝\n');
+    console.log('  ║               DistributeX Persistent Worker               ║');
+    console.log('  ║                           v3.4                            ║');
+    console.log('  ╚═══════════════════════════════════════════════════════════╝\n');
     
     if (!this.apiKey) {
       console.error('❌ API key required. Use --api-key YOUR_KEY');
@@ -504,7 +498,7 @@ async sendHeartbeat() {
     await this.register();
     
     console.log('\n✨ Worker is ONLINE');
-    console.log('💓 Heartbeat every 60 seconds');
+    console.log('💓 Heartbeat every 60 seconds (no JWT required)');
     console.log('🔒 Press Ctrl+C to stop\n');
 
     // Start heartbeat loop
@@ -534,22 +528,31 @@ if (require.main === module) {
   if (args.length === 0 || args.includes('--help')) {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║         DistributeX Persistent Worker v3.3               ║
+║          DistributeX Persistent Worker v3.4               ║
 ╚═══════════════════════════════════════════════════════════╝
 
 USAGE:
   node worker-agent.js --api-key YOUR_API_KEY
 
 OPTIONS:
-  --api-key    Your API key (REQUIRED)
-  --url        API URL (optional)
-
-EXAMPLE:
-  node worker-agent.js --api-key abc123xyz456
+  --api-key    Your API key (REQUIRED for registration)
+  --url        API URL (optional, default: production)
 
 ENVIRONMENT VARIABLES:
-  DISABLE_SELF_REGISTER   Set to 'true' to disable self-registration
-                          (worker must be registered by install script)
+  DISABLE_SELF_REGISTER=true    Heartbeat-only mode (no registration)
+  DISTRIBUTEX_API_URL           Override API URL
+
+HEARTBEAT AUTHENTICATION:
+  - Heartbeat endpoint does NOT require JWT
+  - Uses MAC address for device identification
+  - MAC is permanently linked to user account during registration
+
+EXAMPLES:
+  # Normal mode (with registration)
+  node worker-agent.js --api-key abc123xyz456
+
+  # Heartbeat-only mode (pre-registered)
+  DISABLE_SELF_REGISTER=true node worker-agent.js --api-key abc123
 
 GET API KEY:
   https://distributex-cloud-network.pages.dev/auth
