@@ -460,13 +460,19 @@ start_contributor() {
 
     info "Launching worker container (heartbeat-only mode)..."
     
+    # CRITICAL FIX: Save MAC address to config file so container can read it
+    echo "$MAC_ADDRESS" > "$CONFIG_DIR/mac_address"
+    chmod 600 "$CONFIG_DIR/mac_address"
+    
     # Container runs with restart policy and DISABLE_SELF_REGISTER=true
+    # Mount config directory so container can read the host's MAC address
     docker run -d \
         --name $CONTAINER_NAME \
         --restart unless-stopped \
         --shm-size=1g \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
+        -e HOST_MAC_ADDRESS="$MAC_ADDRESS" \
         -v "$CONFIG_DIR:/config:ro" \
         $DOCKER_IMAGE \
         --api-key "$API_TOKEN" \
@@ -476,8 +482,8 @@ start_contributor() {
     
     if docker ps | grep -q $CONTAINER_NAME; then
         log "Worker container running"
+        log "Using host MAC address: $MAC_ADDRESS"
         log "Worker will send heartbeats to maintain online status"
-        log "No duplicate registrations will occur"
     else
         error "Failed to start worker container"
     fi
