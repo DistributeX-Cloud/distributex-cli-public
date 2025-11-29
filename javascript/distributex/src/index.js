@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * DistributeX JavaScript/Node.js SDK
  */
