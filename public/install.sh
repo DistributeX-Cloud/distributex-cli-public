@@ -80,18 +80,7 @@ check_requirements() {
     info "Operating System: $OS"
     info "Architecture: $ARCH"
     
-    # Docker check
-    if ! command -v docker &>/dev/null; then
-        error "Docker is required but not installed.\nInstall from: https://docs.docker.com/get-docker/"
-    fi
-    
-    if ! docker ps &>/dev/null; then
-        error "Docker daemon is not running.\nPlease start Docker and try again."
-    fi
-    
-    log "Docker is installed and running"
-    
-    # Required tools
+    # Required tools (always needed)
     local required_tools=("curl" "jq")
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" &>/dev/null; then
@@ -110,6 +99,24 @@ check_requirements() {
     done
     
     log "All requirements satisfied"
+}
+
+# ============================================================================
+# DOCKER CHECK (Only for Contributors)
+# ============================================================================
+check_docker() {
+    section "Checking Docker"
+    
+    # Docker check
+    if ! command -v docker &>/dev/null; then
+        error "Docker is required for contributors but not installed.\nInstall from: https://docs.docker.com/get-docker/"
+    fi
+    
+    if ! docker ps &>/dev/null; then
+        error "Docker daemon is not running.\nPlease start Docker and try again."
+    fi
+    
+    log "Docker is installed and running"
 }
 
 # ============================================================================
@@ -424,67 +431,38 @@ login_user() {
 }
 
 # ============================================================================
-# ROLE SELECTION
+# ROLE SELECTION - Fetch from API (set on website)
 # ============================================================================
 select_role() {
     section "Role Selection"
     
-    # Check current role
-    ROLE_INFO=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/update-role" || echo "{}")
-    CURRENT_ROLE=$(echo "$ROLE_INFO" | jq -r '.currentRole // "none"')
+    # Fetch user's current role from API
+    ROLE_RESPONSE=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" || echo "{}")
+    CURRENT_ROLE=$(echo "$ROLE_RESPONSE" | jq -r '.role // "none"')
+    USER_EMAIL=$(echo "$ROLE_RESPONSE" | jq -r '.email // "unknown"')
     
-    if [ "$CURRENT_ROLE" != "none" ] && [ "$CURRENT_ROLE" != "null" ]; then
-        echo -e "${CYAN}Current Role: ${GREEN}$CURRENT_ROLE${NC}\n"
-        echo "  1) Keep current role"
-        echo "  2) Contributor (Share computing resources)"
-        echo "  3) Developer (Use computing resources)"
+    # If role is not set, redirect to website
+    if [ "$CURRENT_ROLE" = "none" ] || [ "$CURRENT_ROLE" = "null" ] || [ -z "$CURRENT_ROLE" ]; then
         echo ""
-        
-        read -r -p "Choice [1-3]: " choice </dev/tty
-        
-        case "$choice" in
-            1)
-                USER_ROLE="$CURRENT_ROLE"
-                log "Keeping role: $USER_ROLE"
-                return
-                ;;
-            2)
-                USER_ROLE="contributor"
-                ;;
-            3)
-                USER_ROLE="developer"
-                ;;
-            *)
-                error "Invalid choice"
-                ;;
-        esac
-    else
-        echo -e "${CYAN}${BOLD}Select Your Role:${NC}\n"
-        echo "  ${GREEN}1) Contributor${NC}"
-        echo "     • Share your unused CPU, RAM, GPU, and Storage"
-        echo "     • Earn by contributing to the network"
-        echo "     • Help power distributed computing"
+        warn "No role selected for account: $USER_EMAIL"
         echo ""
-        echo "  ${BLUE}2) Developer${NC}"
-        echo "     • Run your code on the global resource pool"
-        echo "     • Access distributed CPU, GPU, and storage"
-        echo "     • Scale computations instantly"
+        echo -e "${YELLOW}Please select your role on the website:${NC}"
+        echo -e "${BLUE}${BOLD}$DISTRIBUTEX_API_URL/dashboard${NC}"
         echo ""
-        
-        read -r -p "Choice [1-2]: " choice </dev/tty
-        
-        case "$choice" in
-            1)
-                USER_ROLE="contributor"
-                ;;
-            2)
-                USER_ROLE="developer"
-                ;;
-            *)
-                error "Invalid choice"
-                ;;
-        esac
+        echo "Choose either:"
+        echo "  • ${GREEN}Contributor${NC} - Share your computing resources"
+        echo "  • ${BLUE}Developer${NC} - Use distributed computing for your tasks"
+        echo ""
+        echo "After selecting your role, run this script again:"
+        echo "  ${CYAN}curl -sSL $INSTALL_SCRIPT_URL | bash${NC}"
+        echo ""
+        exit 0
     fi
+    
+    USER_ROLE="$CURRENT_ROLE"
+    log "Account role: $USER_ROLE"
+    echo "$USER_ROLE" > "$CONFIG_DIR/role"
+}
     
     # Update role via API
     info "Setting role to: $USER_ROLE"
@@ -834,34 +812,34 @@ show_completion_message() {
 main() {
     show_banner
     
-    # System checks
+    # System checks (always needed)
     check_requirements
     
-    # System detection
-    detect_system
-    detect_runtimes
-    
-    # Authentication
+    # Authentication first
     authenticate_user
     
-    # Role selection
+    # Get role from website
     select_role
     
-    # Register worker
-    register_worker
-    
-    # Start worker (for contributors)
+    # Only check Docker if contributor
     if [[ "$USER_ROLE" == "contributor" ]]; then
+        check_docker
+        detect_system
+        detect_runtimes
+        register_worker
         start_contributor
         setup_autostart
+        create_management_script
+        show_completion_message
     else
+        # Developer path - no Docker needed
         echo ""
-        info "Developer role selected - worker not started"
+        log "Developer account detected"
         echo ""
         echo -e "${CYAN}${BOLD}Next Steps for Developers:${NC}"
         echo ""
-        echo "1. Get your API key from your dashboard:"
-        echo "   ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
+        echo "1. Your API key (save this securely):"
+        echo "   ${GREEN}${BOLD}$API_TOKEN${NC}"
         echo ""
         echo "2. Install the SDK:"
         echo "   ${YELLOW}# Python${NC}"
@@ -873,24 +851,18 @@ main() {
         echo "3. Start building:"
         echo "   ${YELLOW}# Python${NC}"
         echo "   from distributex import DistributeX"
-        echo "   dx = DistributeX(api_key='your_key')"
+        echo "   dx = DistributeX(api_key='$API_TOKEN')"
         echo "   result = dx.run(my_function, workers=4, gpu=True)"
         echo ""
         echo "   ${YELLOW}# JavaScript${NC}"
         echo "   const DistributeX = require('distributex-cloud');"
-        echo "   const dx = new DistributeX('your_key');"
+        echo "   const dx = new DistributeX('$API_TOKEN');"
         echo "   const result = await dx.run(myFunction, { workers: 4 });"
         echo ""
+        echo "Dashboard: ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
         echo "Documentation: ${BLUE}https://distributex.io/docs${NC}"
         echo ""
-        return
     fi
-    
-    # Create management tools
-    create_management_script
-    
-    # Show completion
-    show_completion_message
 }
 
 # ============================================================================
