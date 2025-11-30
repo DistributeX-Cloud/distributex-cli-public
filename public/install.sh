@@ -1,7 +1,7 @@
 #!/bin/bash
 ################################################################################
-# DistributeX Cloud Network - Complete Installation Script v4.0
-# FIXED SINGLE WORKER VERSION - Docker only for Contributors
+# DistributeX Cloud Network - Complete Installation Script v4.1
+# FULLY COMPATIBLE WITH NEON POSTGRESQL SCHEMA (Single Worker + Heartbeat Only)
 ################################################################################
 set -e
 
@@ -15,20 +15,14 @@ CONFIG_DIR="$HOME/.distributex"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh"
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
 # ============================================================================
 # LOGGING
 # ============================================================================
-log() { echo -e "${GREEN}[✓]${NC} $1"; }
-info() { echo -e "${CYAN}[i]${NC} $1"; }
-warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+log()   { echo -e "${GREEN}[✓]${NC} $1"; }
+info()  { echo -e "${CYAN}[i]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BOLD}${BLUE}═══ $1 ═══${NC}\n"; }
 
@@ -49,7 +43,7 @@ show_banner() {
 ║ ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝  ║
 ║                                                               ║
 ║       DistributeX Cloud Network - Single Worker Edition       ║
-║            Persistent • Secure • One Device = One Worker      ║
+║        One Device = One Worker • Heartbeat Only • Secure       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 EOF
@@ -57,7 +51,7 @@ EOF
 }
 
 # ============================================================================
-# MAC ADDRESS (normalized 12 hex chars)
+# MAC ADDRESS → exactly 12 lowercase hex chars (matches DB constraint)
 # ============================================================================
 get_mac_address() {
     local mac=""
@@ -68,17 +62,18 @@ get_mac_address() {
         mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print $2}' || ifconfig en1 2>/dev/null | awk '/ether/ {print $2}')
     fi
     mac=$(echo "$mac" | tr -d ':' | tr '[:upper:]' '[:lower:]')
-    [[ "$mac" =~ ^[0-9a-f]{1,12}$ ]] || return 1
-    printf "%012s" "$mac" | tr ' ' '0'
+    [[ "$mac" =~ ^[0-9a-f]{12}$ ]] && echo "$mac" && return 0
+    [[ "$mac" =~ ^[0-9a-f]{1,11}$ ]] && printf "%012s" "$mac" | tr ' ' '0' && return 0
+    return 1
 }
 
 # ============================================================================
-# REQUIREMENTS (curl + jq)
+# BASIC REQUIREMENTS
 # ============================================================================
 check_requirements() {
     section "Checking Requirements"
     for tool in curl jq; do
-        if ! command -v "$tool" &>/dev/null; then
+        command -v "$tool" &>/dev/null || {
             warn "Installing $tool..."
             if command -v apt-get &>/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y "$tool" -qq
@@ -89,23 +84,19 @@ check_requirements() {
             else
                 error "Please install $tool manually"
             fi
-        fi
+        }
     done
-    log "Basic tools ready"
+    log "curl + jq ready"
 }
 
 # ============================================================================
-# DOCKER CHECK (only for contributors)
+# DOCKER CHECK (Contributor only)
 # ============================================================================
 check_docker() {
     section "Checking Docker"
-    if ! command -v docker &>/dev/null; then
-        error "Docker is required for contributors.\nInstall from: https://docs.docker.com/get-docker/"
-    fi
-    if ! docker ps >/dev/null 2>&1; then
-        error "Docker daemon not running. Please start Docker."
-    fi
-    log "Docker is ready"
+    command -v docker &>/dev/null || error "Docker required → https://docs.docker.com/get-docker/"
+    docker ps >/dev/null 2>&1 || error "Docker daemon not running"
+    log "Docker ready"
 }
 
 # ============================================================================
@@ -116,24 +107,21 @@ detect_system() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
     HOSTNAME=$(hostname)
-    MAC_ADDRESS=$(get_mac_address) || error "Could not detect valid MAC address"
+    MAC_ADDRESS=$(get_mac_address) || error "Failed to detect valid MAC address (required for single-worker enforcement)"
     CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-    CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
+    CPU_MODEL=$(lscpu 2>/dev/null | grep "Model name:" | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string || echo "Unknown")
     RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
 
     GPU_AVAILABLE="false"
-    GPU_MODEL=""
-    GPU_MEMORY=0
-    if command -v nvidia-smi &>/dev/null; then
+    GPU_MODEL=""; GPU_MEMORY=0
+    command -v nvidia-smi &>/dev/null && {
         GPU_AVAILABLE="true"
         GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 2>/dev/null | xargs)
         GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i 0 2>/dev/null || echo 0)
-    fi
+    }
 
-    log "Hostname: $HOSTNAME"
     log "MAC: $MAC_ADDRESS"
-    log "CPU: $CPU_CORES cores - $CPU_MODEL"
-    log "RAM: ${RAM_TOTAL}MB"
+    log "Host: $HOSTNAME | $CPU_CORES cores | ${RAM_TOTAL}MB RAM"
     [ "$GPU_AVAILABLE" = "true" ] && log "GPU: $GPU_MODEL (${GPU_MEMORY} MiB)"
 }
 
@@ -144,25 +132,23 @@ authenticate_user() {
     section "Authentication"
     mkdir -p "$CONFIG_DIR"
 
-    if [ -f "$CONFIG_DIR/token" ]; then
+    if [[ -f "$CONFIG_DIR/token" ]]; then
         API_TOKEN=$(cat "$CONFIG_DIR/token")
-        if curl -sf -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" >/dev/null; then
-            log "Logged in (cached)"
+        curl -sf -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" >/dev/null && {
+            log "Using existing login"
             return 0
-        else
-            warn "Token expired"
-            rm -f "$CONFIG_DIR/token"
-        fi
+        }
+        warn "Token expired"
+        rm -f "$CONFIG_DIR/token"
     fi
 
-    echo -e "${CYAN}1) Sign up (new account)${NC}"
-    echo -e "${CYAN}2) Login (existing account)${NC}\n"
+    echo -e "${CYAN}1) Sign up   2) Login${NC}\n"
     while true; do
         read -r -p "Choice [1-2]: " choice </dev/tty
         case "$choice" in
             1) signup_user; return 0 ;;
-            2) login_user; return 0 ;;
-            *) echo -e "${RED}Please enter 1 or 2${NC}" ;;
+            2) login_user;  return 0 ;;
+            *) echo -e "${RED}Invalid choice${NC}" ;;
         esac
     done
 }
@@ -172,72 +158,65 @@ signup_user() {
     read -r -p "First Name: " first_name </dev/tty
     read -r -p "Email: " email </dev/tty
     while true; do
-        read -s -r -p "Password (min 8 chars): " password </dev/tty; echo
-        [ ${#password} -ge 8 ] && break
-        warn "Password too short"
+        read -s -r -p "Password (min 8 chars): " pw </dev/tty; echo
+        [[ ${#pw} -ge 8 ]] && break
+        warn "Too short"
     done
-    read -s -r -p "Confirm Password: " password2 </dev/tty; echo
-    [ "$password" = "$password2" ] || { warn "Passwords don't match"; signup_user; }
+    read -s -r -p "Confirm: " pw2 </dev/tty; echo
+    [[ "$pw" == "$pw2" ]] || { warn "Mismatch"; signup_user; return; }
 
     local resp=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
         -H "Content-Type: application/json" \
-        -d "{\"email\":\"$email\",\"password\":\"$password\",\"firstName\":\"$first_name\"}")
+        -d "{\"email\":\"$email\",\"password\":\"$pw\",\"firstName\":\"$first_name\"}")
     local code=$(echo "$resp" | tail -n1)
     local body=$(echo "$resp" | head -n -1)
 
-    if [[ "$code" != "200" && "$code" != "201" ]]; then
-        error "Signup failed: $(echo "$body" | jq -r '.message // "Unknown error"')"
-    fi
-
+    [[ "$code" == 20* ]] || error "Signup failed: $(echo "$body" | jq -r '.message // "Unknown"')"
     API_TOKEN=$(echo "$body" | jq -r '.token')
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
-    log "Account created and logged in"
+    log "Account created!"
 }
 
 login_user() {
     echo -e "\n${BOLD}Login${NC}"
     read -r -p "Email: " email </dev/tty
-    read -s -r -p "Password: " password </dev/tty; echo
+    read -s -r -p "Password: " pw </dev/tty; echo
 
     local resp=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
         -H "Content-Type: application/json" \
-        -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+        -d "{\"email\":\"$email\",\"password\":\"$pw\"}")
     local code=$(echo "$resp" | tail -n1)
     local body=$(echo "$resp" | head -n -1)
 
-    if [ "$code" != "200" ]; then
-        error "Login failed: $(echo "$body" | jq -r '.message // "Invalid credentials"')"
-    fi
-
+    [[ "$code" == 200 ]] || error "Login failed: $(echo "$body" | jq -r '.message // "Invalid"')"
     API_TOKEN=$(echo "$body" | jq -r '.token')
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
-    log "Logged in successfully"
+    log "Logged in!"
 }
 
 # ============================================================================
-# ROLE FROM WEBSITE
+# ROLE FROM WEBSITE (Neon DB compatible)
 # ============================================================================
 select_role() {
-    section "Checking Your Role"
+    section "Checking Role"
     local resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user")
     USER_ROLE=$(echo "$resp" | jq -r '.role // empty')
 
     if [[ -z "$USER_ROLE" || "$USER_ROLE" == "null" || "$USER_ROLE" == "none" ]]; then
-        warn "No role selected yet"
-        echo -e "Please go to: ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
-        echo -e "Choose: ${GREEN}Contributor${NC} or ${BLUE}Developer${NC}"
-        echo -e "Then run again: ${CYAN}curl -sSL $INSTALL_SCRIPT_URL | bash${NC}\n"
+        warn "No role selected"
+        echo -e "Go to: ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC} → Choose Contributor or Developer"
+        echo -e "Then re-run: ${CYAN}curl -sSL $INSTALL_SCRIPT_URL | bash${NC}\n"
         exit 0
     fi
 
-    log "Your role: $USER_ROLE"
+    log "Role: $USER_ROLE"
     echo "$USER_ROLE" > "$CONFIG_DIR/role"
 }
 
 # ============================================================================
-# CHECK IF WORKER ALREADY EXISTS
+# CHECK IF WORKER EXISTS (critical for single-worker rule)
 # ============================================================================
 check_existing_worker() {
     local resp=$(curl -s -w "\n%{http_code}" -X GET \
@@ -254,24 +233,29 @@ check_existing_worker() {
 register_worker() {
     section "Worker Registration"
     if check_existing_worker; then
-        log "Worker already registered on this device"
+        log "Device already registered (single-worker mode enforced)"
         return 0
     fi
 
     info "Registering new worker..."
-    local payload='{
-        "macAddress": "'"$MAC_ADDRESS"'",
-        "name": "Worker-'"$MAC_ADDRESS"'",
-        "hostname": "'"$HOSTNAME"'",
-        "platform": "'"$OS"'",
-        "architecture": "'"$ARCH"'",
-        "cpuCores": '"$CPU_CORES"',
-        "cpuModel": "'"$CPU_MODEL"'",
-        "ramTotal": '"$RAM_TOTAL"',
-        "gpuAvailable": '"$GPU_AVAILABLE"',
-        "gpuModel": "'"$GPU_MODEL"'",
-        "gpuMemory": '"$GPU_MEMORY"'
-    }'
+    local payload=$(cat <<EOF
+{
+  "macAddress": "$MAC_ADDRESS",
+  "name": "Worker-$MAC_ADDRESS",
+  "hostname": "$HOSTNAME",
+  "platform": "$OS",
+  "architecture": "$ARCH",
+  "cpuCores": $CPU_CORES,
+  "cpuModel": "$CPU_MODEL",
+  "ramTotal": $RAM_TOTAL,
+  "gpuAvailable": $GPU_AVAILABLE,
+  "gpuModel": "$GPU_MODEL",
+  "gpuMemory": $GPU_MEMORY,
+  "storageTotal": 102400,
+  "storageAvailable": 51200
+}
+EOF
+)
 
     local resp=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/workers/register" \
         -H "Authorization: Bearer $API_TOKEN" \
@@ -280,16 +264,13 @@ register_worker() {
     local code=$(echo "$resp" | tail -n1)
     local body=$(echo "$resp" | head -n -1)
 
-    if [[ "$code" == "200" || "$code" == "201" ]]; then
-        log "Worker registered: Worker-$MAC_ADDRESS"
-        echo "$MAC_ADDRESS" > "$CONFIG_DIR/mac_address"
-    else
-        error "Registration failed: $(echo "$body" | jq -r '.message // .error // "Unknown"')"
-    fi
+    [[ "$code" == 20* ]] || error "Registration failed: $(echo "$body" | jq -r '.message // .error // "Unknown"')"
+    log "Worker registered: Worker-$MAC_ADDRESS"
+    echo "$MAC_ADDRESS" > "$CONFIG_DIR/mac_address"
 }
 
 # ============================================================================
-# START PERSISTENT CONTAINER (heartbeat only)
+# START PERSISTENT CONTAINER (heartbeat only, no self-register)
 # ============================================================================
 start_contributor() {
     section "Launching Persistent Worker"
@@ -298,10 +279,10 @@ start_contributor() {
     info "Pulling latest worker image..."
     docker pull "$DOCKER_IMAGE" >/dev/null
 
-    info "Removing old containers..."
+    info "Cleaning old containers..."
     docker rm -f $(docker ps -aq --filter "name=^${CONTAINER_NAME}$") 2>/dev/null || true
 
-    info "Starting worker (will run forever)..."
+    info "Starting worker (runs forever, heartbeat mode)..."
     docker run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \
@@ -314,11 +295,7 @@ start_contributor() {
         --url "$DISTRIBUTEX_API_URL" >/dev/null
 
     sleep 5
-    if docker ps | grep -q "$CONTAINER_NAME"; then
-        log "Worker container is running permanently"
-    else
-        error "Failed to start container"
-    fi
+    docker ps | grep -q "$CONTAINER_NAME" && log "Worker running permanently" || error "Container failed"
 }
 
 # ============================================================================
@@ -328,30 +305,27 @@ create_management_script() {
     section "Creating Management Tool"
     cat > "$CONFIG_DIR/manage.sh" <<'EOF'
 #!/bin/bash
-CONTAINER="distributex-worker"
-CONFIG="$HOME/.distributex"
-echo "DistributeX Worker Control"
-echo "=========================="
+C="distributex-worker"
+echo "DistributeX Worker"
+echo "=================="
 case "$1" in
-    status)  docker ps --filter "name=$CONTAINER" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" ;;
-    logs)    docker logs -f $CONTAINER ;;
-    restart) docker restart $CONTAINER; echo "Restarted" ;;
-    stop)    docker stop $CONTAINER; echo "Stopped" ;;
-    start)   docker start $CONTAINER; echo "Started" ;;
+    status)   docker ps --filter "name=$C" --format "table {{.Names}}\t{{.Status}}" ;;
+    logs)     docker logs -f $C ;;
+    restart)  docker restart $C; echo "Restarted" ;;
+    stop)     docker stop $C; echo "Stopped" ;;
+    start)    docker start $C; echo "Started" ;;
     uninstall)
-        read -p "Uninstall DistributeX? (yes/no): " confirm
-        [[ "$confirm" == "yes" ]] || { echo "Cancelled"; exit; }
-        docker stop $CONTAINER 2>/dev/null
-        docker rm $CONTAINER 2>/dev/null
-        sudo systemctl disable distributex-worker.service 2>/dev/null
-        sudo rm -f /etc/systemd/system/distributex-worker.service
-        echo "Uninstalled. Config kept in $CONFIG"
+        read -p "Uninstall? (yes/no): " yn
+        [[ "$yn" == "yes" ]] || exit
+        docker stop $C 2>/dev/null
+        docker rm $C 2>/dev/null
+        echo "Uninstalled. Config in $HOME/.distributex"
         ;;
-    *) echo "Usage: $0 status | logs | restart | stop | start | uninstall" ;;
+    *) echo "Usage: $0 status|logs|restart|stop|start|uninstall" ;;
 esac
 EOF
     chmod +x "$CONFIG_DIR/manage.sh"
-    log "Management script: $CONFIG_DIR/manage.sh"
+    log "manage.sh → $CONFIG_DIR/manage.sh"
 }
 
 # ============================================================================
@@ -360,25 +334,22 @@ EOF
 show_contributor_complete() {
     section "Installation Complete!"
     echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║       DistributeX Worker is Active & Running     ║${NC}"
+    echo -e "${GREEN}║       DistributeX Worker is Running Forever      ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}\n"
-    log "Worker Name: Worker-$MAC_ADDRESS"
+    log "Worker: Worker-$MAC_ADDRESS"
     log "Hostname: $HOSTNAME"
-    log "Status: Running in background (auto-restart enabled)"
-    echo -e "\n${CYAN}Commands:${NC}"
-    echo "   $CONFIG_DIR/manage.sh status"
-    echo "   $CONFIG_DIR/manage.sh logs"
-    echo "   $CONFIG_DIR/manage.sh restart"
+    log "Auto-restart: enabled"
+    echo -e "${CYAN}Commands:${NC}"
+    echo "   $CONFIG_DIR/manage.sh status | logs | restart | stop"
     echo -e "\n${BLUE}Dashboard: $DISTRIBUTEX_API_URL/dashboard${NC}\n"
-    echo -e "${BOLD}Thank you for contributing to the network!${NC}\n"
+    echo -e "${BOLD}Thank you for contributing!${NC}\n"
 }
 
 show_developer_complete() {
-    section "Developer Setup Complete"
-    echo -e "${GREEN}No worker container installed (correct for developers)${NC}\n"
-    echo -e "Your API Key:\n${BOLD}$API_TOKEN${NC}\n"
-    echo -e "Dashboard: ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}\n"
-    echo -e "Thank you for using DistributeX!\n"
+    section "Developer Mode"
+    echo -e "${GREEN}No worker installed (correct for developers)${NC}\n"
+    echo -e "API Key:\n${BOLD}$API_TOKEN${NC}\n"
+    echo -e "Dashboard → ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}\n"
 }
 
 # ============================================================================
@@ -401,6 +372,6 @@ main() {
     fi
 }
 
-trap 'error "Installation failed at line $LINENO"' ERR
+trap 'error "Failed at line $LINENO"' ERR
 main
 exit 0
