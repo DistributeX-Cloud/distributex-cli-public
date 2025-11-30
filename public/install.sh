@@ -862,7 +862,7 @@ main() {
         echo "Documentation: ${BLUE}https://distributex.io/docs${NC}"
         echo ""
     fi
-}
+}  # <-- This closing brace was missing!
 
 # ============================================================================
 # ERROR HANDLING
