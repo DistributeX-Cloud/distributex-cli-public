@@ -1,6 +1,6 @@
 #!/bin/bash
 ################################################################################
-# DistributeX Cloud Network - Installation Script v4.3 (FINAL – NO SYNTAX ERRORS)
+# DistributeX Cloud Network - Installation Script v4.3 (FINAL - NO SYNTAX ERRORS)
 # Accurate GPU + Real Disk Storage + Zero jq errors + Neon DB ready
 ################################################################################
 set -e
