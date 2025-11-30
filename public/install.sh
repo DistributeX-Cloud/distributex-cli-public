@@ -900,8 +900,6 @@ show_completion() {
     echo ""
     echo -e "${GREEN}${BOLD}Thank you for joining DistributeX! 🚀${NC}"
     echo ""
-    echo "Support: support@distributex.io"
-    echo "Community: discord.gg/distributex"
     echo ""
 }
 
