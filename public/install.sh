@@ -228,7 +228,15 @@ register_worker() {
     section "Registering Worker"
     check_existing_worker && { log "Device already registered"; return 0; }
 
-    # Ensure numeric variables are valid numbers
+    # === Sanitize numeric values ===
+    CPU_CORES=$(echo "${CPU_CORES:-0}" | tr -cd '0-9')
+    RAM_TOTAL=$(echo "${RAM_TOTAL:-0}" | tr -cd '0-9')
+    STORAGE_TOTAL_MB=$(echo "${STORAGE_TOTAL_MB:-0}" | tr -cd '0-9')
+    STORAGE_FREE_MB=$(echo "${STORAGE_FREE_MB:-0}" | tr -cd '0-9')
+    GPU_MEMORY=$(echo "${GPU_MEMORY:-0}" | tr -cd '0-9')
+    GPU_COUNT=$(echo "${GPU_COUNT:-0}" | tr -cd '0-9')
+
+    # Default to 0 if empty after sanitization
     CPU_CORES=${CPU_CORES:-0}
     RAM_TOTAL=${RAM_TOTAL:-0}
     STORAGE_TOTAL_MB=${STORAGE_TOTAL_MB:-0}
@@ -236,13 +244,9 @@ register_worker() {
     GPU_MEMORY=${GPU_MEMORY:-0}
     GPU_COUNT=${GPU_COUNT:-0}
 
-    # Ensure numeric values contain only digits
-    CPU_CORES=$(printf "%d" "$CPU_CORES" 2>/dev/null || echo 0)
-    RAM_TOTAL=$(printf "%d" "$RAM_TOTAL" 2>/dev/null || echo 0)
-    STORAGE_TOTAL_MB=$(printf "%d" "$STORAGE_TOTAL_MB" 2>/dev/null || echo 0)
-    STORAGE_FREE_MB=$(printf "%d" "$STORAGE_FREE_MB" 2>/dev/null || echo 0)
-    GPU_MEMORY=$(printf "%d" "$GPU_MEMORY" 2>/dev/null || echo 0)
-    GPU_COUNT=$(printf "%d" "$GPU_COUNT" 2>/dev/null || echo 0)
+    # Ensure GPU_AVAILABLE is always true/false string
+    GPU_AVAILABLE=${GPU_AVAILABLE:-false}
+    [[ "$GPU_AVAILABLE" == "true" ]] || GPU_AVAILABLE=false
 
     payload=$(jq -n \
       --arg m "$MAC_ADDRESS" \
