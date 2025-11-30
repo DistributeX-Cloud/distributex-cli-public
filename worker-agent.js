@@ -285,8 +285,15 @@ class TaskExecutor {
     if (cfg.gpuRequired) args.push('--gpus', 'all');
     if (cfg.cpuPerWorker) args.push('--cpus', cfg.cpuPerWorker.toString());
     if (cfg.ramPerWorker) args.push('--memory', `${cfg.ramPerWorker}m`);
-    if (cfg.volumes) Object.entries(cfg.volumes).forEach(([h, c]) => args.push('-v', `${h}:${c}`)));
-    if (cfg.environment) Object.entries(cfg.environment).forEach(([k, v]) => args.push('-e', `${k}=${v}`));
+    
+    // ✅ FIXED: Removed extra closing parenthesis
+    if (cfg.volumes) {
+      Object.entries(cfg.volumes).forEach(([h, c]) => args.push('-v', `${h}:${c}`));
+    }
+    
+    if (cfg.environment) {
+      Object.entries(cfg.environment).forEach(([k, v]) => args.push('-e', `${k}=${v}`));
+    }
 
     args.push(cfg.dockerImage, 'sh', '-c', cfg.dockerCommand || 'echo "No command"');
 
