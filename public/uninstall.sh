@@ -330,6 +330,3 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "Thank you for using DistributeX!"
 echo ""
-echo "Feedback: support@distributex.io"
-echo "Community: discord.gg/distributex"
-echo ""
