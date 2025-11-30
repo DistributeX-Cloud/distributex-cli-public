@@ -436,6 +436,9 @@ login_user() {
 select_role() {
     section "Role Selection"
     
+    # FIX: Create config directory first
+    mkdir -p "$CONFIG_DIR"
+    
     # Fetch user's current role from API
     ROLE_RESPONSE=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" || echo "{}")
     CURRENT_ROLE=$(echo "$ROLE_RESPONSE" | jq -r '.role // "none"')
