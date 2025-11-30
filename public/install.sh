@@ -1,8 +1,13 @@
 #!/bin/bash
-################################################################################
-# DistributeX Cloud Network - Installation Script v4.3 (FINAL - NO SYNTAX ERRORS)
-# Accurate GPU + Real Disk Storage + Zero jq errors + Neon DB ready
-################################################################################
+#
+# DistributeX Complete Installer - FIXED SINGLE WORKER VERSION
+# Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
+#
+# FIXES:
+# 1. Only ONE worker registration per device
+# 2. Worker name: Worker-{MAC_ADDRESS}
+# 3. Hostname: Actual device hostname
+# 4. Worker agent disabled from self-registering
 set -e
 
 # ============================================================================
