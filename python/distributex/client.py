@@ -430,21 +430,28 @@ with open('result.pkl', 'wb') as f:
     def _wait_and_get_result(self, task_id: str) -> Any:
         """Poll until complete and return result"""
         while True:
-            task = self.get_task(task_id)
+            try:
+                task = self.get_task(task_id)
             
-            if task.progress > 0:
-                print(f"\r   Progress: {task.progress:.1f}%", end='', flush=True)
+                if task.progress > 0:
+                    print(f"\r   Progress: {task.progress:.1f}%", end='', flush=True)
             
-            if task.status == 'completed':
-                print("\n✅ Execution complete!")
-                return self.get_result(task_id)
+                if task.status == 'completed':
+                    print("\n✅ Execution complete!")
+                    return self.get_result(task_id)
             
-            if task.status == 'failed':
-                print(f"\n❌ Task failed: {task.error}")
-                raise RuntimeError(task.error)
+                if task.status == 'failed':
+                    print(f"\n❌ Task failed: {task.error}")
+                    raise RuntimeError(task.error)
             
-            time.sleep(5)
-
+                time.sleep(5)
+            
+            except requests.exceptions.JSONDecodeError as e:
+                print(f"\n❌ Invalid response from API: {e}")
+                raise RuntimeError("API returned invalid JSON")
+            except requests.exceptions.RequestException as e:
+                print(f"\n❌ Network error: {e}")
+                time.sleep(10)  # Wait longer on network errors
 
 # Convenience module-level API
 _default_client = None
