@@ -1,31 +1,38 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Agent - PRODUCTION VERSION
+ * DistributeX Worker Agent - REAL EXECUTION VERSION
  * 
- * Complete task execution system:
- * - Sends heartbeats to stay online
- * - Polls for available tasks
- * - Executes tasks and reports results
- * - Handles failures gracefully
+ * FIXED: Actually executes tasks instead of mocking
+ * - Downloads code from storage
+ * - Runs Python/Node.js/Docker tasks
+ * - Returns real results
  */
 
 const os = require('os');
 const https = require('https');
-const { exec } = require('child_process');
+const http = require('http');
+const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const zlib = require('zlib');
+const { pipeline } = require('stream');
+const { promisify: pipelineAsync } = require('util');
 
 const execAsync = promisify(exec);
+const pipelinePromise = promisify(pipeline);
 
 // Configuration
 const CONFIG = {
   API_BASE_URL: process.env.DISTRIBUTEX_API_URL || 'https://distributex-cloud-network.pages.dev',
   HEARTBEAT_INTERVAL: 60 * 1000, // 1 minute
-  TASK_POLL_INTERVAL: 10 * 1000, // 10 seconds - check for new tasks
+  TASK_POLL_INTERVAL: 10 * 1000, // 10 seconds
   MAX_CONSECUTIVE_FAILURES: 5,
   IS_DOCKER: process.env.DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv'),
   DISABLE_SELF_REGISTER: process.env.DISABLE_SELF_REGISTER === 'true',
-  HOST_MAC_ADDRESS: process.env.HOST_MAC_ADDRESS
+  HOST_MAC_ADDRESS: process.env.HOST_MAC_ADDRESS,
+  WORK_DIR: '/tmp/distributex-tasks'
 };
 
 class WorkerAgent {
@@ -50,6 +57,11 @@ class WorkerAgent {
       tasksExecuted: 0,
       tasksFailed: 0
     };
+    
+    // Create work directory
+    if (!fs.existsSync(CONFIG.WORK_DIR)) {
+      fs.mkdirSync(CONFIG.WORK_DIR, { recursive: true });
+    }
     
     this.setupProcessHandlers();
   }
@@ -94,7 +106,6 @@ class WorkerAgent {
 
   async getMacAddress() {
     try {
-      // 1. Check environment variable
       if (CONFIG.HOST_MAC_ADDRESS) {
         const mac = CONFIG.HOST_MAC_ADDRESS.toLowerCase().replace(/[:-]/g, '');
         if (/^[0-9a-f]{12}$/.test(mac)) {
@@ -103,7 +114,6 @@ class WorkerAgent {
         }
       }
 
-      // 2. Check config file (for Docker)
       if (CONFIG.IS_DOCKER) {
         try {
           const configPath = '/config/mac_address';
@@ -119,7 +129,6 @@ class WorkerAgent {
         }
       }
 
-      // 3. Auto-detect
       console.log('📌 Detecting MAC from network interfaces...');
       const interfaces = os.networkInterfaces();
       
@@ -153,10 +162,9 @@ class WorkerAgent {
       
       const headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DistributeX-Worker/4.0'
+        'User-Agent': 'DistributeX-Worker/5.0'
       };
       
-      // Only add JWT for non-heartbeat endpoints
       if (!path.includes('/heartbeat')) {
         headers['Authorization'] = `Bearer ${this.apiKey}`;
       }
@@ -193,6 +201,47 @@ class WorkerAgent {
       
       if (data) req.write(JSON.stringify(data));
       req.end();
+    });
+  }
+
+  async downloadFile(url, destPath) {
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(url);
+      const protocol = urlObj.protocol === 'https:' ? https : http;
+      
+      const file = fs.createWriteStream(destPath);
+      
+      protocol.get(url, (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`Download failed: ${response.statusCode}`));
+          return;
+        }
+        
+        response.pipe(file);
+        
+        file.on('finish', () => {
+          file.close();
+          resolve();
+        });
+      }).on('error', (err) => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    });
+  }
+
+  async extractTarGz(tarPath, destDir) {
+    return new Promise((resolve, reject) => {
+      const gunzip = zlib.createGunzip();
+      const extract = require('tar').extract({ cwd: destDir });
+      
+      const source = fs.createReadStream(tarPath);
+      
+      source
+        .pipe(gunzip)
+        .pipe(extract)
+        .on('finish', resolve)
+        .on('error', reject);
     });
   }
 
@@ -373,13 +422,12 @@ class WorkerAgent {
     }
   }
 
-  // ==================== TASK EXECUTION ====================
+  // ==================== REAL TASK EXECUTION ====================
 
   async pollForTasks() {
     if (!this.isRunning || this.isExecutingTask) return;
 
     try {
-      // Get next available task from the API
       const response = await this.makeRequest('GET', `/api/workers/${this.workerId}/tasks/next`);
       
       if (response && response.task) {
@@ -390,7 +438,6 @@ class WorkerAgent {
       }
       
     } catch (error) {
-      // Silently ignore "no tasks available" or "Worker not found" errors
       if (!error.message.includes('No tasks') && 
           !error.message.includes('Worker not found') &&
           !error.message.includes('404')) {
@@ -407,12 +454,11 @@ class WorkerAgent {
     console.log(`\n⚙️  Executing task ${task.id}...`);
     
     try {
-      // Execute based on task type
       let result;
       
       if (task.executionConfig?.codeUrl) {
-        // Python SDK task - has code to download and execute
-        result = await this.executePythonTask(task);
+        // Has code to download and execute
+        result = await this.executeCodeTask(task);
       } else if (task.taskType === 'docker_execution') {
         result = await this.executeDockerTask(task);
       } else if (task.taskType === 'script_execution') {
@@ -425,6 +471,7 @@ class WorkerAgent {
       
       // Report success
       await this.makeRequest('PUT', `/api/tasks/${task.id}/complete`, {
+        workerId: this.workerId,
         result: result,
         executionTime: executionTime
       });
@@ -436,9 +483,9 @@ class WorkerAgent {
     } catch (error) {
       console.error(`❌ Task ${task.id} failed:`, error.message);
       
-      // Report failure
       try {
         await this.makeRequest('PUT', `/api/tasks/${task.id}/fail`, {
+          workerId: this.workerId,
           errorMessage: error.message
         });
       } catch (reportError) {
@@ -453,55 +500,223 @@ class WorkerAgent {
     }
   }
 
-  async executePythonTask(task) {
-    console.log('🐍 Executing Python task...');
+  async executeCodeTask(task) {
+    const taskDir = path.join(CONFIG.WORK_DIR, task.id);
+    fs.mkdirSync(taskDir, { recursive: true });
     
-    // MOCK EXECUTION for now
-    // TODO: Download code from codeUrl, execute in sandbox, capture result
-    
-    // Simulate some work
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Return mock result based on task name
-    if (task.name?.toLowerCase().includes('sum') || 
-        task.name?.toLowerCase().includes('calculate')) {
+    try {
+      console.log('📥 Downloading code...');
+      
+      // Parse execution config
+      let config = task.executionConfig;
+      if (typeof config === 'string') {
+        config = JSON.parse(config);
+      }
+      
+      // Download code tarball
+      const tarPath = path.join(taskDir, 'code.tar.gz');
+      await this.downloadFile(config.codeUrl, tarPath);
+      
+      console.log('📦 Extracting code...');
+      await this.extractTarGz(tarPath, taskDir);
+      
+      // Determine runtime
+      const runtime = config.runtime || task.runtime || 'python';
+      
+      console.log(`🚀 Executing with ${runtime}...`);
+      
+      let output;
+      if (runtime === 'python') {
+        output = await this.runPython(taskDir);
+      } else if (runtime === 'node' || runtime === 'javascript') {
+        output = await this.runNode(taskDir);
+      } else {
+        throw new Error(`Unsupported runtime: ${runtime}`);
+      }
+      
       return {
-        result: 500000500000, // Sum of 1 to 1,000,000
-        output: 'Calculation completed successfully'
+        status: 'completed',
+        output: output,
+        result: output
       };
+      
+    } finally {
+      // Cleanup
+      try {
+        fs.rmSync(taskDir, { recursive: true, force: true });
+      } catch (e) {
+        console.warn('⚠️  Could not cleanup task directory');
+      }
     }
-    
-    return {
-      status: 'completed',
-      output: 'Python task executed successfully',
-      result: { success: true }
-    };
+  }
+
+  async runPython(taskDir) {
+    return new Promise((resolve, reject) => {
+      // Try to find Python script
+      const files = fs.readdirSync(taskDir);
+      let scriptFile = files.find(f => f.endsWith('.py'));
+      
+      if (!scriptFile) {
+        // Check for runner.py (from SDK)
+        scriptFile = 'runner.py';
+        if (!fs.existsSync(path.join(taskDir, scriptFile))) {
+          reject(new Error('No Python script found'));
+          return;
+        }
+      }
+      
+      const child = spawn('python3', [scriptFile], {
+        cwd: taskDir,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+        process.stdout.write(data);
+      });
+      
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+        process.stderr.write(data);
+      });
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          // Check for result.pkl
+          const resultPath = path.join(taskDir, 'result.pkl');
+          if (fs.existsSync(resultPath)) {
+            resolve(`Result saved to result.pkl\n${stdout}`);
+          } else {
+            resolve(stdout);
+          }
+        } else {
+          reject(new Error(`Python script failed with code ${code}: ${stderr}`));
+        }
+      });
+      
+      child.on('error', reject);
+    });
+  }
+
+  async runNode(taskDir) {
+    return new Promise((resolve, reject) => {
+      const files = fs.readdirSync(taskDir);
+      let scriptFile = files.find(f => f.endsWith('.js'));
+      
+      if (!scriptFile) {
+        scriptFile = 'run.js';
+        if (!fs.existsSync(path.join(taskDir, scriptFile))) {
+          reject(new Error('No Node.js script found'));
+          return;
+        }
+      }
+      
+      const child = spawn('node', [scriptFile], {
+        cwd: taskDir,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+        process.stdout.write(data);
+      });
+      
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+        process.stderr.write(data);
+      });
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`Node.js script failed with code ${code}: ${stderr}`));
+        }
+      });
+      
+      child.on('error', reject);
+    });
   }
 
   async executeDockerTask(task) {
     console.log('🐳 Executing Docker task...');
     
-    // MOCK EXECUTION
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    let config = task.executionConfig;
+    if (typeof config === 'string') {
+      config = JSON.parse(config);
+    }
     
-    return {
-      status: 'completed',
-      output: 'Docker container executed successfully',
-      exitCode: 0
-    };
+    const image = config.dockerImage;
+    const command = config.dockerCommand || 'echo "Hello from Docker"';
+    
+    return new Promise((resolve, reject) => {
+      const child = spawn('docker', [
+        'run',
+        '--rm',
+        image,
+        'sh', '-c', command
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+        process.stdout.write(data);
+      });
+      
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+        process.stderr.write(data);
+      });
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve({
+            status: 'completed',
+            output: stdout,
+            exitCode: 0
+          });
+        } else {
+          reject(new Error(`Docker failed with code ${code}: ${stderr}`));
+        }
+      });
+      
+      child.on('error', reject);
+    });
   }
 
   async executeScriptTask(task) {
     console.log('📜 Executing script task...');
     
-    // MOCK EXECUTION
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    let config = task.executionConfig;
+    if (typeof config === 'string') {
+      config = JSON.parse(config);
+    }
     
-    return {
-      status: 'completed',
-      output: 'Script executed successfully',
-      exitCode: 0
-    };
+    const script = config.executionScript || config.command || 'echo "No script provided"';
+    
+    return new Promise((resolve, reject) => {
+      exec(script, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Script failed: ${stderr}`));
+        } else {
+          resolve({
+            status: 'completed',
+            output: stdout,
+            exitCode: 0
+          });
+        }
+      });
+    });
   }
 
   // ==================== SCHEDULING ====================
@@ -526,7 +741,7 @@ class WorkerAgent {
 
   async runForever() {
     console.log('\n╔═══════════════════════════════════════════════════════════╗');
-    console.log('║      DistributeX Worker v4.0 - PRODUCTION READY          ║');
+    console.log('║      DistributeX Worker v5.0 - REAL EXECUTION            ║');
     console.log('╚═══════════════════════════════════════════════════════════╝\n');
     
     if (!this.apiKey) {
@@ -536,16 +751,15 @@ class WorkerAgent {
 
     await this.register();
     
-    console.log('\n✨ Worker ONLINE and ready for tasks');
+    console.log('\n✨ Worker ONLINE and ready for REAL task execution');
     console.log('💓 Heartbeat: Every 60 seconds');
     console.log('🔍 Task polling: Every 10 seconds');
+    console.log('🚀 Will execute: Python, Node.js, Docker tasks');
     console.log('🔒 Press Ctrl+C to stop gracefully\n');
 
-    // Start both loops
     this.scheduleHeartbeat();
     this.scheduleTaskPolling();
     
-    // Keep process alive
     await new Promise(() => {});
   }
 
@@ -567,35 +781,22 @@ if (require.main === module) {
   if (args.length === 0 || args.includes('--help')) {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║      DistributeX Worker v4.0 - PRODUCTION READY          ║
+║      DistributeX Worker v5.0 - REAL EXECUTION            ║
 ╚═══════════════════════════════════════════════════════════╝
 
 USAGE:
   node worker-agent.js --api-key YOUR_KEY [--url API_URL]
 
+CHANGES IN v5.0:
+  ✅ REAL code execution (no more mocks!)
+  ✅ Downloads and runs actual Python/Node.js code
+  ✅ Supports Docker container execution
+  ✅ Returns real results to API
+
 OPTIONS:
   --api-key KEY    Your DistributeX API key (required)
   --url URL        API base URL (default: production)
   --help           Show this help
-
-ENVIRONMENT VARIABLES:
-  DISTRIBUTEX_API_URL       Override API base URL
-  HOST_MAC_ADDRESS          Use specific MAC address (for Docker)
-  DISABLE_SELF_REGISTER     Use pre-registered worker ID
-
-FEATURES:
-  ✅ Sends heartbeats to maintain online status
-  ✅ Polls for available tasks every 10 seconds
-  ✅ Executes tasks and reports results
-  ✅ Handles failures and retries gracefully
-  ✅ Graceful shutdown on Ctrl+C
-
-EXAMPLES:
-  # Start worker
-  node worker-agent.js --api-key eyJ0eXAiOiJKV1Q...
-
-  # Use custom API URL
-  node worker-agent.js --api-key YOUR_KEY --url https://api.example.com
 
 Get your API key at: https://distributex-cloud-network.pages.dev/auth
 `);
