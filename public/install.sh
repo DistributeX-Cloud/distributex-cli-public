@@ -581,7 +581,7 @@ start_contributor() {
 
     # Validate token with server
     TOKEN_TEST=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/validate" || echo "")
-    if ! echo "$TOKEN_TEST" | grep -q '"valid":true"'; then
+    if [ "$(echo "$TOKEN_TEST" | jq -r '.valid')" != "true" ]; then
         error "Invalid or expired API token — please re-login."
     fi
 
@@ -844,6 +844,27 @@ show_completion_message() {
     echo ""
 }
 
+    show_developer_instructions() {
+        echo ""
+        log "Developer account detected — Docker worker will NOT be installed"
+        echo ""
+        echo -e "${CYAN}${BOLD}Next Steps for Developers:${NC}"
+        echo ""
+        echo "Your API key:"
+        echo "   ${GREEN}${BOLD}$API_TOKEN${NC}"
+        echo ""
+        echo "Install SDKs:"
+        echo "   pip install distributex-cloud"
+        echo "   npm install distributex-cloud"
+        echo ""
+        echo "Docs:"
+        echo "   https://distributex.io/docs"
+        echo ""
+        echo "Dashboard:"
+        echo "   ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
+        echo ""
+    }
+
 # ============================================================================
 # MAIN EXECUTION FLOW
 # ============================================================================
@@ -859,7 +880,7 @@ main() {
     # Get role from website
     select_role
     
-    # Only check Docker if contributor
+    # Only contributor installs Docker + worker
     if [[ "$USER_ROLE" == "contributor" ]]; then
         check_docker
         detect_system
@@ -870,38 +891,10 @@ main() {
         create_management_script
         show_completion_message
     else
-        # Developer path - no Docker needed
-        echo ""
-        log "Developer account detected"
-        echo ""
-        echo -e "${CYAN}${BOLD}Next Steps for Developers:${NC}"
-        echo ""
-        echo "1. Your API key (save this securely):"
-        echo "   ${GREEN}${BOLD}$API_TOKEN${NC}"
-        echo ""
-        echo "2. Install the SDK:"
-        echo "   ${YELLOW}# Python${NC}"
-        echo "   pip install distributex-cloud"
-        echo ""
-        echo "   ${YELLOW}# JavaScript/Node.js${NC}"
-        echo "   npm install distributex-cloud"
-        echo ""
-        echo "3. Start building:"
-        echo "   ${YELLOW}# Python${NC}"
-        echo "   from distributex import DistributeX"
-        echo "   dx = DistributeX(api_key='$API_TOKEN')"
-        echo "   result = dx.run(my_function, workers=4, gpu=True)"
-        echo ""
-        echo "   ${YELLOW}# JavaScript${NC}"
-        echo "   const DistributeX = require('distributex-cloud');"
-        echo "   const dx = new DistributeX('$API_TOKEN');"
-        echo "   const result = await dx.run(myFunction, { workers: 4 });"
-        echo ""
-        echo "Dashboard: ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
-        echo "Documentation: ${BLUE}https://distributex.io/docs${NC}"
-        echo ""
+        # Developer path - clean, unified, correct
+        show_developer_instructions
     fi
-}  # <-- This closing brace was missing!
+}
 
 # ============================================================================
 # ERROR HANDLING
