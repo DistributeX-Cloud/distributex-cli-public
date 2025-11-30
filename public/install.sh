@@ -218,6 +218,84 @@ detect_system() {
 }
 
 # ============================================================================
+# HANDLE EXISTING INSTALLATION
+# ============================================================================
+handle_existing_installation() {
+    local existing_role=""
+    local has_container=false
+    
+    # Check for existing role
+    if [ -f "$CONFIG_DIR/role" ]; then
+        existing_role=$(cat "$CONFIG_DIR/role")
+    fi
+    
+    # Check for existing container
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        has_container=true
+    fi
+    
+    # If switching roles, handle cleanup/setup
+    if [ -n "$existing_role" ] && [ "$existing_role" != "$USER_ROLE" ]; then
+        section "Role Change Detected"
+        echo ""
+        echo -e "${YELLOW}Previous role: ${existing_role}${NC}"
+        echo -e "${GREEN}New role: ${USER_ROLE}${NC}"
+        echo ""
+        
+        # Switching FROM contributor TO developer
+        if [ "$existing_role" = "contributor" ] && [ "$USER_ROLE" = "developer" ]; then
+            if $has_container; then
+                warn "Contributor worker detected. Removing Docker container..."
+                docker stop $CONTAINER_NAME 2>/dev/null || true
+                docker rm $CONTAINER_NAME 2>/dev/null || true
+                log "Worker container removed"
+                echo ""
+                info "Your worker has been removed from the resource pool"
+                info "You can now submit tasks as a developer"
+            fi
+        fi
+        
+        # Switching FROM developer TO contributor
+        if [ "$existing_role" = "developer" ] && [ "$USER_ROLE" = "contributor" ]; then
+            info "Switching to contributor mode"
+            info "Your worker will be set up next..."
+            echo ""
+            # Container will be created in start_contributor()
+        fi
+        
+        sleep 2
+    fi
+    
+    # If contributor and container exists, check if it needs updating
+    if [ "$USER_ROLE" = "contributor" ] && $has_container; then
+        local container_status=$(docker inspect -f '{{.State.Status}}' $CONTAINER_NAME 2>/dev/null || echo "unknown")
+        
+        if [ "$container_status" = "running" ]; then
+            echo ""
+            echo -e "${CYAN}Existing worker container detected and running${NC}"
+            echo ""
+            read -r -p "Restart worker with updated configuration? [Y/n]: " restart_choice </dev/tty
+            
+            if [[ ! "$restart_choice" =~ ^[Nn]$ ]]; then
+                warn "Restarting worker..."
+                docker stop $CONTAINER_NAME 2>/dev/null || true
+                docker rm $CONTAINER_NAME 2>/dev/null || true
+                log "Old container removed, will create new one"
+            else
+                info "Keeping existing worker running"
+                echo ""
+                # Skip container creation
+                SKIP_CONTAINER_START=true
+            fi
+        else
+            warn "Existing worker container found but not running"
+            info "Will recreate container..."
+            docker rm $CONTAINER_NAME 2>/dev/null || true
+        fi
+    fi
+}
+
+# ============================================================================
 # USER AUTHENTICATION
 # ============================================================================
 authenticate_user() {
