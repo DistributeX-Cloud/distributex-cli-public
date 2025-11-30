@@ -428,7 +428,8 @@ login_user() {
     chmod 600 "$CONFIG_DIR/token"
     
     log "Logged in successfully!"
-    
+}
+
 # ============================================================================
 # ROLE SELECTION - Fetch from API (set on website)
 # ============================================================================
