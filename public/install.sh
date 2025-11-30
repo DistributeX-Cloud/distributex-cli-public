@@ -98,7 +98,7 @@ detect_system() {
 
     log "MAC         : $MAC_ADDRESS"
     log "Host        : $HOSTNAME"
-    log "CPU         : $CPU_CORES cores – $CPU_MODEL"
+    log "CPU         : $CPU_CORES cores - $CPU_MODEL"
     log "RAM         : $((RAM_TOTAL/1024)) GB"
     log "Storage     : $((STORAGE_TOTAL_MB/1024)) GB total | $((STORAGE_FREE_MB/1024)) GB free"
     $GPU_AVAILABLE && log "GPU         : $GPU_COUNT × $GPU_MODEL (${GPU_MEMORY} MiB)" || log "GPU         : none"
