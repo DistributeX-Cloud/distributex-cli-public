@@ -464,7 +464,6 @@ select_role() {
     USER_ROLE="$CURRENT_ROLE"
     log "Account role: $USER_ROLE"
     echo "$USER_ROLE" > "$CONFIG_DIR/role"
-}
     
     # Update role via API
     info "Setting role to: $USER_ROLE"
@@ -485,12 +484,10 @@ select_role() {
             API_TOKEN="$NEW_TOKEN"
         fi
         
-        log "Role set to: $USER_ROLE"
+        log "Role confirmed: $USER_ROLE"
     else
         warn "Role update returned code $UPDATE_CODE"
     fi
-    
-    echo "$USER_ROLE" > "$CONFIG_DIR/role"
 }
 
 # ============================================================================
