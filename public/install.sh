@@ -990,9 +990,13 @@ main() {
     authenticate_user
     select_role
     detect_system
+    handle_existing_installation  # ADD THIS LINE
     
     if [ "$USER_ROLE" = "contributor" ]; then
-        start_contributor
+        # Only start if not skipped
+        if [ "${SKIP_CONTAINER_START:-false}" != "true" ]; then
+            start_contributor
+        fi
         create_management_script
     else
         setup_developer
