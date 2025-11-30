@@ -822,7 +822,7 @@ case "$1" in
         echo "  Idle    = Last heartbeat 1-5 minutes ago"
         echo "  Offline = Last heartbeat > 5 minutes ago"
         ;;
-    
+
     uninstall)
         echo "Uninstalling DistributeX..."
         docker stop $CONTAINER_NAME 2>/dev/null || true
@@ -837,25 +837,36 @@ case "$1" in
         fi
         echo "Done!"
         ;;
-    
+
+    switch-role)
+        echo "To switch your role, run the installer again:"
+        echo "curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash"
+        echo ""
+        echo "The installer will:"
+        echo "  • Detect your existing authentication"
+        echo "  • Let you choose a new role"
+        echo "  • Handle Docker container setup/removal automatically"
+        ;;
+
     *)
         echo "DistributeX Worker Management"
         echo ""
         echo "Usage: $0 {command}"
         echo ""
         echo "Commands:"
-        echo "  start       Start the worker"
-        echo "  stop        Stop the worker"
-        echo "  restart     Restart the worker"
-        echo "  logs        View worker logs (add -f for follow)"
-        echo "  status      Show worker status"
-        echo "  uninstall   Remove worker (--purge to remove all data)"
+        echo "  start         Start the worker"
+        echo "  stop          Stop the worker"
+        echo "  restart       Restart the worker"
+        echo "  logs          View worker logs (add -f for follow)"
+        echo "  status        Show worker status"
+        echo "  uninstall     Remove worker (--purge to remove all data)"
+        echo "  switch-role   Switch between Worker / Developer roles"
         echo ""
         exit 1
         ;;
 esac
 MGMT_EOF
-    
+
     chmod +x "$CONFIG_DIR/manage.sh"
     log "Management script created at: $CONFIG_DIR/manage.sh"
 }
