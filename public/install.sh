@@ -372,7 +372,7 @@ signup_user() {
     
     echo ""
     echo -e "${CYAN}Select Your Role:${NC}"
-    echo " 1) ${GREEN}Contributor${NC} - Share my computer's resources (earn rewards)"
+    echo " 1) ${GREEN}Contributor${NC} - Share my computer's resources (contribute resources)"
     echo " 2) ${BLUE}Developer${NC} - Use pooled computing resources (run tasks)"
     echo ""
     
