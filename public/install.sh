@@ -1,13 +1,9 @@
 #!/bin/bash
 #
-# DistributeX Complete Installer - FIXED SINGLE WORKER VERSION
+# DistributeX Complete Installer - FIXED & FINAL VERSION
+# Single Worker • Zero jq errors • Works even on rate-limited / broken responses
 # Usage: curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/public/install.sh | bash
 #
-# FIXES:
-# 1. Only ONE worker registration per device
-# 2. Worker name: Worker-{MAC_ADDRESS}
-# 3. Hostname: Actual device hostname
-# 4. Worker agent disabled from self-registering
 set -e
 
 # ============================================================================
@@ -23,11 +19,19 @@ INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/DistributeX-Cloud/distribu
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
 # ============================================================================
+# SAFE JQ HELPER (prevents all parse errors)
+# ============================================================================
+safe_jq() {
+    # $1 = jq filter, $2 = json string
+    echo "$2" | jq -r "$1" 2>/dev/null || echo ""
+}
+
+# ============================================================================
 # LOGGING
 # ============================================================================
-log()   { echo -e "${GREEN}[Success]${NC} $1"; }
-info()  { echo -e "${CYAN}[Info]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[Warning]${NC} $1"; }
+log() { echo -e "${GREEN}[Success]${NC} $1"; }
+info() { echo -e "${CYAN}[Info]${NC} $1"; }
+warn() { echo -e "${YELLOW}[Warning]${NC} $1"; }
 error() { echo -e "${RED}[Error]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BOLD}${BLUE}=== $1 ===${NC}\n"; }
 
@@ -39,23 +43,24 @@ show_banner() {
     echo -e "${CYAN}"
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════════╗
-║     DistributeX Cloud Network - Single Worker v4.3 (FINAL)       ║
-║   Real GPU • Real Storage • Zero Errors • Forever Running     ║
+║    DistributeX Cloud Network - Single Worker v4.4 FINAL       ║
+║       Real GPU • Real Storage • Zero Errors • Forever        ║
 ╚═══════════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}\n"
 }
 
 # ============================================================================
-# MAC ADDRESS (12 hex lowercase)
+# MAC ADDRESS (12 hex lowercase, zero-padded)
 # ============================================================================
 get_mac_address() {
     local mac=""
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        mac=$(ip link show 2>/dev/null | awk '/link\/ether/ {print tolower($2); exit}' || true)
-        [ -z "$mac" ] && mac=$(cat /sys/class/net/*/address 2>/dev/null | head -n1 | tr '[:upper:]' '[:lower:]' || true)
+        mac=$(ip link show 2>/dev/null | awk '/link\/ether/ {gsub(/:/,""); print tolower($2); exit}')
+        [ -z "$mac" ] && mac=$(cat /sys/class/net/*/address 2>/dev/null | head -n1 | tr -d ':' | tr '[:upper:]' '[:lower:]')
     elif [[ "$OSTYPE" == "darwin"* ]]; then
-        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {print tolower($2)}' || ifconfig en1 2>/dev/null | awk '/ether/ {print tolower($2)}')
+        mac=$(ifconfig en0 2>/dev/null | awk '/ether/ {gsub(/:/,""); print tolower($2)}')
+        [ -z "$mac" ] && mac=$(ifconfig en1 2>/dev/null | awk '/ether/ {gsub(/:/,""); print tolower($2)}')
     fi
     mac=${mac//:/}
     [[ "$mac" =~ ^[0-9a-f]{1,12}$ ]] || return 1
@@ -63,11 +68,10 @@ get_mac_address() {
 }
 
 # ============================================================================
-# SYSTEM + GPU + REAL STORAGE DETECTION
+# SYSTEM + GPU + STORAGE DETECTION
 # ============================================================================
 detect_system() {
     section "Detecting System, GPU & Disk"
-
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
     HOSTNAME=$(hostname)
@@ -76,13 +80,13 @@ detect_system() {
     CPU_MODEL=$(lscpu 2>/dev/null | grep -m1 "Model name:" | cut -d: -f2 | xargs || echo "Unknown")
     RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
 
-    # Real disk storage (MB)
+    # Real disk storage (in MB)
     STORAGE_TOTAL_MB=102400
     STORAGE_FREE_MB=51200
     if command -v df &>/dev/null; then
         line=$(df -k "$HOME" 2>/dev/null | tail -1)
         if [[ -n "$line" ]]; then
-            STORAGE_TOTAL_MB=$(awk '{print int($2/1024)}' <<<"$line")   # KB → MB
+            STORAGE_TOTAL_MB=$(awk '{print int($2/1024)}' <<<"$line")
             STORAGE_FREE_MB=$(awk '{print int($4/1024)}' <<<"$line")
         fi
     fi
@@ -96,31 +100,31 @@ detect_system() {
         if nvidia-smi --query-gpu=name,memory.total,count --format=csv,noheader,nounits >/dev/null 2>&1; then
             GPU_AVAILABLE=true
             GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits | head -n1 | xargs)
-            GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)
-            GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits)
+            GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1 | xargs)
+            GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -n1 | xargs)
         fi
     fi
 
-    log "MAC         : $MAC_ADDRESS"
-    log "Host        : $HOSTNAME"
-    log "CPU         : $CPU_CORES cores - $CPU_MODEL"
-    log "RAM         : $((RAM_TOTAL/1024)) GB"
-    log "Storage     : $((STORAGE_TOTAL_MB/1024)) GB total | $((STORAGE_FREE_MB/1024)) GB free"
-    $GPU_AVAILABLE && log "GPU         : $GPU_COUNT × $GPU_MODEL (${GPU_MEMORY} MiB)" || log "GPU         : none"
+    log "MAC      : $MAC_ADDRESS"
+    log "Host     : $HOSTNAME"
+    log "CPU      : $CPU_CORES cores - $CPU_MODEL"
+    log "RAM      : $((RAM_TOTAL/1024)) GB"
+    log "Storage  : $((STORAGE_TOTAL_MB/1024)) GB total | $((STORAGE_FREE_MB/1024)) GB free"
+    $GPU_AVAILABLE && log "GPU      : $GPU_COUNT × $GPU_MODEL (${GPU_MEMORY} MiB)" || log "GPU      : none"
 }
 
 # ============================================================================
-# TOOLS
+# TOOLS & DOCKER
 # ============================================================================
 check_requirements() {
-    section "Tools"
+    section "Checking Tools"
     for t in curl jq df; do
         command -v $t &>/dev/null || {
             warn "Installing $t..."
             if command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y $t -qq
-            elif command -v yum &>/dev/null; then sudo yum install -y $t
+            elif command -v yum &>/dev/null; then sudo yum install -y $t -qq
             elif command -v brew &>/dev/null; then brew install $t
-            else error "Install $t manually"
+            else error "Please install $t manually"
             fi
         }
     done
@@ -128,14 +132,14 @@ check_requirements() {
 }
 
 check_docker() {
-    section "Docker"
-    command -v docker &>/dev/null || error "Docker required → https://docs.docker.com/get-docker/"
-    docker ps >/dev/null 2>&1 || error "Docker daemon not running"
+    section "Checking Docker"
+    command -v docker &>/dev/null || error "Docker is required → https://docs.docker.com/get-docker/"
+    docker ps >/dev/null 2>&1 || error "Docker daemon is not running"
     log "Docker ready"
 }
 
 # ============================================================================
-# AUTHENTICATION
+# AUTHENTICATION (100% jq-safe)
 # ============================================================================
 authenticate_user() {
     section "Authentication"
@@ -143,12 +147,13 @@ authenticate_user() {
 
     if [[ -f "$CONFIG_DIR/token" ]]; then
         API_TOKEN=$(cat "$CONFIG_DIR/token")
-        curl -sf -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" >/dev/null && {
-            log "Logged in (cached)"
+        if curl -sf -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user" >/dev/null; then
+            log "Logged in (cached token)"
             return 0
-        }
-        warn "Token expired"
-        rm -f "$CONFIG_DIR/token"
+        else
+            warn "Cached token invalid or expired"
+            rm -f "$CONFIG_DIR/token"
+        fi
     fi
 
     echo -e "${CYAN}1) Sign up\n2) Login${NC}"
@@ -157,7 +162,7 @@ authenticate_user() {
         case "$choice" in
             1) signup_user; return 0 ;;
             2) login_user;  return 0 ;;
-            *) echo -e "${RED}Enter 1 or 2${NC}" ;;
+            *) echo -e "${RED}Please enter 1 or 2${NC}" ;;
         esac
     done
 }
@@ -169,47 +174,63 @@ signup_user() {
     while :; do
         read -s -r -p "Password (≥8 chars): " pw </dev/tty; echo
         (( ${#pw} >= 8 )) && break
-        warn "Too short"
+        warn "Password too short"
     done
-    read -s -r -p "Confirm: " pw2 </dev/tty; echo
-    [[ "$pw" == "$pw2" ]] || { warn "No match"; signup_user; }
+    read -s -r -p "Confirm Password: " pw2 </dev/tty; echo
+    [[ "$pw" == "$pw2" ]] || { warn "Passwords do not match"; signup_user; }
 
     resp=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/signup" \
         -H "Content-Type: application/json" \
         -d "{\"email\":\"$email\",\"password\":\"$pw\",\"firstName\":\"$name\"}")
     code=$(tail -n1 <<<"$resp")
     body=$(sed '$d' <<<"$resp")
-    [[ "$code" =~ ^2 ]] || error "Signup failed: $(jq -r '.message//' <<<"$body")"
-    API_TOKEN=$(jq -r '.token' <<<"$body")
+
+    if [[ ! "$code" =~ ^2 ]]; then
+        err=$(safe_jq '.message // .error // "Unknown error (code '"$code"')"' "$body")
+        [[ -z "$err" || "$err" == "null" ]] && err="Server returned $code"
+        error "Signup failed: $err"
+    fi
+
+    API_TOKEN=$(safe_jq '.token' "$body")
+    [[ -z "$API_TOKEN" || "$API_TOKEN" == "null" ]] && error "No token received"
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
-    log "Account created"
+    log "Account created and logged in"
 }
 
 login_user() {
     echo -e "\n${BOLD}Login${NC}"
     read -r -p "Email: " email </dev/tty
     read -s -r -p "Password: " pw </dev/tty; echo
+
     resp=$(curl -s -w "\n%{http_code}" -X POST "$DISTRIBUTEX_API_URL/api/auth/login" \
         -H "Content-Type: application/json" \
         -d "{\"email\":\"$email\",\"password\":\"$pw\"}")
     code=$(tail -n1 <<<"$resp")
     body=$(sed '$d' <<<"$resp")
-    [[ "$code" == 200 ]] || error "Login failed"
-    API_TOKEN=$(jq -r '.token' <<<"$body")
+
+    if [[ "$code" != "200" ]]; then
+        err=$(safe_jq '.message // .error // "Login failed (code '"$code"')"' "$body")
+        [[ -z "$err" || "$err" == "null" ]] && err="Invalid response from server"
+        error "$err"
+    fi
+
+    API_TOKEN=$(safe_jq '.token' "$body")
+    [[ -z "$API_TOKEN" || "$API_TOKEN" == "null" ]] && error "Login succeeded but no token returned"
     echo "$API_TOKEN" > "$CONFIG_DIR/token"
     chmod 600 "$CONFIG_DIR/token"
-    log "Logged in"
+    log "Logged in successfully"
 }
 
 select_role() {
-    section "Role Check"
+    section "Checking Role"
     resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/user")
-    USER_ROLE=$(jq -r '.role // empty' <<<"$resp")
+    USER_ROLE=$(safe_jq '.role // empty' "$resp")
+
     if [[ -z "$USER_ROLE" || "$USER_ROLE" == "null" ]]; then
-        warn "No role selected"
-        echo -e "Visit ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC} → choose Contributor or Developer"
-        echo -e "Then run: ${CYAN}curl -sSL $INSTALL_SCRIPT_URL | bash${NC}\n"
+        warn "No role selected yet"
+        echo -e "Visit ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC} and choose Contributor or Developer"
+        echo -e "Then re-run: ${CYAN}curl -sSL $INSTALL_SCRIPT_URL | bash${NC}\n"
         exit 0
     fi
     log "Role: $USER_ROLE"
@@ -221,32 +242,20 @@ check_existing_worker() {
         "$DISTRIBUTEX_API_URL/api/workers/check/$MAC_ADDRESS")
     code=$(tail -n1 <<<"$resp")
     body=$(sed '$d' <<<"$resp")
-    [[ "$code" == 200 && $(jq -r '.exists' <<<"$body") == "true" ]]
+    [[ "$code" == "200" ]] && [[ "$(safe_jq '.exists' "$body")" == "true" ]]
 }
 
 register_worker() {
     section "Registering Worker"
     check_existing_worker && { log "Device already registered"; return 0; }
 
-	# === Sanitize numeric values ===
-	CPU_CORES=$(echo "${CPU_CORES:-0}" | awk '{print int($1)}')
-	RAM_TOTAL=$(echo "${RAM_TOTAL:-0}" | awk '{print int($1)}')
-	STORAGE_TOTAL_MB=$(echo "${STORAGE_TOTAL_MB:-0}" | awk '{print int($1)}')
-	STORAGE_FREE_MB=$(echo "${STORAGE_FREE_MB:-0}" | awk '{print int($1)}')
-	GPU_MEMORY=$(echo "${GPU_MEMORY:-0}" | awk '{print int($1)}')
-	GPU_COUNT=$(echo "${GPU_COUNT:-0}" | awk '{print int($1)}')
-
-	# Ensure defaults
-	CPU_CORES=${CPU_CORES:-0}
-	RAM_TOTAL=${RAM_TOTAL:-0}
-	STORAGE_TOTAL_MB=${STORAGE_TOTAL_MB:-0}
-	STORAGE_FREE_MB=${STORAGE_FREE_MB:-0}
-	GPU_MEMORY=${GPU_MEMORY:-0}
-	GPU_COUNT=${GPU_COUNT:-0}
-
-	# Normalize GPU_AVAILABLE
-	GPU_AVAILABLE=${GPU_AVAILABLE:-false}
-	[[ "$GPU_AVAILABLE" == "true" ]] || GPU_AVAILABLE=false
+    # Sanitize numbers
+    CPU_CORES=$(echo "$CPU_CORES" | tr -cd '0-9'); CPU_CORES=${CPU_CORES:-0}
+    RAM_TOTAL=$(echo "$RAM_TOTAL" | tr -cd '0-9'); RAM_TOTAL=${RAM_TOTAL:-0}
+    STORAGE_TOTAL_MB=$(echo "$STORAGE_TOTAL_MB" | tr -cd '0-9'); STORAGE_TOTAL_MB=${STORAGE_TOTAL_MB:-0}
+    STORAGE_FREE_MB=$(echo "$STORAGE_FREE_MB" | tr -cd '0-9'); STORAGE_FREE_MB=${STORAGE_FREE_MB:-0}
+    GPU_MEMORY=$(echo "$GPU_MEMORY" | tr -cd '0-9'); GPU_MEMORY=${GPU_MEMORY:-0}
+    GPU_COUNT=$(echo "$GPU_COUNT" | tr -cd '0-9'); GPU_COUNT=${GPU_COUNT:-0}
 
     payload=$(jq -n \
       --arg m "$MAC_ADDRESS" \
@@ -286,15 +295,19 @@ register_worker() {
         -d "$payload")
     code=$(tail -n1 <<<"$resp")
     body=$(sed '$d' <<<"$resp")
-    [[ "$code" =~ ^2 ]] || error "Registration failed: $(jq -r '.message//.error//"?"' <<<"$body")"
-    log "Worker registered"
+
+    if [[ ! "$code" =~ ^2 ]]; then
+        err=$(safe_jq '.message // .error // "Registration failed (code '"$code"')"' "$body")
+        error "Worker registration failed: $err"
+    fi
+
+    log "Worker registered successfully"
     echo "$MAC_ADDRESS" > "$CONFIG_DIR/mac_address"
 }
 
 start_contributor() {
-    section "Launching Worker"
+    section "Launching Worker Container"
     register_worker
-
     docker pull "$DOCKER_IMAGE" >/dev/null
     docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
@@ -309,28 +322,32 @@ start_contributor() {
         --api-key "$API_TOKEN" \
         --url "$DISTRIBUTEX_API_URL" >/dev/null
 
-    sleep 5
-    docker ps --filter "name=^${CONTAINER_NAME}$" | grep -q "$CONTAINER_NAME" &&
-        log "Worker running forever" || error "Failed to start container"
+    sleep 6
+    if docker ps --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+        log "Worker is running and will survive reboots"
+    else
+        error "Container failed to start"
+    fi
 }
 
 create_management_script() {
     cat > "$CONFIG_DIR/manage.sh" <<'EOF'
 #!/bin/bash
 C="distributex-worker"
-echo "DistributeX Worker"
+echo "DistributeX Worker Control"
 case "$1" in
-    status)   docker ps --filter "name=$C" --format "table {{.Names}}\t{{.Status}}" ;;
+    status)   docker ps --filter "name=^$C$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" ;;
     logs)     docker logs -f $C ;;
-    restart)  docker restart $C ;;
-    stop)     docker stop $C ;;
-    start)    docker start $C ;;
+    restart)  docker restart $C && echo "Restarted" ;;
+    stop)     docker stop $C && echo "Stopped" ;;
+    start)    docker start $C && echo "Started" ;;
     uninstall)
-        read -p "Uninstall? (yes/no): " yn
-        [[ "$yn" == "yes" ]] || exit
+        read -p "Really uninstall everything? (yes/no): " yn
+        [[ "$yn" == "yes" ]] || { echo "Aborted"; exit; }
         docker stop $C 2>/dev/null
         docker rm $C 2>/dev/null
-        echo "Uninstalled"
+        rm -rf "$HOME/.distributex"
+        echo "Fully uninstalled"
         ;;
     *) echo "Usage: $0 status|logs|restart|stop|start|uninstall" ;;
 esac
@@ -340,19 +357,20 @@ EOF
 
 show_contributor_complete() {
     section "Installation Complete!"
-    echo -e "${GREEN}Worker is running and will survive reboots${NC}\n"
-    log "Name     : Worker-$MAC_ADDRESS"
-    log "Storage  : $((STORAGE_TOTAL_MB/1024)) GB total"
-    $GPU_AVAILABLE && log "GPU      : $GPU_COUNT × $GPU_MODEL"
-    echo -e "\n${CYAN}Control:${NC} $CONFIG_DIR/manage.sh status|logs|restart"
-    echo -e "${BLUE}Dashboard:${NC} $DISTRIBUTEX_API_URL/dashboard\n"
+    echo -e "${GREEN}Your worker is active and auto-starts on boot${NC}\n"
+    log "Worker Name : Worker-$MAC_ADDRESS"
+    log "Total Storage : $((STORAGE_TOTAL_MB/1024)) GB"
+    $GPU_AVAILABLE && log "GPU Detected : $GPU_COUNT × $GPU_MODEL"
+    echo -e "\n${CYAN}Control commands:${NC}"
+    echo "   $CONFIG_DIR/manage.sh status | logs | restart | stop | start | uninstall"
+    echo -e "\n${BLUE}Dashboard:${NC} $DISTRIBUTEX_API_URL/dashboard\n"
 }
 
 show_developer_complete() {
-    section "Developer Mode"
-    echo -e "${GREEN}No worker installed – correct for developers${NC}\n"
-    echo -e "API Key:\n${BOLD}$API_TOKEN${NC}\n"
-    echo -e "Dashboard → ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}"
+    section "Developer Mode Active"
+    echo -e "${GREEN}No worker container started (correct for developers)${NC}\n"
+    echo -e "Your API Key (keep it secret):\n${BOLD}$API_TOKEN${NC}\n"
+    echo -e "Dashboard → ${BLUE}$DISTRIBUTEX_API_URL/dashboard${NC}\n"
 }
 
 # ============================================================================
@@ -375,6 +393,6 @@ main() {
     fi
 }
 
-trap 'error "Failed at line $LINENO"' ERR
+trap 'error "Script failed at line $LINENO"' ERR
 main
 exit 0
