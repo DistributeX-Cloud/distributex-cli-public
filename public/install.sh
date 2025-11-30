@@ -112,10 +112,11 @@ check_docker() {
         error "Docker is required for contributors but not installed.\nInstall from: https://docs.docker.com/get-docker/"
     fi
     
-    if ! docker ps &>/dev/null; then
-        error "Docker daemon is not running.\nPlease start Docker and try again."
+    # Check if Docker daemon is running
+    if ! docker ps >/dev/null 2>&1; then
+        error "Docker daemon is not running. Start Docker Desktop or dockerd."
     fi
-    
+
     log "Docker is installed and running"
 }
 
@@ -311,6 +312,7 @@ authenticate_user() {
     section "Authentication"
     
     mkdir -p "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR"
     
     # Check for existing token
     if [ -f "$CONFIG_DIR/token" ]; then
@@ -571,15 +573,50 @@ register_worker() {
 # ============================================================================
 start_contributor() {
     section "Starting Worker Container"
+
+    # Verify API token exists
+    if [ -z "$API_TOKEN" ]; then
+        error "Missing API token — cannot start worker container."
+    fi
+
+    # Validate token with server
+    TOKEN_TEST=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$DISTRIBUTEX_API_URL/api/auth/validate" || echo "")
+    if ! echo "$TOKEN_TEST" | grep -q '"valid":true"'; then
+        error "Invalid or expired API token — please re-login."
+    fi
+
+    # Ensure Docker image is installed BEFORE anything runs
+    info "Ensuring worker Docker image is installed..."
+
+    if ! docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
+        info "Image not found locally. Pulling..."
+        if ! docker pull "$DOCKER_IMAGE"; then
+            error "Failed to pull required Docker image: $DOCKER_IMAGE"
+        fi
+    else
+        info "Docker image already installed locally"
+    fi
     
     info "Pulling latest worker image..."
     if ! docker pull "$DOCKER_IMAGE" 2>&1 | grep -q "Downloaded\|up to date"; then
         warn "Failed to pull latest image, using local if available"
     fi
-    
+
+    # Clean up any old containers
+    containers=$(docker ps -a --filter "name=distributex-worker" --format "{{.ID}}")
+    if [ -n "$containers" ]; then
+        warn "Cleaning up old worker containers..."
+        docker rm -f $containers >/dev/null 2>&1 || true
+    fi
+
     info "Stopping existing container (if any)..."
     docker stop "$CONTAINER_NAME" 2>/dev/null || true
     docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+    # Test outbound internet connectivity
+    if ! curl -I https://google.com >/dev/null 2>&1; then
+        warn "Warning: No outbound HTTPS connectivity. Worker tasks may fail."
+    fi
     
     info "Starting worker container..."
     
@@ -593,6 +630,7 @@ start_contributor() {
     if docker run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \
+        --user "$(id -u):$(id -g)" \
         $gpu_flag \
         -e DISTRIBUTEX_API_URL="$DISTRIBUTEX_API_URL" \
         -e DISABLE_SELF_REGISTER=true \
@@ -601,7 +639,7 @@ start_contributor() {
         "$DOCKER_IMAGE" \
         --api-key "$API_TOKEN" \
         --url "$DISTRIBUTEX_API_URL" &>/dev/null; then
-        
+
         sleep 3
         
         if docker ps | grep -q "$CONTAINER_NAME"; then
