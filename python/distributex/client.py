@@ -46,32 +46,37 @@ class Task:
 class DistributeX:
     """Main SDK class for distributed computing"""
     
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        base_url: str = "https://distributex-cloud-network.pages.dev"
-    ):
-        """
-        Initialize DistributeX client
-        
-        Args:
-            api_key: Your API key (or set DISTRIBUTEX_API_KEY env var)
-            base_url: API base URL (default: production)
-        """
-        self.api_key = api_key or os.getenv("DISTRIBUTEX_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "API key required. Set DISTRIBUTEX_API_KEY environment variable "
-                "or pass api_key parameter.\n"
-                "Get your API key at: https://distributex-cloud-network.pages.dev/auth"
-            )
-        
-        self.base_url = base_url.rstrip('/')
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": f"DistributeX-Python-SDK/{__version__}"
-        })
+	def __init__(
+	    self,
+	    api_key: Optional[str] = None,
+	    base_url: str = "https://distributex-cloud-network.pages.dev"
+	):
+	    """
+	    Initialize DistributeX client
+	    
+	    Args:
+	        api_key: Your API key (or set DISTRIBUTEX_API_KEY env var)
+	        base_url: API base URL (default: production)
+	    """
+	    self.api_key = api_key or os.getenv("DISTRIBUTEX_API_KEY")
+	    if not self.api_key:
+	        raise ValueError(
+	            "API key required. Set DISTRIBUTEX_API_KEY environment variable "
+	            "or pass api_key parameter.\n"
+	            "Get your API key at: https://distributex-cloud-network.pages.dev/auth"
+	        )
+	    
+	    self.base_url = base_url.rstrip('/')
+	    
+	    # Create session with automatic redirect following
+	    self.session = requests.Session()
+	    self.session.headers.update({
+	        "Authorization": f"Bearer {self.api_key}",
+	        "User-Agent": f"DistributeX-Python-SDK/{__version__}"
+	    })
+	    
+	    # ✅ ADD: Allow automatic redirect following
+	    self.session.max_redirects = 5
     
     def run(
         self,
