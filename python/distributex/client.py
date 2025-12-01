@@ -328,31 +328,39 @@ class DistributeX:
     def get_result(self, task_id: str) -> Any:
         """Download and return task result"""
         task = self.get_task(task_id)
-        
+    
         if task.status != 'completed':
             raise ValueError(f"Task not completed. Status: {task.status}")
-        
-        response = self.session.get(f"{self.base_url}/api/storage/download/{task_id}")
+    
+        # Use NEW endpoint
+        response = self.session.get(f"{self.base_url}/api/tasks/{task_id}/result")
         response.raise_for_status()
-        
+    
+        # Check if it's JSON result or file download
+        content_type = response.headers.get('content-type', '')
+    
+        if 'application/json' in content_type:
+            return response.json().get('result')
+    
+        # If it's a file, extract it
         with tempfile.TemporaryDirectory() as tmpdir:
             tar_path = Path(tmpdir) / "result.tar.gz"
             tar_path.write_bytes(response.content)
-            
+        
             with tarfile.open(tar_path, 'r:gz') as tar:
                 tar.extractall(tmpdir)
-            
+        
             # Try to load pickled result
             result_file = Path(tmpdir) / "result.pkl"
             if result_file.exists():
                 with open(result_file, 'rb') as f:
                     return pickle.load(f)
-            
+        
             # Return text output
             output_file = Path(tmpdir) / "output.txt"
             if output_file.exists():
                 return output_file.read_text()
-        
+    
         return None
     
     def network_stats(self) -> dict:
