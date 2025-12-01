@@ -563,16 +563,30 @@ class WorkerAgent {
       const output = await this.taskExecutor.execute(task, taskDir);
 
       const duration = Math.round((Date.now() - start) / 1000);
+    
+      // Upload result to storage
+      const storageFileId = await this.uploadResult(task.id, {
+        output: output,
+        executionTime: duration
+      });
+    
+      // Complete task with result reference
       await this.makeRequest('PUT', `/api/tasks/${task.id}/complete`, {
         workerId: this.workerId,
-        result: { output, executionTime: duration },
-        executionTime: duration
+        result: { 
+          output: output.substring(0, 1000), // Store first 1KB in DB
+          executionTime: duration,
+          storageFileId: storageFileId // Link to full result
+        },
+        executionTime: duration,
+        storageFileId: storageFileId // Top-level for easy access
       });
 
       this.metrics.tasksExecuted++;
-      console.log(`Task ${task.id} COMPLETED in ${duration}s`);
+      console.log(`✅ Task ${task.id} COMPLETED in ${duration}s`);
+    
     } catch (err) {
-      console.error(`Task ${task.id} FAILED:`, err.message);
+      console.error(`❌ Task ${task.id} FAILED:`, err.message);
       try {
         await this.makeRequest('PUT', `/api/tasks/${task.id}/fail`, {
           workerId: this.workerId,
