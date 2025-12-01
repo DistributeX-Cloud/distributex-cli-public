@@ -286,9 +286,19 @@ fs.writeFileSync('result.json', JSON.stringify(result));
   /**
    * Download task result
    */
-  async downloadResult(taskId) {
-    return await this.request('GET', `/api/storage/download/${taskId}`);
+// REPLACE downloadResult method (around line 176):
+async downloadResult(taskId) {
+  // Use NEW endpoint
+  const response = await this.request('GET', `/api/tasks/${taskId}/result`);
+  
+  // Check if JSON result
+  if (response && typeof response === 'object' && response.result) {
+    return response.result;
   }
+  
+  // Otherwise it's a file - the API will redirect to storage
+  return response;
+}
 
   /**
    * Make HTTP request
