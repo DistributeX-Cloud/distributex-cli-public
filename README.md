@@ -1,11 +1,3 @@
-# DistributeX CLI & SDK
-
-**One command. Two modes. Infinite possibilities.**
-
-Share your computing resources OR run your code on a global pool of CPU, RAM, GPU, and Storage.
-
----
-
 ## 🚀 Quick Start
 
 ### Mode 1: Contributor (Share Resources)
@@ -32,252 +24,183 @@ curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-pu
 
 ---
 
-### Mode 2: Developer (Use Resources)
+# DistributeX Developer Guide
 
-After installing, get your API key at:
-```
-https://distributex-cloud-network.pages.dev/api-docs
-```
+**Run your code on a global pool of CPU, RAM, GPU, and Storage**
 
-#### Python SDK
+> **New to DistributeX?** This is the developer guide. If you want to **contribute resources** instead, see the [Contributor Guide](https://distributex-cloud-network.pages.dev/contribute)
 
+---
+
+## 🚀 Quick Start (2 minutes)
+
+### Step 1: Get Your API Key
+
+1. Sign up at [distributex-cloud-network.pages.dev](https://distributex-cloud-network.pages.dev)
+2. Select **"Developer"** role during signup
+3. Copy your API key (shown only once!)
+
+### Step 2: Install SDK
+
+**Python:**
 ```bash
 pip install distributex-cloud
 ```
 
-```python
-from distributex import DistributeX
-
-dx = DistributeX(api_key="your_api_key")
-
-# Run any Python function
-def train_model(data, epochs=10):
-    # Your ML training code
-    return model
-
-result = dx.run(train_model, args=(data,), gpu=True, workers=4)
-```
-
-#### JavaScript/Node.js SDK
-
+**JavaScript:**
 ```bash
 npm install distributex-cloud
 ```
 
+### Step 3: Run Your First Task
+
+**Python:**
+```python
+from distributex import DistributeX
+
+# Initialize with your API key
+dx = DistributeX(api_key="dx_your_api_key_here")
+
+# Run any Python function
+def process_data(data):
+    # Your code here
+    result = sum(data)
+    return result
+
+# Execute on the network
+result = dx.run(process_data, args=([1, 2, 3, 4, 5],))
+print(f"Result: {result}")  # Output: 15
+```
+
+**JavaScript:**
 ```javascript
-const DistributeX = require('distributex');
+const DistributeX = require('distributex-cloud');
 
-const dx = new DistributeX('your_api_key');
+// Initialize with your API key
+const dx = new DistributeX('dx_your_api_key_here');
 
-// Run any script
-const result = await dx.runScript('process.js', {
+// Run any function
+const result = await dx.run((data) => {
+  return data.reduce((a, b) => a + b, 0);
+}, { args: [[1, 2, 3, 4, 5]] });
+
+console.log(`Result: ${result}`); // Output: 15
+```
+
+---
+
+## 📦 What Can You Run?
+
+### Python Scripts
+```python
+dx.run_script('train.py', 
+    gpu=True,
+    workers=4,
+    cpuPerWorker=8,
+    ramPerWorker=16384  # MB
+)
+```
+
+### JavaScript/Node.js
+```javascript
+await dx.runScript('process.js', {
   workers: 2,
-  cpuPerWorker: 4,
-  ramPerWorker: 8192
+  cpuPerWorker: 4
 });
 ```
 
-#### Docker Execution
-
+### Docker Containers
 ```python
 # Python
-dx.runDocker('tensorflow/tensorflow:latest-gpu', 
-  command='python train.py',
-  gpu=True
+dx.run_docker('tensorflow/tensorflow:latest-gpu',
+    command='python train.py',
+    gpu=True,
+    ramPerWorker=32768
 )
 ```
 
 ```javascript
 // JavaScript
-dx.runDocker('python:3.11', {
+await dx.runDocker('python:3.11', {
   command: 'python script.py',
   cpuPerWorker: 4
-})
+});
 ```
+
+### Any Runtime
+- Python (2.x, 3.x)
+- Node.js
+- Java
+- Go
+- Rust
+- Ruby
+- PHP
+- Docker containers
 
 ---
 
-## 📦 What's Included
+## 💡 Real-World Examples
 
-### For Contributors
-
-```
-public/
-├── install.sh          # One-command installer
-├── uninstall.sh        # Clean uninstaller
-└── manage.sh           # Management commands
-```
-
-**Management:**
-```bash
-# Check status
-~/.distributex/manage.sh status
-
-# View logs
-~/.distributex/manage.sh logs
-
-# Restart worker
-~/.distributex/manage.sh restart
-
-# Stop temporarily
-~/.distributex/manage.sh stop
-
-# Uninstall
-~/.distributex/manage.sh uninstall
-```
-
-### For Developers
-
-#### Python SDK
-```
-python/distributex/
-├── __init__.py         # Package init
-├── client.py           # Main SDK
-├── examples.py         # Usage examples
-└── setup.py            # Package setup
-```
-
-#### JavaScript SDK
-```
-javascript/distributex/
-├── src/
-│   └── index.js        # Main SDK
-├── examples.js         # Usage examples
-└── package.json        # NPM config
-```
-
-#### Docker Worker
-```
-docker/
-├── Dockerfile          # Worker image
-└── worker-agent.js     # Agent script
-```
-
----
-
-## 💻 Developer Guide
-
-### Installation
-
-**Python:**
-```bash
-pip install distributex
-```
-
-**JavaScript:**
-```bash
-npm install distributex
-```
-
-**From source:**
-```bash
-# Python
-cd python/distributex
-pip install -e .
-
-# JavaScript
-cd javascript/distributex
-npm install
-npm link
-```
-
-### Basic Usage
-
-#### Python
-
+### 1. Machine Learning Training
 ```python
 from distributex import DistributeX
 
-# Initialize
-dx = DistributeX(api_key="your_api_key")
+dx = DistributeX(api_key="your_key")
 
-# Example 1: Run Python function
-def process_data(data):
-    # Your processing logic
-    return result
-
-result = dx.run(process_data, args=(my_data,), workers=4)
-
-# Example 2: Run Python script
-result = dx.run_script('analyze.py', 
-    runtime='python',
-    gpu=True,
-    inputFiles=['data.csv'],
-    outputFiles=['results.json']
-)
-
-# Example 3: Run Docker container
-result = dx.run_docker('tensorflow/tensorflow:latest-gpu',
-    command='python train.py',
-    gpu=True,
-    ramPerWorker=16384
-)
-```
-
-#### JavaScript
-
-```javascript
-const DistributeX = require('distributex');
-
-// Initialize
-const dx = new DistributeX('your_api_key');
-
-// Example 1: Run JavaScript function
-const result = await dx.run((n) => {
-  let sum = 0;
-  for (let i = 0; i < n; i++) sum += i;
-  return sum;
-}, { args: [1000000], cpuPerWorker: 4 });
-
-// Example 2: Run Node.js script
-const result = await dx.runScript('process.js', {
-  workers: 2,
-  ramPerWorker: 4096
-});
-
-// Example 3: Run Docker container
-const result = await dx.runDocker('python:3.11', {
-  command: 'python script.py',
-  cpuPerWorker: 4
-});
-```
-
-### Advanced Examples
-
-#### Video Processing
-```python
-dx.run_script('process_video.py',
-    workers=8,
-    cpuPerWorker=4,
-    gpu=True,
-    inputFiles=['video.mp4'],
-    outputFiles=['output/'],
-    timeout=7200
-)
-```
-
-#### ML Training
-```python
-dx.run_script('train.py',
-    workers=1,
-    cpuPerWorker=16,
-    ramPerWorker=32768,
+# Train model on 4 GPUs
+result = dx.run_script('train_model.py',
+    workers=4,
     gpu=True,
     cuda=True,
-    timeout=86400  # 24 hours
+    cpuPerWorker=16,
+    ramPerWorker=32768,
+    timeout=7200  # 2 hours
 )
 ```
 
-#### Parallel Data Processing
+### 2. Video Processing
 ```python
-# Process multiple files in parallel
-files = ['data1.csv', 'data2.csv', 'data3.csv']
-tasks = [
-    dx.run_script('process.py', 
-        inputFiles=[f], 
+# Process multiple videos in parallel
+files = ['video1.mp4', 'video2.mp4', 'video3.mp4']
+
+for video in files:
+    dx.run_script('process_video.py',
+        inputFiles=[video],
+        outputFiles=['output/'],
+        workers=1,
+        cpuPerWorker=8,
+        gpu=True,
+        wait=False  # Don't block
+    )
+```
+
+### 3. Data Analysis
+```javascript
+const DistributeX = require('distributex-cloud');
+const dx = new DistributeX('your_key');
+
+// Analyze large dataset
+const result = await dx.runScript('analyze.py', {
+  inputFiles: ['data.csv'],
+  outputFiles: ['results.json'],
+  workers: 4,
+  cpuPerWorker: 8,
+  ramPerWorker: 16384
+});
+```
+
+### 4. Parallel Processing
+```python
+# Process 100 items in parallel
+items = range(100)
+tasks = []
+
+for item in items:
+    task = dx.run(process_item, 
+        args=(item,), 
         wait=False
-    ) for f in files
-]
+    )
+    tasks.append(task)
 
 # Wait for all
 results = [dx.get_result(t.id) for t in tasks]
@@ -285,228 +208,211 @@ results = [dx.get_result(t.id) for t in tasks]
 
 ---
 
-## 🔧 Configuration
+## 🎯 Resource Allocation
 
-### Environment Variables
-
-```bash
-# API Key (required for developers)
-export DISTRIBUTEX_API_KEY="your_api_key"
-
-# API URL (optional, defaults to production)
-export DISTRIBUTEX_API_URL="https://distributex-cloud-network.pages.dev"
-```
-
-### Resource Limits
-
-Contributors can customize resource sharing:
-
-```bash
-# Edit ~/.distributex/config.json
-{
-  "cpuSharePercent": 40,
-  "ramSharePercent": 30,
-  "gpuSharePercent": 50,
-  "storageSharePercent": 20
-}
-
-# Restart to apply
-~/.distributex/manage.sh restart
-```
-
----
-
-## 🌐 API Reference
-
-### Python SDK
-
+### CPU & RAM
 ```python
-class DistributeX:
-    def __init__(api_key, base_url=...):
-        """Initialize client"""
-    
-    def run(func, args=(), kwargs={}, workers=1, gpu=False, ...):
-        """Run Python function"""
-    
-    def run_script(script_path, runtime='auto', workers=1, ...):
-        """Run any script file"""
-    
-    def run_docker(image, command=None, gpu=False, ...):
-        """Run Docker container"""
-    
-    def get_task(task_id):
-        """Get task status"""
-    
-    def network_stats():
-        """Get network statistics"""
+# Light task
+dx.run_script('light.py',
+    cpuPerWorker=2,
+    ramPerWorker=2048  # 2 GB
+)
+
+# Heavy task
+dx.run_script('heavy.py',
+    cpuPerWorker=16,
+    ramPerWorker=32768  # 32 GB
+)
 ```
 
-### JavaScript SDK
-
-```javascript
-class DistributeX {
-    constructor(apiKey, baseUrl)
-    
-    async run(func, options)
-    
-    async runScript(scriptPath, options)
-    
-    async runDocker(image, options)
-    
-    async getTask(taskId)
-    
-    async networkStats()
-}
-```
-
-### Task Options
-
-```javascript
-{
-  workers: 1,              // Number of parallel workers
-  cpuPerWorker: 2,         // CPU cores per worker
-  ramPerWorker: 2048,      // RAM in MB per worker
-  gpu: false,              // Require GPU
-  cuda: false,             // Require CUDA
-  inputFiles: [],          // Input files to upload
-  outputFiles: [],         // Output paths to collect
-  env: {},                 // Environment variables
-  timeout: 3600,           // Timeout in seconds
-  wait: true               // Wait for completion
-}
-```
-
----
-
-## 🎯 Use Cases
-
-### AI/ML
-- Model training
-- Inference/prediction
-- Hyperparameter tuning
-- Data preprocessing
-
-### Video Processing
-- Transcoding
-- Rendering
-- Effects processing
-- Format conversion
-
-### Data Analysis
-- Large dataset processing
-- Statistical analysis
-- Report generation
-- ETL pipelines
-
-### Scientific Computing
-- Simulations
-- Complex calculations
-- Physics computations
-- Numerical analysis
-
-### General Computing
-- Batch processing
-- Parallel algorithms
-- Custom computations
-- Any distributed task
-
----
-
-## 📊 Network Statistics
-
-View live network stats at:
-```
-https://distributex-cloud-network.pages.dev/stats
-```
-
-Or programmatically:
-
+### GPU Acceleration
 ```python
-# Python
+# Require GPU
+dx.run_script('train.py',
+    gpu=True,           # Any GPU
+    cuda=True,          # CUDA required
+    ramPerWorker=16384
+)
+```
+
+### Multiple Workers
+```python
+# Split work across 8 workers
+dx.run_script('distributed.py',
+    workers=8,
+    cpuPerWorker=4,
+    ramPerWorker=8192
+)
+```
+
+---
+
+## 📊 API Reference
+
+### Initialize Client
+```python
+from distributex import DistributeX
+
+dx = DistributeX(
+    api_key="your_api_key",
+    base_url="https://distributex-cloud-network.pages.dev"  # Optional
+)
+```
+
+### Run Function
+```python
+result = dx.run(
+    func,                    # Function to run
+    args=(),                 # Positional arguments
+    kwargs={},               # Keyword arguments
+    workers=1,               # Number of parallel workers
+    cpuPerWorker=2,          # CPU cores per worker
+    ramPerWorker=2048,       # RAM in MB per worker
+    gpu=False,               # Require GPU
+    cuda=False,              # Require CUDA
+    timeout=3600,            # Timeout in seconds
+    wait=True                # Wait for completion
+)
+```
+
+### Run Script
+```python
+result = dx.run_script(
+    'script.py',             # Script path
+    runtime='auto',          # Auto-detect or specify
+    workers=1,
+    cpuPerWorker=2,
+    ramPerWorker=2048,
+    gpu=False,
+    cuda=False,
+    inputFiles=[],           # Files to upload
+    outputFiles=[],          # Files to collect
+    env={},                  # Environment variables
+    timeout=3600,
+    wait=True
+)
+```
+
+### Run Docker
+```python
+result = dx.run_docker(
+    'image:tag',             # Docker image
+    command=None,            # Command to run
+    workers=1,
+    cpuPerWorker=2,
+    ramPerWorker=2048,
+    gpu=False,
+    volumes={},              # Volume mappings
+    env={},                  # Environment variables
+    ports={},                # Port mappings
+    timeout=3600,
+    wait=True
+)
+```
+
+### Task Management
+```python
+# Get task status
+task = dx.get_task('task-id')
+print(task.status, task.progress)
+
+# Get result
+result = dx.get_result('task-id')
+
+# Network statistics
 stats = dx.network_stats()
-print(f"Active Workers: {stats['activeWorkers']}")
-print(f"Total CPU Cores: {stats['totalCpuCores']}")
-```
-
-```javascript
-// JavaScript
-const stats = await dx.networkStats();
-console.log(`Active Workers: ${stats.activeWorkers}`);
-console.log(`Total CPU Cores: ${stats.totalCpuCores}`);
+print(f"Available: {stats.availableCpuCores} cores")
 ```
 
 ---
 
-## 🔐 Security
+## 🔒 Security
 
-### For Contributors
-- ✅ Docker isolated execution
-- ✅ No file system access
-- ✅ Encrypted communication
-- ✅ Open source code
-- ✅ Auto-throttling
+- ✅ All data encrypted in transit (HTTPS)
+- ✅ Private execution environments
+- ✅ Isolated Docker containers
+- ✅ API key authentication (JWT)
+- ✅ No data persistence on workers
 
-### For Developers
-- ✅ Data encryption
-- ✅ Private execution
-- ✅ Secure JWT authentication
-- ✅ HTTPS only
+### Store Your API Key Safely
 
----
-
-## 🐛 Troubleshooting
-
-### Worker not starting
-
+**Environment Variable (Recommended):**
 ```bash
-# Check status
-~/.distributex/manage.sh status
-
-# View logs
-~/.distributex/manage.sh logs
-
-# Restart
-~/.distributex/manage.sh restart
+export DISTRIBUTEX_API_KEY="dx_your_key"
 ```
-
-### Connection issues
-
-```bash
-# Test connection
-curl https://distributex-cloud-network.pages.dev/api/health
-
-# Verify API key
-distributex config --verify
-```
-
-### High resource usage
-
-```bash
-# Reduce limits
-distributex config --cpu-limit 30 --ram-limit 20
-
-# Enable aggressive throttling
-distributex config --throttle-mode aggressive
-```
-
-### SDK errors
 
 ```python
-# Python - Enable debug logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
+# Automatically uses env var
+dx = DistributeX()
 ```
 
-```javascript
-// JavaScript - Check for errors
-try {
-  await dx.run(func);
-} catch (error) {
-  console.error('Error:', error.message);
+**Config File:**
+```python
+# ~/.distributex/config.json
+{
+  "api_key": "dx_your_key"
 }
 ```
 
 ---
+
+## 💰 Pricing
+
+Pay only for what you use:
+
+- **CPU:** $0.10 per core-hour
+- **RAM:** $0.02 per GB-hour
+- **GPU:** $0.50 per GPU-hour
+- **Storage:** $0.01 per GB-hour
+
+**Example:** Running a 4-core, 8GB RAM task for 1 hour:
+- CPU: 4 cores × $0.10 = $0.40
+- RAM: 8 GB × $0.02 = $0.16
+- **Total: $0.56/hour**
+
 ---
 
-**Made with ❤️ by the DistributeX Team**
+## 📈 Dashboard
+
+Monitor your usage at:
+**[distributex-cloud-network.pages.dev/dashboard](https://distributex-cloud-network.pages.dev/dashboard)**
+
+- View active tasks
+- Check resource usage
+- Monitor spending
+- Download results
+- Manage API keys
+
+---
+
+## 🆘 Troubleshooting
+
+### "Authentication required"
+```bash
+# Check API key
+echo $DISTRIBUTEX_API_KEY
+
+# Test connection
+python -c "from distributex import DistributeX; dx = DistributeX(); print(dx.network_stats())"
+```
+
+### "No workers available"
+The network may be at capacity. Your task will queue and execute when workers become available.
+
+### Task timeout
+Increase timeout for long-running tasks:
+```python
+dx.run_script('long_task.py', timeout=86400)  # 24 hours
+```
+
+### View logs
+```python
+task = dx.get_task('task-id')
+print(task.errorMessage)
+```
+
+---
+
+---
+
+**Built with ❤️ by the DistributeX Team**
