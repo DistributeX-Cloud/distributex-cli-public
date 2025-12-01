@@ -373,6 +373,61 @@ class WorkerAgent {
     throw new Error('No valid MAC address found');
   }
 
+  // ============================================================================
+  // RESULT UPLOAD - NEW METHOD
+  // ============================================================================
+  async uploadResult(taskId, resultData) {
+    console.log(`📤 Uploading result for task ${taskId}...`);
+  
+    try {
+      // Package result into tarball
+      const tmpDir = '/tmp/distributex-results';
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    
+      const resultDir = path.join(tmpDir, `result-${taskId}`);
+      if (!fs.existsSync(resultDir)) fs.mkdirSync(resultDir, { recursive: true });
+    
+      // Write output.txt
+      const outputPath = path.join(resultDir, 'output.txt');
+      fs.writeFileSync(outputPath, resultData.output || '');
+    
+      // Write result.json if available
+      if (resultData.structuredResult) {
+        const jsonPath = path.join(resultDir, 'result.json');
+        fs.writeFileSync(jsonPath, JSON.stringify(resultData.structuredResult, null, 2));
+      }
+    
+      // Create tarball
+      const tarPath = path.join(tmpDir, `result-${taskId}.tar.gz`);
+      await execAsync(`tar -czf "${tarPath}" -C "${resultDir}" .`);
+    
+      // Read tarball as base64
+      const tarData = fs.readFileSync(tarPath);
+      const base64Data = tarData.toString('base64');
+      const hash = require('crypto').createHash('sha256').update(tarData).digest('hex');
+    
+      // Upload to storage
+      const uploadResult = await this.makeRequest('POST', '/api/storage/upload', {
+        filename: `result-${taskId}.tar.gz`,
+        data: base64Data,
+        hash: hash,
+        size: tarData.length
+      });
+    
+      console.log(`✅ Result uploaded: ${uploadResult.id}`);
+    
+      // Clean up
+      fs.rmSync(resultDir, { recursive: true, force: true });
+      fs.unlinkSync(tarPath);
+    
+      return uploadResult.id; // Return storage file ID
+    
+    } catch (error) {
+      console.error('❌ Result upload failed:', error.message);
+      return null;
+    }
+  }
+  
   async detectGPU() {
     try {
       const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader', { timeout: 5000 });
