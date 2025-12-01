@@ -438,14 +438,8 @@ A: No. All tasks are private and isolated.
 **Q: How do I increase my trust score?**
 A: Submit successful tasks, maintain clean record, use resources efficiently.
 
-**Q: What if I'm suspended unfairly?**
-A: Contact support@distributex.io with evidence for review.
-
 **Q: Can I opt out of certain task types?**
 A: Yes. Configure allowed task types in worker settings.
-
-**Q: How do I report a security issue?**
-A: Email security@distributex.io (PGP key available).
 
 ---
 
