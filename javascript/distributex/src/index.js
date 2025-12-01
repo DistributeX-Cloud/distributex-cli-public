@@ -283,21 +283,31 @@ fs.writeFileSync('result.json', JSON.stringify(result));
     }
   }
 
-  /**
-   * Download task result
-   */
-// REPLACE downloadResult method (around line 176):
+/**
+ * Download task result
+ */
 async downloadResult(taskId) {
-  // Use NEW endpoint
-  const response = await this.request('GET', `/api/tasks/${taskId}/result`);
+  console.log('📥 Downloading result...');
   
-  // Check if JSON result
-  if (response && typeof response === 'object' && response.result) {
-    return response.result;
+  try {
+    // Use NEW result endpoint
+    const response = await this.request('GET', `/api/tasks/${taskId}/result`);
+    
+    // If it's a JSON response (small result in DB)
+    if (response && typeof response === 'object' && response.result !== undefined) {
+      console.log('✓ Result retrieved from database');
+      return response.result;
+    }
+    
+    // If it's a redirect to storage, the request method should have followed it
+    // and returned the file content
+    console.log('✓ Result retrieved from storage');
+    return response;
+    
+  } catch (error) {
+    console.error('Failed to download result:', error.message);
+    throw error;
   }
-  
-  // Otherwise it's a file - the API will redirect to storage
-  return response;
 }
 
   /**
