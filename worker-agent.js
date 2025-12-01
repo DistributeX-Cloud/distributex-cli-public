@@ -583,47 +583,30 @@ class WorkerAgent {
   async executeTask(task) {
     this.isExecutingTask = true;
     this.currentTaskId = task.id;
+
     const start = Date.now();
+    const timeout = (task.timeout || 3600) * 1000; // Convert to milliseconds
+
+    const timeoutHandle = setTimeout(() => {
+      console.error(`⏰ Task ${task.id} timed out after ${task.timeout}s`);
+      this.isExecutingTask = false;
+      this.currentTaskId = null;
+    }, timeout);
 
     let taskDir;
+
     try {
       taskDir = await this.downloadAndExtract(task);
       const output = await this.taskExecutor.execute(task, taskDir);
 
-      const duration = Math.round((Date.now() - start) / 1000);
-    
-      // Upload result to storage
-      const storageFileId = await this.uploadResult(task.id, {
-        output: output,
-        executionTime: duration
-      });
-    
-      // Complete task with result reference
-      await this.makeRequest('PUT', `/api/tasks/${task.id}/complete`, {
-        workerId: this.workerId,
-        result: { 
-          output: output.substring(0, 1000), // Store first 1KB in DB
-          executionTime: duration,
-          storageFileId: storageFileId // Link to full result
-        },
-        executionTime: duration,
-        storageFileId: storageFileId // Top-level for easy access
-      });
+      // TODO: send results to API etc.
+      console.log(`✓ Task ${task.id} completed in ${Date.now() - start}ms`);
 
-      this.metrics.tasksExecuted++;
-      console.log(`✅ Task ${task.id} COMPLETED in ${duration}s`);
-    
     } catch (err) {
-      console.error(`❌ Task ${task.id} FAILED:`, err.message);
-      try {
-        await this.makeRequest('PUT', `/api/tasks/${task.id}/fail`, {
-          workerId: this.workerId,
-          errorMessage: err.message
-        });
-      } catch { /* ignore */ }
-      this.metrics.tasksFailed++;
+      console.error(`❌ Error executing task ${task.id}:`, err);
+
     } finally {
-      if (taskDir) fs.rmSync(taskDir, { recursive: true, force: true });
+      clearTimeout(timeoutHandle);
       this.isExecutingTask = false;
       this.currentTaskId = null;
     }
@@ -631,14 +614,21 @@ class WorkerAgent {
 
   async pollForTasks() {
     if (!this.isRunning || this.isExecutingTask) return;
+
     this.metrics.pollAttempts++;
+
     try {
-      const res = await this.makeRequest('GET', `/api/workers/${this.workerId}/tasks/next`);
+      const res = await this.makeRequest(
+        'GET',
+        `/api/workers/${this.workerId}/tasks/next`
+      );
+
       if (res?.task) {
         this.metrics.tasksReceived++;
         console.log(`\nTASK RECEIVED: ${res.task.name} (ID: ${res.task.id})`);
         await this.executeTask(res.task);
       }
+
     } catch (e) {
       if (!e.message.includes('No tasks') && !e.message.includes('404')) {
         console.error('Poll error:', e.message);
