@@ -532,25 +532,53 @@ class WorkerAgent {
   }
 
   // ───── Task Handling ─────
-  async downloadAndExtract(task) {
-    const taskDir = path.join(CONFIG.WORK_DIR, `task-${task.id}`);
-    if (fs.existsSync(taskDir)) fs.rmSync(taskDir, { recursive: true, force: true });
-    fs.mkdirSync(taskDir, { recursive: true });
-
-    const zipPath = path.join(taskDir, 'task.zip');
-    const file = fs.createWriteStream(zipPath);
-    await new Promise((resolve, reject) => {
-      https.get(task.downloadUrl, { headers: { Authorization: `Bearer ${this.apiKey}` } }, res => {
-        if (res.statusCode !== 200) return reject(new Error(`Download failed: ${res.statusCode}`));
-        pipeline(res, file, err => err ? reject(err) : resolve());
-      }).on('error', reject);
-    });
-
-    await execAsync(`unzip -o "${zipPath}" -d "${taskDir}"`);
-    fs.unlinkSync(zipPath);
-    console.log(`Task files extracted to ${taskDir}`);
-    return taskDir;
-  }
+	async downloadAndExtract(task) {
+	  const taskDir = path.join(CONFIG.WORK_DIR, `task-${task.id}`);
+	  if (fs.existsSync(taskDir)) fs.rmSync(taskDir, { recursive: true, force: true });
+	  fs.mkdirSync(taskDir, { recursive: true });
+	
+	  // ✅ Check if downloadUrl exists
+	  if (!task.downloadUrl) {
+	    // Check if it's a command-based task (no code download needed)
+	    const cfg = typeof task.execution_config === 'string'
+	      ? JSON.parse(task.execution_config)
+	      : task.execution_config || {};
+	    
+	    if (cfg.command || cfg.dockerImage) {
+	      console.log(`ℹ️  Task ${task.id} is command/docker-based, no download needed`);
+	      return taskDir;
+	    }
+	    
+	    throw new Error('Task has no downloadUrl and no command/dockerImage specified');
+	  }
+	
+	  const zipPath = path.join(taskDir, 'task.zip');
+	  const file = fs.createWriteStream(zipPath);
+	  
+	  await new Promise((resolve, reject) => {
+	    https.get(task.downloadUrl, { headers: { Authorization: `Bearer ${this.apiKey}` } }, res => {
+	      if (res.statusCode !== 200) {
+	        return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+	      }
+	      pipeline(res, file, err => err ? reject(err) : resolve());
+	    }).on('error', reject);
+	  });
+	
+	  // Try to extract (might be tar.gz or zip)
+	  try {
+	    await execAsync(`tar -xzf "${zipPath}" -C "${taskDir}"`);
+	  } catch {
+	    try {
+	      await execAsync(`unzip -o "${zipPath}" -d "${taskDir}"`);
+	    } catch {
+	      throw new Error('Failed to extract code archive (tried tar.gz and zip)');
+	    }
+	  }
+	  
+	  fs.unlinkSync(zipPath);
+	  console.log(`✓ Task files extracted to ${taskDir}`);
+	  return taskDir;
+	}
 
   async executeTask(task) {
     this.isExecutingTask = true;
