@@ -28,7 +28,7 @@ curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-pu
 
 **Run your code on a global pool of CPU, RAM, GPU, and Storage**
 
-> **New to DistributeX?** This is the developer guide. If you want to **contribute resources** instead, see the [Contributor Guide](https://distributex-cloud-network.pages.dev/contribute)
+> **New to DistributeX?** This is the developer guide.
 
 ---
 
