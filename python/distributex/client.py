@@ -325,43 +325,72 @@ class DistributeX:
             error=data.get('errorMessage')
         )
     
-    def get_result(self, task_id: str) -> Any:
-        """Download and return task result"""
-        task = self.get_task(task_id)
-    
-        if task.status != 'completed':
-            raise ValueError(f"Task not completed. Status: {task.status}")
-    
-        # Use NEW endpoint
-        response = self.session.get(f"{self.base_url}/api/tasks/{task_id}/result")
-        response.raise_for_status()
-    
-        # Check if it's JSON result or file download
-        content_type = response.headers.get('content-type', '')
-    
-        if 'application/json' in content_type:
-            return response.json().get('result')
-    
-        # If it's a file, extract it
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tar_path = Path(tmpdir) / "result.tar.gz"
-            tar_path.write_bytes(response.content)
-        
-            with tarfile.open(tar_path, 'r:gz') as tar:
-                tar.extractall(tmpdir)
-        
-            # Try to load pickled result
-            result_file = Path(tmpdir) / "result.pkl"
-            if result_file.exists():
-                with open(result_file, 'rb') as f:
-                    return pickle.load(f)
-        
-            # Return text output
-            output_file = Path(tmpdir) / "output.txt"
-            if output_file.exists():
-                return output_file.read_text()
-    
-        return None
+	def get_result(self, task_id: str) -> Any:
+	    """Download and return task result"""
+	    task = self.get_task(task_id)
+	    
+	    if task.status != 'completed':
+	        raise ValueError(f"Task not completed. Status: {task.status}")
+	    
+	    # Use NEW result endpoint
+	    response = self.session.get(f"{self.base_url}/api/tasks/{task_id}/result")
+	    
+	    # Handle redirects (if result is in file storage)
+	    if response.status_code == 302:
+	        redirect_url = response.headers.get('Location')
+	        response = self.session.get(redirect_url)
+	    
+	    response.raise_for_status()
+	    
+	    # Check content type
+	    content_type = response.headers.get('content-type', '')
+	    
+	    # If JSON response (small result stored in DB)
+	    if 'application/json' in content_type:
+	        data = response.json()
+	        return data.get('result')
+	    
+	    # If file download (tarball with results)
+	    if 'application/gzip' in content_type or 'application/octet-stream' in content_type:
+	        with tempfile.TemporaryDirectory() as tmpdir:
+	            tar_path = Path(tmpdir) / "result.tar.gz"
+	            tar_path.write_bytes(response.content)
+	            
+	            # Extract tarball
+	            with tarfile.open(tar_path, 'r:gz') as tar:
+	                tar.extractall(tmpdir)
+	            
+	            # Try to load pickled result first
+	            result_file = Path(tmpdir) / "result.pkl"
+	            if result_file.exists():
+	                with open(result_file, 'rb') as f:
+	                    return pickle.load(f)
+	            
+	            # Try JSON result
+	            json_file = Path(tmpdir) / "result.json"
+	            if json_file.exists():
+	                with open(json_file, 'r') as f:
+	                    return json.load(f)
+	            
+	            # Return text output
+	            output_file = Path(tmpdir) / "output.txt"
+	            if output_file.exists():
+	                return output_file.read_text()
+	            
+	            # Return all files as dict
+	            files = {}
+	            for file in Path(tmpdir).rglob('*'):
+	                if file.is_file():
+	                    rel_path = file.relative_to(tmpdir)
+	                    try:
+	                        files[str(rel_path)] = file.read_text()
+	                    except:
+	                        files[str(rel_path)] = f"<binary file: {file.stat().st_size} bytes>"
+	            
+	            return files if files else None
+	    
+	    # Unknown content type
+	    return response.text
     
     def network_stats(self) -> dict:
         """Get current network statistics"""
