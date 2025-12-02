@@ -407,68 +407,71 @@ setup_contributor() {
     echo -e "${BLUE}Dashboard → $API_URL/dashboard${NC}"
     echo
 }
+
 # ============================================================================
-# DEVELOPER SETUP - 100% SAFE FROM jq CRASHES
+# DEVELOPER SETUP – COMPLETELY SAFE (no more jq crashes ever)
 # ============================================================================
 setup_developer() {
     section "Setting Up Developer Access"
 
     info "Checking for an existing API key..."
 
-    # ── Safe request with HTTP status ──
-    response=$(curl -s -w "\n%{http_code}" -X GET \
+    # ───── SAFE CURL: capture body + HTTP status ─────
+    raw=$(curl -s -w "\n%{http_code}" --max-time 20 \
         "$API_URL/api/developer/api-key/info" \
         -H "Authorization: Bearer $API_TOKEN")
 
-    http_code=$(echo "$response" | tail -n1)
-    body=$(echo "$response" | sed '$d')
+    http_code=$(echo "$raw" | tail -n1)
+    body=$(echo "$raw" | sed '$d')
 
-    # If not 200 or not valid JSON → skip check, generate new key
-    if [[ "$http_code" != "200" ]] || ! echo "$body" | jq empty 2>/dev/null; then
-        warn "Could not verify existing API key (HTTP $http_code or invalid response)"
-        warn "Generating a new key..."
+    # If not 200 OR not valid JSON → skip check and generate new key
+    if [[ "$http_code" != "200" ]] || ! echo "$body" | jq -e . >/dev/null 2>&1; then
+        warn "Could not check existing key (HTTP $http_code or server error)"
+        warn "→ Generating a new API key for you..."
     else
+        # Valid JSON and 200 → safe to parse
         has_key=$(echo "$body" | jq -r '.hasKey // false')
 
         if [[ "$has_key" == "true" ]]; then
             prefix=$(echo "$body" | jq -r '.prefix // "xxxx"')
             suffix=$(echo "$body" | jq -r '.suffix // "xxxx"')
             info "Found existing API key:"
-            echo " - Token: ${prefix}********${suffix}"
-            echo " - The full token is only shown when you generated it."
-            echo ""
+            echo "   • Token: ${prefix}********${suffix}"
+            echo "   • Full key is only shown once (when created)"
+            echo
             warn "We will NOT regenerate or overwrite your key."
-            echo ""
+            echo
             info "Get your full key from the dashboard:"
             echo "   $API_URL/api-dashboard"
-            echo ""
-            info "Save it locally (optional):"
+            echo
+            info "Save it locally if needed:"
             echo "   echo \"your-full-key\" > $CONFIG_DIR/api-key"
             echo "   chmod 600 $CONFIG_DIR/api-key"
-            echo ""
-            section "Developer Setup Complete! (using existing key)"
+            echo
+            section "Developer Setup Complete (existing key kept)"
             return 0
         fi
     fi
 
-    # ── No existing key → generate new one (also safe) ──
-    warn "No API key found → generating a new one..."
-    gen_response=$(curl -s -w "\n%{http_code}" -X POST \
+    # ───── GENERATE NEW KEY (also fully safe) ─────
+    info "Generating new API key..."
+
+    raw_gen=$(curl -s -w "\n%{http_code}" --max-time 20 \
         "$API_URL/api/developer/api-key/generate" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{"name":"CLI Installer v8.0"}')
 
-    gen_code=$(echo "$gen_response" | tail -n1)
-    gen_body=$(echo "$gen_response" | sed '$d')
+    code=$(echo "$raw_gen" | tail -n1)
+    body_gen=$(echo "$raw_gen" | sed '$d')
 
-    if [[ "$gen_code" != "200" ]]; then
-        error "Failed to generate API key (HTTP $gen_code)\n$gen_body"
+    if [[ "$code" != "200" ]]; then
+        error "Failed to generate API key (HTTP $code)\n$body_gen"
     fi
 
-    api_key=$(echo "$gen_body" | jq -r '.apiKey // empty')
+    api_key=$(echo "$body_gen" | jq -r '.apiKey // empty')
     if [[ -z "$api_key" || "$api_key" == "null" ]]; then
-        error "API returned no key. Response:\n$gen_body"
+        error "Server did not return an API key.\n$body_gen"
     fi
 
     mkdir -p "$CONFIG_DIR"
@@ -477,28 +480,26 @@ setup_developer() {
 
     section "Developer Setup Complete!"
     echo
-    echo -e "${GREEN}Your developer environment is ready!${NC}"
+    echo -e "${GREEN}Your developer access is ready!${NC}"
     echo
-    echo -e "${BOLD}Personal API Key (save this — shown only once):${NC}"
+    echo -e "${BOLD}YOUR API KEY (shown only once):${NC}"
     echo -e "${YELLOW}$api_key${NC}"
-    echo -e "${RED}This key will NOT be shown again!${NC}"
+    echo -e "${RED}SAVE IT NOW – it will never appear again!${NC}"
     echo
-    echo -e "${CYAN}Quick Start Examples:${NC}"
+    echo -e "${CYAN}Quick Start:${NC}"
     cat << EOF
-${BOLD}Python:${NC}
+Python:
   pip install distributex-cloud
-  from distributex import DistributeX
-  dx = DistributeX(api_key="$api_key")
+  dx = DistributeX("$api_key")
 
-${BOLD}Node.js:${NC}
+Node.js:
   npm install distributex-cloud
-  const dx = new DistributeX("$api_key");
+  const dx = new DistributeX("$api_key")
 
-${BOLD}Env var:${NC}
+Or:
   export DISTRIBUTEX_API_KEY="$api_key"
 EOF
     echo
-    echo -e "${BLUE}Docs: $API_URL/docs${NC}"
     echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
     echo -e "${GREEN}Key saved to: $CONFIG_DIR/api-key${NC}"
     echo
