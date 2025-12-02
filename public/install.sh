@@ -416,7 +416,7 @@ setup_developer() {
 
     info "Checking for an existing API key..."
 
-    # ───── SAFE CURL: capture body + HTTP status ─────
+    # Safer curl: returns body + status
     raw=$(curl -s -w "\n%{http_code}" --max-time 20 \
         "$API_URL/api/developer/api-key/info" \
         -H "Authorization: Bearer $API_TOKEN")
@@ -424,85 +424,49 @@ setup_developer() {
     http_code=$(echo "$raw" | tail -n1)
     body=$(echo "$raw" | sed '$d')
 
-    # If not 200 OR not valid JSON → skip check and generate new key
+    # If server error or not JSON
     if [[ "$http_code" != "200" ]] || ! echo "$body" | jq -e . >/dev/null 2>&1; then
-        warn "Could not check existing key (HTTP $http_code or server error)"
-        warn "→ Generating a new API key for you..."
-    else
-        # Valid JSON and 200 → safe to parse
-        has_key=$(echo "$body" | jq -r '.hasKey // false')
-
-        if [[ "$has_key" == "true" ]]; then
-            prefix=$(echo "$body" | jq -r '.prefix // "xxxx"')
-            suffix=$(echo "$body" | jq -r '.suffix // "xxxx"')
-            info "Found existing API key:"
-            echo "   • Token: ${prefix}********${suffix}"
-            echo "   • Full key is only shown once (when created)"
-            echo
-            warn "We will NOT regenerate or overwrite your key."
-            echo
-            info "Get your full key from the dashboard:"
-            echo "   $API_URL/api-dashboard"
-            echo
-            info "Save it locally if needed:"
-            echo "   echo \"your-full-key\" > $CONFIG_DIR/api-key"
-            echo "   chmod 600 $CONFIG_DIR/api-key"
-            echo
-            section "Developer Setup Complete (existing key kept)"
-            return 0
-        fi
+        warn "Could not check existing API key (HTTP $http_code)"
+        warn "Please generate one from your dashboard:"
+        echo "   $API_URL/api-dashboard"
+        section "Developer Setup Incomplete"
+        return 0
     fi
 
-    # ───── GENERATE NEW KEY (also fully safe) ─────
-    info "Generating new API key..."
+    has_key=$(echo "$body" | jq -r '.hasKey // false')
 
-    raw_gen=$(curl -s -w "\n%{http_code}" --max-time 20 \
-        "$API_URL/api/developer/api-key/generate" \
-        -H "Authorization: Bearer $API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"name":"CLI Installer v8.0"}')
+    # ────────────────────────────────────────────────
+    # CASE 1: A key already exists
+    # ────────────────────────────────────────────────
+    if [[ "$has_key" == "true" ]]; then
+        prefix=$(echo "$body" | jq -r '.prefix // "xxxx"')
+        suffix=$(echo "$body" | jq -r '.suffix // "xxxx"')
 
-    code=$(echo "$raw_gen" | tail -n1)
-    body_gen=$(echo "$raw_gen" | sed '$d')
-
-    if [[ "$code" != "200" ]]; then
-        error "Failed to generate API key (HTTP $code)\n$body_gen"
+        info "Existing API key detected:"
+        echo "   • ${prefix}********${suffix}"
+        echo
+        warn "Installer will NOT generate a new key."
+        echo "Visit your dashboard to view your full key:"
+        echo "   $API_URL/api-dashboard"
+        echo
+        section "Developer Setup Complete (existing key)"
+        return 0
     fi
 
-    api_key=$(echo "$body_gen" | jq -r '.apiKey // empty')
-    if [[ -z "$api_key" || "$api_key" == "null" ]]; then
-        error "Server did not return an API key.\n$body_gen"
-    fi
-
-    mkdir -p "$CONFIG_DIR"
-    echo "$api_key" > "$CONFIG_DIR/api-key"
-    chmod 600 "$CONFIG_DIR/api-key"
-
-    section "Developer Setup Complete!"
+    # ────────────────────────────────────────────────
+    # CASE 2: No key exists
+    # ────────────────────────────────────────────────
+    warn "No API key found."
     echo
-    echo -e "${GREEN}Your developer access is ready!${NC}"
+    echo "Please generate one in your developer dashboard:"
+    echo "   $API_URL/api-dashboard"
     echo
-    echo -e "${BOLD}YOUR API KEY (shown only once):${NC}"
-    echo -e "${YELLOW}$api_key${NC}"
-    echo -e "${RED}SAVE IT NOW – it will never appear again!${NC}"
+    echo "Then save it locally:"
+    echo "   echo \"your-api-key\" > $CONFIG_DIR/api-key"
+    echo "   chmod 600 $CONFIG_DIR/api-key"
     echo
-    echo -e "${CYAN}Quick Start:${NC}"
-    cat << EOF
-Python:
-  pip install distributex-cloud
-  dx = DistributeX("$api_key")
-
-Node.js:
-  npm install distributex-cloud
-  const dx = new DistributeX("$api_key")
-
-Or:
-  export DISTRIBUTEX_API_KEY="$api_key"
-EOF
-    echo
-    echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
-    echo -e "${GREEN}Key saved to: $CONFIG_DIR/api-key${NC}"
-    echo
+    section "Developer Setup Pending"
+    return 0
 }
 
 # ============================================================================
