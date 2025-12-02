@@ -409,40 +409,66 @@ setup_contributor() {
 }
 
 # ============================================================================
-# DEVELOPER SETUP
+# DEVELOPER SETUP - WITH NEW API KEY SAFETY CHECK
 # ============================================================================
 setup_developer() {
     section "Setting Up Developer Access"
 
-    info "Fetching/generating your API key..."
-    local resp=$(curl -s -X GET "$API_URL/api/developer/api-key" -H "Authorization: Bearer $API_TOKEN")
-    local api_key=$(safe_jq '.apiKey' "$resp")
+    info "Checking for an existing API key..."
+    resp=$(curl -s -X GET "$API_URL/api/developer/api-key/info" \
+        -H "Authorization: Bearer $API_TOKEN")
 
-    if [[ -z "$api_key" || "$api_key" == "null" ]]; then
-        info "Generating new API key..."
+    has_key=$(echo "$resp" | jq -r '.hasKey // false')
+
+    if [[ "$has_key" == "true" ]]; then
+        info "Found existing API key:"
+        prefix=$(echo "$resp" | jq -r '.prefix // empty')
+        suffix=$(echo "$resp" | jq -r '.suffix // empty')
+        echo " - Token: ${prefix}********${suffix}"
+        echo " - The full token is only shown when you generated it."
+        echo ""
+        warn "To avoid accidental overwrites, we do NOT regenerate keys automatically."
+        echo ""
+        info "Please copy your full API key from your dashboard:"
+        echo ""
+        echo "🔗 $API_URL/api-dashboard"
+        echo ""
+        info "After copying it, save it locally (optional):"
+        echo "   echo \"your-full-key-here\" > $CONFIG_DIR/api-key"
+        echo "   chmod 600 $CONFIG_DIR/api-key"
+        echo ""
+        section "Developer Setup Complete! (using existing key)"
+        exit 0
+    else
+        warn "No API key found for this account."
+        info "Generating a new one for you..."
+        
         resp=$(curl -s -X POST "$API_URL/api/developer/api-key/generate" \
             -H "Authorization: Bearer $API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"name":"CLI Installer"}')
-        api_key=$(safe_jq '.apiKey' "$resp")
-    fi
+            -d '{"name":"CLI Installer v8.0"}')
 
-    [[ -z "$api_key" || "$api_key" == "null" ]] && error "Failed to obtain API key"
+        api_key=$(echo "$resp" | jq -r '.apiKey // empty')
+        
+        if [[ -z "$api_key" || "$api_key" == "null" ]]; then
+            error "Failed to generate API key — check your internet connection or try again later."
+        fi
 
-    echo "$api_key" > "$CONFIG_DIR/api-key"
-    chmod 600 "$CONFIG_DIR/api-key"
+        mkdir -p "$CONFIG_DIR"
+        echo "$api_key" > "$CONFIG_DIR/api-key"
+        chmod 600 "$CONFIG_DIR/api-key"
 
-    section "Developer Setup Complete!"
-    echo
-    echo -e "${GREEN}Your developer environment is ready!${NC}"
-    echo
-    echo -e "${BOLD}Personal API Key:${NC}"
-    echo -e "${YELLOW}$api_key${NC}"
-    echo -e "${RED}Save this key — it will not be shown again!${NC}"
-    echo
-    echo -e "${CYAN}Quick Start Examples:${NC}"
-    cat << EOF
-
+        section "Developer Setup Complete!"
+        echo
+        echo -e "${GREEN}Your developer environment is ready!${NC}"
+        echo
+        echo -e "${BOLD}Personal API Key (save this — shown only once):${NC}"
+        echo -e "${YELLOW}$api_key${NC}"
+        echo
+        echo -e "${RED}⚠  This key will NOT be shown again!${NC}"
+        echo
+        echo -e "${CYAN}Quick Start Examples:${NC}"
+        cat << EOF
 ${BOLD}Python:${NC}
   pip install distributex-cloud
   from distributex import DistributeX
@@ -458,11 +484,12 @@ ${BOLD}Node.js:${NC}
 ${BOLD}Environment variable:${NC}
   export DISTRIBUTEX_API_KEY='$api_key'
 EOF
-    echo
-    echo -e "${BLUE}Docs:       $API_URL/docs${NC}"
-    echo -e "${BLUE}Dashboard:  $API_URL/dashboard${NC}"
-    echo -e "${GREEN}API key saved to: $CONFIG_DIR/api-key${NC}"
-    echo
+        echo
+        echo -e "${BLUE}Docs: $API_URL/docs${NC}"
+        echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
+        echo -e "${GREEN}API key also saved to: $CONFIG_DIR/api-key${NC}"
+        echo
+    fi
 }
 
 # ============================================================================
