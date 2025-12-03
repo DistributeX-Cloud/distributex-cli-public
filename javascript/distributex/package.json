@@ -1,14 +1,11 @@
-// javascript/distributex/package.json - FIXED VERSION
 {
   "name": "distributex-cloud",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DistributeX JavaScript/Node.js SDK for distributed computing",
-  "main": "src/index.js",
-  "types": "src/index.d.ts",
+  "main": "index.js",
+  "types": "index.d.ts",
   "scripts": {
-    "test": "echo \"Tests coming soon\"",
-    "example": "node examples.js",
-    "prepublishOnly": "echo 'Ready to publish'"
+    "test": "echo \"Tests coming soon\""
   },
   "keywords": [
     "distributed",
@@ -17,32 +14,21 @@
     "parallel",
     "processing",
     "gpu",
-    "cpu",
-    "ml",
-    "ai",
-    "docker",
-    "serverless"
+    "distributex"
   ],
-  "author": "DistributeX Team <support@distributex.io>",
+  "author": "DistributeX Team",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DistributeX-Cloud/distributex-cli-public.git",
-    "directory": "javascript/distributex"
-  },
-  "bugs": {
-    "url": "https://github.com/DistributeX-Cloud/distributex-cli-public/issues"
+    "url": "https://github.com/DistributeX-Cloud/distributex-cli-public.git"
   },
   "homepage": "https://distributex-cloud-network.pages.dev",
-  "dependencies": {
-    "tar": "^6.2.0"
-  },
+  "dependencies": {},
   "engines": {
     "node": ">=14.0.0"
   },
   "files": [
-    "src/",
-    "examples.js",
+    "index.js",
     "README.md"
   ]
 }
