@@ -17,7 +17,7 @@ setup(
     name="distributex-cloud",
     version="1.0.1",
     author="DistributeX Team",
-    author_email="support@distributex.io",
+    author_email="unavailable",
     description="Distributed computing platform - run code on global resource pool",
     long_description=long_description,
     long_description_content_type="text/markdown",
