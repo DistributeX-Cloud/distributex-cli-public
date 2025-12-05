@@ -458,17 +458,37 @@ with open('result.pkl', 'wb') as f:
         response.raise_for_status()
         return response.json()['url']
     
-    def _submit_task(self, **kwargs) -> Task:
-        """Submit execution task"""
-        response = self.session.post(
-            f"{self.base_url}/api/tasks/execute",
-            json=kwargs
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        return Task(id=data['id'], status=data['status'])
+	# Updated _submit_task method:
+	def _submit_task(self, **kwargs) -> Task:
+    	"""Submit execution task with correct field names"""
     
+    	# Map camelCase to snake_case for API
+    	api_params = {
+        	'name': kwargs.get('name', 'Distributed Task'),
+        	'task_type': kwargs.get('taskType', 'script_execution'),
+        	'runtime': kwargs.get('runtime', 'python'),
+        	'workers': kwargs.get('workers', 1),
+        	'cpu_per_worker': kwargs.get('cpu_per_worker', 2),  # ✅ snake_case
+        	'ram_per_worker': kwargs.get('ram_per_worker', 2048),  # ✅ snake_case
+        	'gpu_required': kwargs.get('gpu', False),  # ✅ snake_case
+        	'requires_cuda': kwargs.get('cuda', False),  # ✅ snake_case
+        	'storage_required': kwargs.get('storage_required', 10240),
+        	'timeout': kwargs.get('timeout', 3600),
+        	'priority': kwargs.get('priority', 5),
+        	'execution_config': kwargs.get('execution_config', {}),
+        	'code_url': kwargs.get('code_url'),
+        	'command': kwargs.get('command')
+    	}
+    
+    	response = self.session.post(
+        	f"{self.base_url}/api/tasks/execute",
+        	json={k: v for k, v in api_params.items() if v is not None}
+    	)
+    	response.raise_for_status()
+    
+    	data = response.json()
+    	return Task(id=data['id'], status=data.get('status', 'pending'))
+
     def _wait_and_get_result(self, task_id: str) -> Any:
         """Poll until complete and return result"""
         while True:
