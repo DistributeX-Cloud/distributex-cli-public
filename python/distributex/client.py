@@ -470,26 +470,31 @@ with open('result.pkl', 'wb') as f:
     
     def _submit_task(self, **kwargs) -> Task:
         """Submit execution task with correct camelCase field names for API"""
+    
+        # Convert snake_case to camelCase if needed
+        def to_camel(snake_str):
+            components = snake_str.split('_')
+            return components[0] + ''.join(x.title() for x in components[1:])
         
-        # ✅ FIXED: Backend expects camelCase, not snake_case!
+        # Build camelCase request body
         request_body = {
             'name': kwargs.get('name', 'Distributed Task'),
-            'taskType': kwargs.get('taskType', 'script_execution'),
+            'taskType': kwargs.get('taskType') or kwargs.get('task_type', 'script_execution'),
             'runtime': kwargs.get('runtime', 'python'),
             'workers': kwargs.get('workers', 1),
-            'cpuPerWorker': kwargs.get('cpuPerWorker', 2),
-            'ramPerWorker': kwargs.get('ramPerWorker', 2048),
-            'gpuRequired': kwargs.get('gpuRequired', False),
-            'requiresCuda': kwargs.get('requiresCuda', False),
-            'storageRequired': kwargs.get('storageRequired', 10240),
+            'cpuPerWorker': kwargs.get('cpuPerWorker') or kwargs.get('cpu_per_worker', 2),
+            'ramPerWorker': kwargs.get('ramPerWorker') or kwargs.get('ram_per_worker', 2048),
+            'gpuRequired': kwargs.get('gpuRequired') or kwargs.get('gpu_required', False),
+            'requiresCuda': kwargs.get('requiresCuda') or kwargs.get('requires_cuda', False),
+            'storageRequired': kwargs.get('storageRequired') or kwargs.get('storage_required', 10240),
             'timeout': kwargs.get('timeout', 3600),
             'priority': kwargs.get('priority', 5),
         }
-        
-        # Add optional fields if present
-        if 'codeUrl' in kwargs:
-            request_body['codeUrl'] = kwargs['codeUrl']
-        
+    
+        # Add optional fields
+        if 'codeUrl' in kwargs or 'code_url' in kwargs:
+            request_body['codeUrl'] = kwargs.get('codeUrl') or kwargs.get('code_url')
+    
         if 'command' in kwargs:
             request_body['command'] = kwargs['command']
         
@@ -523,7 +528,7 @@ with open('result.pkl', 'wb') as f:
                 json=request_body
             )
             response.raise_for_status()
-            
+    
             data = response.json()
             return Task(id=data['id'], status=data.get('status', 'pending'))
         
