@@ -1,14 +1,11 @@
 """
-DistributeX Python SDK
-======================
+DistributeX Python SDK - COMPLETE FIXED VERSION
+================================================
 Easy integration for developers to use the distributed computing pool
 
 Installation:
-    pip install distributex
+    pip install distributex-cloud
     
-    Or directly:
-    curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/main/python/distributex/client.py -o distributex.py
-
 Usage:
     from distributex import DistributeX
     
@@ -30,8 +27,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional, List, Dict
 from dataclasses import dataclass
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "DistributeX Team"
+
 
 @dataclass
 class Task:
@@ -46,37 +44,38 @@ class Task:
 class DistributeX:
     """Main SDK class for distributed computing"""
     
-	def __init__(
-	    self,
-	    api_key: Optional[str] = None,
-	    base_url: str = "https://distributex-cloud-network.pages.dev"
-	):
-	    """
-	    Initialize DistributeX client
-	    
-	    Args:
-	        api_key: Your API key (or set DISTRIBUTEX_API_KEY env var)
-	        base_url: API base URL (default: production)
-	    """
-	    self.api_key = api_key or os.getenv("DISTRIBUTEX_API_KEY")
-	    if not self.api_key:
-	        raise ValueError(
-	            "API key required. Set DISTRIBUTEX_API_KEY environment variable "
-	            "or pass api_key parameter.\n"
-	            "Get your API key at: https://distributex-cloud-network.pages.dev/auth"
-	        )
-	    
-	    self.base_url = base_url.rstrip('/')
-	    
-	    # Create session with automatic redirect following
-	    self.session = requests.Session()
-	    self.session.headers.update({
-	        "Authorization": f"Bearer {self.api_key}",
-	        "User-Agent": f"DistributeX-Python-SDK/{__version__}"
-	    })
-	    
-	    # ✅ ADD: Allow automatic redirect following
-	    self.session.max_redirects = 5
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = "https://distributex-cloud-network.pages.dev"
+    ):
+        """
+        Initialize DistributeX client
+        
+        Args:
+            api_key: Your API key (or set DISTRIBUTEX_API_KEY env var)
+            base_url: API base URL (default: production)
+        """
+        self.api_key = api_key or os.getenv("DISTRIBUTEX_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "API key required. Set DISTRIBUTEX_API_KEY environment variable "
+                "or pass api_key parameter.\n"
+                "Get your API key at: https://distributex-cloud-network.pages.dev/api-dashboard"
+            )
+        
+        self.base_url = base_url.rstrip('/')
+        
+        # Create session with automatic redirect following
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": f"DistributeX-Python-SDK/{__version__}"
+        })
+        
+        # Allow automatic redirect following
+        self.session.max_redirects = 5
     
     def run(
         self,
@@ -122,14 +121,18 @@ class DistributeX:
         code_url = self._package_function(func, args, kwargs)
         
         print(f"🚀 Submitting to {workers} worker(s)...")
+        
+        # ✅ FIXED: Use camelCase field names for API
         task = self._submit_task(
-            code_url=code_url,
+            name='Distributed Function',
+            taskType='script_execution',
+            codeUrl=code_url,
             runtime='python',
             workers=workers,
-            cpu_per_worker=cpu_per_worker,
-            ram_per_worker=ram_per_worker,
-            gpu=gpu,
-            cuda=cuda,
+            cpuPerWorker=cpu_per_worker,
+            ramPerWorker=ram_per_worker,
+            gpuRequired=gpu,
+            requiresCuda=cuda,
             timeout=timeout
         )
         
@@ -218,20 +221,26 @@ class DistributeX:
             input_urls.append({'path': input_file, 'url': url})
         
         print(f"🚀 Submitting {runtime} script...")
+        
+        # ✅ FIXED: Use camelCase field names for API
         task = self._submit_task(
-            code_url=code_url,
+            name=f"Execute {Path(script_path).name}",
+            taskType='script_execution',
             runtime=runtime,
+            codeUrl=code_url,
             command=command,
             workers=workers,
-            cpu_per_worker=cpu_per_worker,
-            ram_per_worker=ram_per_worker,
-            gpu=gpu,
-            cuda=cuda,
-            input_files=input_urls,
-            output_files=output_files,
-            env=env,
+            cpuPerWorker=cpu_per_worker,
+            ramPerWorker=ram_per_worker,
+            gpuRequired=gpu,
+            requiresCuda=cuda,
+            inputFiles=input_urls,
+            outputPaths=output_files,
+            environment=env,
             timeout=timeout
         )
+        
+        print(f"✅ Task submitted: {task.id}")
         
         if not wait:
             return task
@@ -287,6 +296,7 @@ class DistributeX:
         
         print(f"🐳 Submitting Docker task: {image}")
         
+        # ✅ FIXED: Use camelCase field names for API
         response = self.session.post(
             f"{self.base_url}/api/tasks/execute",
             json={
@@ -330,72 +340,72 @@ class DistributeX:
             error=data.get('errorMessage')
         )
     
-	def get_result(self, task_id: str) -> Any:
-	    """Download and return task result"""
-	    task = self.get_task(task_id)
-	    
-	    if task.status != 'completed':
-	        raise ValueError(f"Task not completed. Status: {task.status}")
-	    
-	    # Use NEW result endpoint
-	    response = self.session.get(f"{self.base_url}/api/tasks/{task_id}/result")
-	    
-	    # Handle redirects (if result is in file storage)
-	    if response.status_code == 302:
-	        redirect_url = response.headers.get('Location')
-	        response = self.session.get(redirect_url)
-	    
-	    response.raise_for_status()
-	    
-	    # Check content type
-	    content_type = response.headers.get('content-type', '')
-	    
-	    # If JSON response (small result stored in DB)
-	    if 'application/json' in content_type:
-	        data = response.json()
-	        return data.get('result')
-	    
-	    # If file download (tarball with results)
-	    if 'application/gzip' in content_type or 'application/octet-stream' in content_type:
-	        with tempfile.TemporaryDirectory() as tmpdir:
-	            tar_path = Path(tmpdir) / "result.tar.gz"
-	            tar_path.write_bytes(response.content)
-	            
-	            # Extract tarball
-	            with tarfile.open(tar_path, 'r:gz') as tar:
-	                tar.extractall(tmpdir)
-	            
-	            # Try to load pickled result first
-	            result_file = Path(tmpdir) / "result.pkl"
-	            if result_file.exists():
-	                with open(result_file, 'rb') as f:
-	                    return pickle.load(f)
-	            
-	            # Try JSON result
-	            json_file = Path(tmpdir) / "result.json"
-	            if json_file.exists():
-	                with open(json_file, 'r') as f:
-	                    return json.load(f)
-	            
-	            # Return text output
-	            output_file = Path(tmpdir) / "output.txt"
-	            if output_file.exists():
-	                return output_file.read_text()
-	            
-	            # Return all files as dict
-	            files = {}
-	            for file in Path(tmpdir).rglob('*'):
-	                if file.is_file():
-	                    rel_path = file.relative_to(tmpdir)
-	                    try:
-	                        files[str(rel_path)] = file.read_text()
-	                    except:
-	                        files[str(rel_path)] = f"<binary file: {file.stat().st_size} bytes>"
-	            
-	            return files if files else None
-	    
-	    # Unknown content type
-	    return response.text
+    def get_result(self, task_id: str) -> Any:
+        """Download and return task result"""
+        task = self.get_task(task_id)
+        
+        if task.status != 'completed':
+            raise ValueError(f"Task not completed. Status: {task.status}")
+        
+        # Use result endpoint
+        response = self.session.get(f"{self.base_url}/api/tasks/{task_id}/result")
+        
+        # Handle redirects (if result is in file storage)
+        if response.status_code == 302:
+            redirect_url = response.headers.get('Location')
+            response = self.session.get(redirect_url)
+        
+        response.raise_for_status()
+        
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        
+        # If JSON response (small result stored in DB)
+        if 'application/json' in content_type:
+            data = response.json()
+            return data.get('result')
+        
+        # If file download (tarball with results)
+        if 'application/gzip' in content_type or 'application/octet-stream' in content_type:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tar_path = Path(tmpdir) / "result.tar.gz"
+                tar_path.write_bytes(response.content)
+                
+                # Extract tarball
+                with tarfile.open(tar_path, 'r:gz') as tar:
+                    tar.extractall(tmpdir)
+                
+                # Try to load pickled result first
+                result_file = Path(tmpdir) / "result.pkl"
+                if result_file.exists():
+                    with open(result_file, 'rb') as f:
+                        return pickle.load(f)
+                
+                # Try JSON result
+                json_file = Path(tmpdir) / "result.json"
+                if json_file.exists():
+                    with open(json_file, 'r') as f:
+                        return json.load(f)
+                
+                # Return text output
+                output_file = Path(tmpdir) / "output.txt"
+                if output_file.exists():
+                    return output_file.read_text()
+                
+                # Return all files as dict
+                files = {}
+                for file in Path(tmpdir).rglob('*'):
+                    if file.is_file():
+                        rel_path = file.relative_to(tmpdir)
+                        try:
+                            files[str(rel_path)] = file.read_text()
+                        except:
+                            files[str(rel_path)] = f"<binary file: {file.stat().st_size} bytes>"
+                
+                return files if files else None
+        
+        # Unknown content type
+        return response.text
     
     def network_stats(self) -> dict:
         """Get current network statistics"""
@@ -458,37 +468,74 @@ with open('result.pkl', 'wb') as f:
         response.raise_for_status()
         return response.json()['url']
     
-	# Updated _submit_task method:
-	def _submit_task(self, **kwargs) -> Task:
-    	"""Submit execution task with correct field names"""
+    def _submit_task(self, **kwargs) -> Task:
+        """Submit execution task with correct camelCase field names for API"""
+        
+        # ✅ FIXED: Backend expects camelCase, not snake_case!
+        request_body = {
+            'name': kwargs.get('name', 'Distributed Task'),
+            'taskType': kwargs.get('taskType', 'script_execution'),
+            'runtime': kwargs.get('runtime', 'python'),
+            'workers': kwargs.get('workers', 1),
+            'cpuPerWorker': kwargs.get('cpuPerWorker', 2),
+            'ramPerWorker': kwargs.get('ramPerWorker', 2048),
+            'gpuRequired': kwargs.get('gpuRequired', False),
+            'requiresCuda': kwargs.get('requiresCuda', False),
+            'storageRequired': kwargs.get('storageRequired', 10240),
+            'timeout': kwargs.get('timeout', 3600),
+            'priority': kwargs.get('priority', 5),
+        }
+        
+        # Add optional fields if present
+        if 'codeUrl' in kwargs:
+            request_body['codeUrl'] = kwargs['codeUrl']
+        
+        if 'command' in kwargs:
+            request_body['command'] = kwargs['command']
+        
+        if 'dockerImage' in kwargs:
+            request_body['dockerImage'] = kwargs['dockerImage']
+        
+        if 'dockerCommand' in kwargs:
+            request_body['dockerCommand'] = kwargs['dockerCommand']
+        
+        if 'inputFiles' in kwargs:
+            request_body['inputFiles'] = kwargs['inputFiles']
+        
+        if 'outputPaths' in kwargs:
+            request_body['outputPaths'] = kwargs['outputPaths']
+        
+        if 'environment' in kwargs:
+            request_body['environment'] = kwargs['environment']
+        
+        if 'volumes' in kwargs:
+            request_body['volumes'] = kwargs['volumes']
+        
+        if 'ports' in kwargs:
+            request_body['ports'] = kwargs['ports']
+        
+        # Remove None values
+        request_body = {k: v for k, v in request_body.items() if v is not None}
+        
+        try:
+            response = self.session.post(
+                f"{self.base_url}/api/tasks/execute",
+                json=request_body
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            return Task(id=data['id'], status=data.get('status', 'pending'))
+        
+        except requests.exceptions.HTTPError as e:
+            # Print the actual error response for debugging
+            try:
+                error_body = e.response.json()
+                print(f"❌ API Error: {error_body}")
+            except:
+                print(f"❌ API Error: {e.response.text}")
+            raise
     
-    	# Map camelCase to snake_case for API
-    	api_params = {
-        	'name': kwargs.get('name', 'Distributed Task'),
-        	'task_type': kwargs.get('taskType', 'script_execution'),
-        	'runtime': kwargs.get('runtime', 'python'),
-        	'workers': kwargs.get('workers', 1),
-        	'cpu_per_worker': kwargs.get('cpu_per_worker', 2),  # ✅ snake_case
-        	'ram_per_worker': kwargs.get('ram_per_worker', 2048),  # ✅ snake_case
-        	'gpu_required': kwargs.get('gpu', False),  # ✅ snake_case
-        	'requires_cuda': kwargs.get('cuda', False),  # ✅ snake_case
-        	'storage_required': kwargs.get('storage_required', 10240),
-        	'timeout': kwargs.get('timeout', 3600),
-        	'priority': kwargs.get('priority', 5),
-        	'execution_config': kwargs.get('execution_config', {}),
-        	'code_url': kwargs.get('code_url'),
-        	'command': kwargs.get('command')
-    	}
-    
-    	response = self.session.post(
-        	f"{self.base_url}/api/tasks/execute",
-        	json={k: v for k, v in api_params.items() if v is not None}
-    	)
-    	response.raise_for_status()
-    
-    	data = response.json()
-    	return Task(id=data['id'], status=data.get('status', 'pending'))
-
     def _wait_and_get_result(self, task_id: str) -> Any:
         """Poll until complete and return result"""
         while True:
@@ -514,6 +561,7 @@ with open('result.pkl', 'wb') as f:
             except requests.exceptions.RequestException as e:
                 print(f"\n❌ Network error: {e}")
                 time.sleep(10)  # Wait longer on network errors
+
 
 # Convenience module-level API
 _default_client = None
