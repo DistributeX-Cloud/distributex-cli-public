@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 /**
- * DistributeX Worker Agent v6.0 - FULL MULTI-LANGUAGE + DEBUG
- *
- * Features:
- *   • Debug logging & polling diagnostics
- *   • Auto-detect + install packages for 9 runtimes
- *   • Full task download → extract → execute → report
- *   • Graceful shutdown, metrics, GPU detection
+ * DistributeX Worker Agent v6.0 - FULL MULTI-LANGUAGE + EMBEDDED SCRIPT + LARGE RESULT UPLOAD
+ * Supports: embedded base64 scripts, ZIP download, direct commands, Docker, GPU, full reporting
  */
 
 const os = require('os');
@@ -15,10 +10,9 @@ const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+const crypto = require('crypto');
 const { pipeline } = require('stream');
 const streamPipeline = promisify(pipeline);
-
 const execAsync = promisify(exec);
 
 // ============================================================================
@@ -32,7 +26,7 @@ const CONFIG = {
   DISABLE_SELF_REGISTER: process.env.DISABLE_SELF_REGISTER === 'true',
   HOST_MAC_ADDRESS: process.env.HOST_MAC_ADDRESS,
   WORK_DIR: '/tmp/distributex-tasks',
-  DEBUG: true  // Set to false in production if desired
+  DEBUG: true
 };
 
 function debugLog(message, data = null) {
@@ -44,7 +38,7 @@ function debugLog(message, data = null) {
 }
 
 // ============================================================================
-// RUNTIME MANAGER (detect + install packages)
+// RUNTIME MANAGER
 // ============================================================================
 class RuntimeManager {
   constructor() { this.runtimes = {}; }
@@ -52,16 +46,9 @@ class RuntimeManager {
   async detectAllRuntimes() {
     console.log('Detecting available runtimes...');
     await Promise.all([
-      this.detectPython(),
-      this.detectNode(),
-      this.detectJava(),
-      this.detectGo(),
-      this.detectRust(),
-      this.detectRuby(),
-      this.detectPHP(),
-      this.detectDocker()
+      this.detectPython(), this.detectNode(), this.detectJava(), this.detectGo(),
+      this.detectRust(), this.detectRuby(), this.detectPHP(), this.detectDocker()
     ]);
-
     console.log('Runtime detection complete:');
     Object.entries(this.runtimes).forEach(([name, info]) => {
       console.log(` ${name.padEnd(8)} ${info.available ? 'Available' : 'Not Available'} ${info.version || ''}`);
@@ -76,7 +63,7 @@ class RuntimeManager {
         const version = stdout.trim().split(' ')[1];
         this.runtimes.python = { available: true, version, command: cmd };
         return;
-      } catch { /* continue */ }
+      } catch { }
     }
     this.runtimes.python = { available: false };
   }
@@ -145,7 +132,7 @@ class RuntimeManager {
     try {
       const { stdout } = await execAsync('docker --version', { timeout: 3000 });
       const m = stdout.match(/Docker version (\d+\.\d+\.\d+)/);
-      this.runtimes.docker = { available:true, version: m ? m[1] : 'unknown', command: 'docker' };
+      this.runtimes.docker = { available: true, version: m ? m[1] : 'unknown', command: 'docker' };
     } catch {
       this.runtimes.docker = { available: false };
     }
@@ -154,7 +141,6 @@ class RuntimeManager {
   async installPackages(runtime, packages) {
     if (!packages || packages.length === 0) return;
     console.log(`Installing ${runtime} packages: ${packages.join(', ')}`);
-
     const installers = {
       python: () => execAsync(`pip3 install --no-cache-dir ${packages.join(' ')}`, { timeout: 300000 }),
       node: () => execAsync(`npm install -g ${packages.join(' ')}`, { timeout: 300000 }),
@@ -163,7 +149,6 @@ class RuntimeManager {
         for (const pkg of packages) await execAsync(`go get ${pkg}`, { timeout: 300000 });
       }
     };
-
     if (installers[runtime]) {
       await installers[runtime]();
       console.log(`${runtime} packages installed`);
@@ -174,18 +159,15 @@ class RuntimeManager {
 }
 
 // ============================================================================
-// TASK EXECUTOR (multi-language support)
+// TASK EXECUTOR
 // ============================================================================
 class TaskExecutor {
-  constructor(runtimeManager) {
-    this.rm = runtimeManager;
-  }
+  constructor(runtimeManager) { this.rm = runtimeManager; }
 
   async execute(task, taskDir) {
     const cfg = typeof task.execution_config === 'string'
       ? JSON.parse(task.execution_config)
       : task.execution_config || {};
-
     const runtime = cfg.runtime || task.runtime || 'python';
     console.log(`Executing task with runtime: ${runtime}`);
 
@@ -193,7 +175,6 @@ class TaskExecutor {
       throw new Error(`Runtime "${runtime}" not available on this worker`);
     }
 
-    // Install dependencies if requested
     if (cfg.dependencies?.length > 0) {
       await this.rm.installPackages(runtime, cfg.dependencies);
     }
@@ -211,15 +192,13 @@ class TaskExecutor {
     };
 
     if (!executors[runtime]) throw new Error(`Unsupported runtime: ${runtime}`);
-
     return await executors[runtime]();
   }
 
-  // ───── Individual executors ─────
-  async execPython(taskDir, cfg) { return this.runScript(taskDir, cfg, '.py', this.rm.runtimes.python.command); }
-  async execNode(taskDir, cfg)   { return this.runScript(taskDir, cfg, '.js', 'node'); }
-  async execRuby(taskDir, cfg)   { return this.runScript(taskDir, cfg, '.rb', 'ruby'); }
-  async execPHP(taskDir, cfg)    { return this.runScript(taskDir, cfg, '.php', 'php'); }
+  async execPython(taskDir, cfg) { return this.runScript(taskDir, cfg, '.py', this.rm.runtimes.python.command || 'python3'); }
+  async execNode(taskDir, cfg) { return this.runScript(taskDir, cfg, '.js', 'node'); }
+  async execRuby(taskDir, cfg) { return this.runScript(taskDir, cfg, '.rb', 'ruby'); }
+  async execPHP(taskDir, cfg) { return this.runScript(taskDir, cfg, '.php', 'php'); }
 
   async runScript(taskDir, cfg, ext, command) {
     return new Promise((resolve, reject) => {
@@ -247,7 +226,6 @@ class TaskExecutor {
   async execJava(taskDir, cfg) {
     const javaFile = fs.readdirSync(taskDir).find(f => f.endsWith('.java'));
     if (!javaFile) throw new Error('No .java file');
-
     await execAsync(`javac ${javaFile}`, { cwd: taskDir });
     const className = javaFile.replace('.java', '');
     return new Promise((resolve, reject) => {
@@ -285,16 +263,12 @@ class TaskExecutor {
     if (cfg.gpuRequired) args.push('--gpus', 'all');
     if (cfg.cpuPerWorker) args.push('--cpus', cfg.cpuPerWorker.toString());
     if (cfg.ramPerWorker) args.push('--memory', `${cfg.ramPerWorker}m`);
-    
-    // ✅ FIXED: Removed extra closing parenthesis
     if (cfg.volumes) {
       Object.entries(cfg.volumes).forEach(([h, c]) => args.push('-v', `${h}:${c}`));
     }
-    
     if (cfg.environment) {
       Object.entries(cfg.environment).forEach(([k, v]) => args.push('-e', `${k}=${v}`));
     }
-
     args.push(cfg.dockerImage, 'sh', '-c', cfg.dockerCommand || 'echo "No command"');
 
     return new Promise((resolve, reject) => {
@@ -312,7 +286,9 @@ class TaskExecutor {
         cwd: taskDir,
         env: { ...process.env, ...cfg.environment },
         timeout: (cfg.timeout || 300) * 1000
-      }, (err, stdout, stderr) => err ? reject(new Error(stderr || err.message)) : resolve(stdout));
+      }, (err, stdout, stderr) => {
+        err ? reject(new Error(stderr || err.message)) : resolve(stdout);
+      });
     });
   }
 }
@@ -333,7 +309,6 @@ class WorkerAgent {
     this.currentTaskId = null;
     this.runtimeManager = new RuntimeManager();
     this.taskExecutor = new TaskExecutor(this.runtimeManager);
-
     this.metrics = {
       startTime: Date.now(),
       successfulHeartbeats: 0,
@@ -343,12 +318,10 @@ class WorkerAgent {
       tasksExecuted: 0,
       tasksFailed: 0
     };
-
     if (!fs.existsSync(CONFIG.WORK_DIR)) fs.mkdirSync(CONFIG.WORK_DIR, { recursive: true });
     this.setupProcessHandlers();
   }
 
-  // ───── System & Network ─────
   async getMacAddress() {
     if (CONFIG.HOST_MAC_ADDRESS) {
       const mac = CONFIG.HOST_MAC_ADDRESS.toLowerCase().replace(/[:-]/g, '');
@@ -373,61 +346,6 @@ class WorkerAgent {
     throw new Error('No valid MAC address found');
   }
 
-  // ============================================================================
-  // RESULT UPLOAD - NEW METHOD
-  // ============================================================================
-  async uploadResult(taskId, resultData) {
-    console.log(`📤 Uploading result for task ${taskId}...`);
-  
-    try {
-      // Package result into tarball
-      const tmpDir = '/tmp/distributex-results';
-      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    
-      const resultDir = path.join(tmpDir, `result-${taskId}`);
-      if (!fs.existsSync(resultDir)) fs.mkdirSync(resultDir, { recursive: true });
-    
-      // Write output.txt
-      const outputPath = path.join(resultDir, 'output.txt');
-      fs.writeFileSync(outputPath, resultData.output || '');
-    
-      // Write result.json if available
-      if (resultData.structuredResult) {
-        const jsonPath = path.join(resultDir, 'result.json');
-        fs.writeFileSync(jsonPath, JSON.stringify(resultData.structuredResult, null, 2));
-      }
-    
-      // Create tarball
-      const tarPath = path.join(tmpDir, `result-${taskId}.tar.gz`);
-      await execAsync(`tar -czf "${tarPath}" -C "${resultDir}" .`);
-    
-      // Read tarball as base64
-      const tarData = fs.readFileSync(tarPath);
-      const base64Data = tarData.toString('base64');
-      const hash = require('crypto').createHash('sha256').update(tarData).digest('hex');
-    
-      // Upload to storage
-      const uploadResult = await this.makeRequest('POST', '/api/storage/upload', {
-        filename: `result-${taskId}.tar.gz`,
-        data: base64Data,
-        hash: hash,
-        size: tarData.length
-      });
-    
-      console.log(`✅ Result uploaded: ${uploadResult.id}`);
-    
-      // Clean up
-      fs.rmSync(resultDir, { recursive: true, force: true });
-      fs.unlinkSync(tarPath);
-    
-      return uploadResult.id; // Return storage file ID
-    
-    } catch (error) {
-      console.error('❌ Result upload failed:', error.message);
-      return null;
-    }
-  }
-  
   async detectGPU() {
     try {
       const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader', { timeout: 5000 });
@@ -436,7 +354,7 @@ class WorkerAgent {
         const [name, mem, driver] = lines[0].split(',').map(s => s.trim());
         return { available: true, model: name, memory: parseInt(mem) || 0, count: lines.length, driverVersion: driver };
       }
-    } catch { /* ignore */ }
+    } catch { }
     return { available: false };
   }
 
@@ -444,7 +362,6 @@ class WorkerAgent {
     const cpus = os.cpus();
     const gpu = await this.detectGPU();
     this.macAddress = await this.getMacAddress();
-
     return {
       name: `Worker-${this.macAddress}`,
       hostname: this.hostname,
@@ -452,8 +369,8 @@ class WorkerAgent {
       architecture: os.arch(),
       cpuCores: cpus.length,
       cpuModel: cpus[0]?.model || 'unknown',
-      ramTotal: Math.floor(os.totalmem() / (1024*1024)),
-      ramAvailable: Math.floor(os.freemem() / (1024*1024)),
+      ramTotal: Math.floor(os.totalmem() / (1024 * 1024)),
+      ramAvailable: Math.floor(os.freemem() / (1024 * 1024)),
       gpuAvailable: gpu.available,
       gpuModel: gpu.model,
       gpuMemory: gpu.memory,
@@ -464,7 +381,6 @@ class WorkerAgent {
     };
   }
 
-  // ───── HTTP Helper ─────
   async makeRequest(method, path, data = null) {
     return new Promise((resolve, reject) => {
       const url = new URL(path, this.baseUrl);
@@ -487,7 +403,6 @@ class WorkerAgent {
           }
         });
       });
-
       req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
       if (data) req.write(JSON.stringify(data));
@@ -495,15 +410,12 @@ class WorkerAgent {
     });
   }
 
-  // ───── Registration & Heartbeat ─────
   async register() {
     this.macAddress = await this.getMacAddress();
     if (CONFIG.DISABLE_SELF_REGISTER) {
-      // try load from file (Docker volume)
       const p = '/config/worker_id';
       if (fs.existsSync(p)) this.workerId = fs.readFileSync(p, 'utf8').trim();
     }
-
     if (!this.workerId) {
       console.log('Registering worker...');
       const caps = await this.detectSystem();
@@ -521,7 +433,7 @@ class WorkerAgent {
     try {
       await this.makeRequest('POST', '/api/workers/heartbeat', {
         macAddress: this.macAddress,
-        ramAvailable: Math.floor(os.freemem() / (1024*1024)),
+        ramAvailable: Math.floor(os.freemem() / (1024 * 1024)),
         status: actual
       });
       this.metrics.successfulHeartbeats++;
@@ -531,104 +443,194 @@ class WorkerAgent {
     }
   }
 
-  // ───── Task Handling ─────
-	async downloadAndExtract(task) {
-	  const taskDir = path.join(CONFIG.WORK_DIR, `task-${task.id}`);
-	  if (fs.existsSync(taskDir)) fs.rmSync(taskDir, { recursive: true, force: true });
-	  fs.mkdirSync(taskDir, { recursive: true });
-	
-	  // ✅ Check if downloadUrl exists
-	  if (!task.downloadUrl) {
-	    // Check if it's a command-based task (no code download needed)
-	    const cfg = typeof task.execution_config === 'string'
-	      ? JSON.parse(task.execution_config)
-	      : task.execution_config || {};
-	    
-	    if (cfg.command || cfg.dockerImage) {
-	      console.log(`ℹ️  Task ${task.id} is command/docker-based, no download needed`);
-	      return taskDir;
-	    }
-	    
-	    throw new Error('Task has no downloadUrl and no command/dockerImage specified');
-	  }
-	
-	  const zipPath = path.join(taskDir, 'task.zip');
-	  const file = fs.createWriteStream(zipPath);
-	  
-	  await new Promise((resolve, reject) => {
-	    https.get(task.downloadUrl, { headers: { Authorization: `Bearer ${this.apiKey}` } }, res => {
-	      if (res.statusCode !== 200) {
-	        return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-	      }
-	      pipeline(res, file, err => err ? reject(err) : resolve());
-	    }).on('error', reject);
-	  });
-	
-	  // Try to extract (might be tar.gz or zip)
-	  try {
-	    await execAsync(`tar -xzf "${zipPath}" -C "${taskDir}"`);
-	  } catch {
-	    try {
-	      await execAsync(`unzip -o "${zipPath}" -d "${taskDir}"`);
-	    } catch {
-	      throw new Error('Failed to extract code archive (tried tar.gz and zip)');
-	    }
-	  }
-	  
-	  fs.unlinkSync(zipPath);
-	  console.log(`✓ Task files extracted to ${taskDir}`);
-	  return taskDir;
-	}
+  // ========================================
+  // ENHANCED: downloadAndExtract with embedded script
+  // ========================================
+  async downloadAndExtract(task) {
+    const taskDir = path.join(CONFIG.WORK_DIR, `task-${task.id}`);
+    if (fs.existsSync(taskDir)) fs.rmSync(taskDir, { recursive: true, force: true });
+    fs.mkdirSync(taskDir, { recursive: true });
+    const cfg = typeof task.execution_config === 'string'
+      ? JSON.parse(task.execution_config)
+      : task.execution_config || {};
+
+    // METHOD 1: EMBEDDED SCRIPT
+    if (cfg.executionScript) {
+      console.log(`Task ${task.id} has embedded script (${cfg.executionScript.length} chars)`);
+      try {
+        const scriptBuffer = Buffer.from(cfg.executionScript, 'base64');
+        const extensions = {
+          python: '.py', node: '.js', ruby: '.rb', go: '.go',
+          rust: '.rs', java: '.java', php: '.php', bash: '.sh'
+        };
+        const runtime = cfg.runtime || 'python';
+        const ext = extensions[runtime] || '.py';
+        const scriptPath = path.join(taskDir, `script${ext}`);
+        fs.writeFileSync(scriptPath, scriptBuffer);
+        console.log(`Wrote embedded script to ${scriptPath} (${scriptBuffer.length} bytes)`);
+
+        if (cfg.scriptHash) {
+          const actualHash = crypto.createHash('sha256').update(scriptBuffer).digest('hex');
+          if (actualHash !== cfg.scriptHash) {
+            console.warn(`Script hash mismatch! Expected: ${cfg.scriptHash}, Got: ${actualHash}`);
+          } else {
+            console.log(`Script hash verified: ${actualHash.substring(0, 16)}...`);
+          }
+        }
+        return taskDir;
+      } catch (error) {
+        console.error(`Failed to decode embedded script:`, error);
+        throw new Error(`Failed to decode embedded script: ${error.message}`);
+      }
+    }
+
+    // METHOD 2: DOWNLOAD URL
+    if (cfg.codeUrl || task.downloadUrl) {
+      const downloadUrl = cfg.codeUrl || task.downloadUrl;
+      console.log(`Downloading code from: ${downloadUrl}`);
+      const zipPath = path.join(taskDir, 'task.zip');
+      const file = fs.createWriteStream(zipPath);
+
+      await new Promise((resolve, reject) => {
+        https.get(downloadUrl, { headers: { Authorization: `Bearer ${this.apiKey}` } }, res => {
+          if (res.statusCode !== 200) return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+          pipeline(res, file, err => err ? reject(err) : resolve());
+        }).on('error', reject);
+      });
+
+      try { await execAsync(`tar -xzf "${zipPath}" -C "${taskDir}"`); }
+      catch {
+        try { await execAsync(`unzip -o "${zipPath}" -d "${taskDir}"`); }
+        catch { throw new Error('Failed to extract code archive (tried tar.gz and zip)'); }
+      }
+      fs.unlinkSync(zipPath);
+      console.log(`Code extracted to ${taskDir}`);
+      return taskDir;
+    }
+
+    // METHOD 3: COMMAND / DOCKER
+    if (cfg.command || cfg.dockerImage) {
+      console.log(`Task ${task.id} is command/docker-based, no download needed`);
+      return taskDir;
+    }
+
+    throw new Error('Task has no executionScript, codeUrl, command, or dockerImage');
+  }
 
   async executeTask(task) {
     this.isExecutingTask = true;
     this.currentTaskId = task.id;
-
     const start = Date.now();
-    const timeout = (task.timeout || 3600) * 1000; // Convert to milliseconds
-
+    const timeout = (task.timeout || 3600) * 1000;
     const timeoutHandle = setTimeout(() => {
-      console.error(`⏰ Task ${task.id} timed out after ${task.timeout}s`);
+      console.error(`Task ${task.id} timed out after ${task.timeout}s`);
+      this.reportTaskFailure(task.id, `Task timed out after ${task.timeout} seconds`);
       this.isExecutingTask = false;
       this.currentTaskId = null;
     }, timeout);
 
     let taskDir;
-
+    let output = '';
     try {
       taskDir = await this.downloadAndExtract(task);
-      const output = await this.taskExecutor.execute(task, taskDir);
+      output = await this.taskExecutor.execute(task, taskDir);
 
-      // TODO: send results to API etc.
-      console.log(`✓ Task ${task.id} completed in ${Date.now() - start}ms`);
-
+      const executionTime = Math.floor((Date.now() - start) / 1000);
+      await this.reportTaskCompletion(task.id, { output, executionTime, status: 'completed' });
+      console.log(`Task ${task.id} completed in ${executionTime}s`);
+      this.metrics.tasksExecuted++;
     } catch (err) {
-      console.error(`❌ Error executing task ${task.id}:`, err);
-
+      console.error(`Error executing task ${task.id}:`, err);
+      await this.reportTaskFailure(task.id, err.message || 'Unknown error');
+      this.metrics.tasksFailed++;
     } finally {
       clearTimeout(timeoutHandle);
+      if (taskDir && fs.existsSync(taskDir)) {
+        try { fs.rmSync(taskDir, { recursive: true, force: true }); }
+        catch (e) { console.warn(`Cleanup failed: ${e.message}`); }
+      }
       this.isExecutingTask = false;
       this.currentTaskId = null;
     }
   }
 
-  async pollForTasks() {
-    if (!this.isRunning || this.isExecutingTask) return;
-
-    this.metrics.pollAttempts++;
-
+  async reportTaskCompletion(taskId, result) {
     try {
-      const res = await this.makeRequest(
-        'GET',
-        `/api/workers/${this.workerId}/tasks/next`
-      );
+      let storageFileId = null;
+      if (result.output && result.output.length > 10000) {
+        storageFileId = await this.uploadResult(taskId, result);
+      }
+      await this.makeRequest('PUT', `/api/tasks/${taskId}/complete`, {
+        workerId: this.workerId,
+        executionTime: result.executionTime,
+        output: result.output.substring(0, 10000),
+        storageFileId,
+        status: 'completed'
+      });
+      console.log(`Reported completion for task ${taskId}`);
+    } catch (error) {
+      console.error(`Failed to report completion for task ${taskId}:`, error);
+    }
+  }
 
-      if (res?.task) {
-        this.metrics.tasksReceived++;
-        console.log(`\nTASK RECEIVED: ${res.task.name} (ID: ${res.task.id})`);
-        await this.executeTask(res.task);
+  async reportTaskFailure(taskId, errorMessage) {
+    try {
+      await this.makeRequest('PUT', `/api/tasks/${taskId}/fail`, {
+        workerId: this.workerId,
+        errorMessage
+      });
+      console.log(`Reported failure for task ${taskId}`);
+    } catch (error) {
+      console.error(`Failed to report failure for task ${taskId}:`, error);
+    }
+  }
+
+  async uploadResult(taskId, resultData) {
+    console.log(`Uploading large result for task ${taskId}...`);
+    try {
+      const tmpDir = '/tmp/distributex-results';
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      const resultDir = path.join(tmpDir, `result-${taskId}`);
+      if (!fs.existsSync(resultDir)) fs.mkdirSync(resultDir, { recursive: true });
+
+      fs.writeFileSync(path.join(resultDir, 'output.txt'), resultData.output || '');
+      if (resultData.structuredResult) {
+        fs.writeFileSync(path.join(resultDir, 'result.json'), JSON.stringify(resultData.structuredResult, null, 2));
       }
 
+      const tarPath = path.join(tmpDir, `result-${taskId}.tar.gz`);
+      await execAsync(`tar -czf "${tarPath}" -C "${resultDir}" .`);
+      const tarData = fs.readFileSync(tarPath);
+      const base64Data = tarData.toString('base64');
+      const hash = crypto.createHash('sha256').update(tarData).digest('hex');
+
+      const uploadResult = await this.makeRequest('POST', '/api/storage/upload', {
+        filename: `result-${taskId}.tar.gz`,
+        data: base64Data,
+        hash: hash,
+        size: tarData.length
+      });
+
+      console.log(`Result uploaded: ${uploadResult.id}`);
+      fs.rmSync(resultDir, { recursive: true, force: true });
+      fs.unlinkSync(tarPath);
+      return uploadResult.id;
+    } catch (error) {
+      console.error('Result upload failed:', error.message);
+      return null;
+    }
+  }
+
+  async pollForTasks() {
+    if (!this.isRunning || this.isExecutingTask) return;
+    this.metrics.pollAttempts++;
+    try {
+      const res = await this.makeRequest('GET', `/api/workers/${this.workerId}/tasks/next`);
+      if (res?.task) {
+        this.metrics.tasksReceived++;
+        console.log(`\nTASK RECEIVED: ${res.task.name || 'Unnamed'} (ID: ${res.task.id})`);
+        await this.executeTask(res.task);
+      }
     } catch (e) {
       if (!e.message.includes('No tasks') && !e.message.includes('404')) {
         console.error('Poll error:', e.message);
@@ -636,7 +638,6 @@ class WorkerAgent {
     }
   }
 
-  // ───── Lifecycle ─────
   setupProcessHandlers() {
     const shutdown = async signal => {
       if (this.isShuttingDown) process.exit(1);
@@ -671,26 +672,24 @@ class WorkerAgent {
   async start() {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║   DistributeX Worker v6.0 – MULTI-LANGUAGE + DEBUG MODE   ║
+║     DistributeX Worker Agent v6.0 – READY TO WORK     ║
+║  Embedded Scripts • Multi-Language • Large Results     ║
 ╚═══════════════════════════════════════════════════════════╝
 `);
     if (!this.apiKey) {
       console.error('API key required');
       process.exit(1);
     }
-
     await this.register();
-    await this.runtimeManager.detectAllRuntimes();
-
     this.scheduleHeartbeat();
     this.scheduleTaskPolling();
 
     setInterval(() => {
       const up = Math.floor((Date.now() - this.metrics.startTime) / 60000);
-      console.log(`\nStats – Uptime: ${up}m | Polls: ${this.metrics.pollAttempts} | Tasks: ${this.metrics.tasksExecuted}+${this.metrics.tasksFailed} | HB: ${this.metrics.successfulHeartbeats}/${this.metrics.failedHeartbeats}`);
+      console.log(`\nStats – Uptime: ${up}m | Tasks: ${this.metrics.tasksExecuted}(success)/${this.metrics.tasksFailed}(failed) | Polls: ${this.metrics.pollAttempts} | HB: ${this.metrics.successfulHeartbeats}/${this.metrics.failedHeartbeats}`);
     }, 60000);
 
-    await new Promise(() => {}); // run forever
+    await new Promise(() => { }); // run forever
   }
 }
 
@@ -701,12 +700,12 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.length === 0) {
     console.log(`
-Usage: node worker.js --api-key YOUR_KEY [--url BASE_URL]
+Usage: node worker-agent.js --api-key YOUR_KEY [--url BASE_URL]
 
 Options:
-  --api-key   Required API key
-  --url       Custom API base URL
-  --help      Show this message
+  --api-key     Required API key
+  --url         Custom API base URL (optional)
+  --help        Show this message
 `);
     process.exit(0);
   }
@@ -722,8 +721,9 @@ Options:
     apiKey: args[keyIdx + 1],
     baseUrl: urlIdx !== -1 ? args[urlIdx + 1] : undefined
   });
+
   worker.start().catch(err => {
-    console.error('Fatal:', err);
+    console.error('Fatal error:', err);
     process.exit(1);
   });
 }
