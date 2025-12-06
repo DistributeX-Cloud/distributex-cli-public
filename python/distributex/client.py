@@ -77,45 +77,70 @@ class DistributeX:
         # Allow automatic redirect following
         self.session.max_redirects = 5
     
-	def run(
-	    self,
-	    func: Callable,
-	    args: tuple = (),
-	    kwargs: dict = None,
-	    workers: int = 1,
-	    cpu_per_worker: int = 2,
-	    ram_per_worker: int = 2048,
-	    gpu: bool = False,
-	    cuda: bool = False,
-	    timeout: int = 3600,
-	    wait: bool = True
-	) -> Any:
-	    kwargs = kwargs or {}
-	    
-	    print("📦 Packaging function...")
-	    code_url = self._package_function(func, args, kwargs)
-	    
-	    print(f"🚀 Submitting to {workers} worker(s)...")
-	    
-	    # ✅ Pass parameters with names that _submit_task understands
-	    task = self._submit_task(
-	        name='Distributed Function',
-	        taskType='script_execution',
-	        code_url=code_url,  # Use snake_case here, _submit_task will convert
-	        runtime='python',
-	        workers=workers,
-	        cpu_per_worker=cpu_per_worker,
-	        ram_per_worker=ram_per_worker,
-	        gpu_required=gpu,
-	        requires_cuda=cuda,
-	        timeout=timeout
-	    )
-	    
-	    if not wait:
-	        return task
-	    
-	    print("⏳ Waiting for execution...")
-	    return self._wait_and_get_result(task.id)
+    def run(
+        self,
+        func: Callable,
+        args: tuple = (),
+        kwargs: dict = None,
+        workers: int = 1,
+        cpu_per_worker: int = 2,
+        ram_per_worker: int = 2048,
+        gpu: bool = False,
+        cuda: bool = False,
+        timeout: int = 3600,
+        wait: bool = True
+    ) -> Any:
+        """
+        Run a Python function on the distributed network
+        
+        Args:
+            func: Python function to execute
+            args: Positional arguments for the function
+            kwargs: Keyword arguments for the function
+            workers: Number of parallel workers
+            cpu_per_worker: CPU cores per worker
+            ram_per_worker: RAM in MB per worker
+            gpu: Require GPU
+            cuda: Require CUDA
+            timeout: Timeout in seconds
+            wait: Wait for completion (default True)
+        
+        Returns:
+            Function result if wait=True, else Task object
+        
+        Example:
+            def train_model(data, epochs=10):
+                # Your training code
+                return model
+            
+            model = dx.run(train_model, args=(data,), kwargs={'epochs': 20}, gpu=True)
+        """
+        kwargs = kwargs or {}
+        
+        print("📦 Packaging function...")
+        code_url = self._package_function(func, args, kwargs)
+        
+        print(f"🚀 Submitting to {workers} worker(s)...")
+        
+        # ✅ FIXED: Pass camelCase parameters to _submit_task
+        task = self._submit_task(
+            name='Distributed Function',
+            taskType='script_execution',
+            codeUrl=code_url,
+            runtime='python',
+            workers=workers,
+            cpuPerWorker=cpu_per_worker,
+            ramPerWorker=ram_per_worker,
+            gpuRequired=gpu,
+            requiresCuda=cuda,
+            timeout=timeout
+        )
+        
+        if not wait:
+            return task
+        
+        print("⏳ Waiting for execution...")
+        return self._wait_and_get_result(task.id)
     
     def run_script(
         self,
@@ -443,77 +468,73 @@ with open('result.pkl', 'wb') as f:
         response.raise_for_status()
         return response.json()['url']
     
-	def _submit_task(self, **kwargs) -> Task:
-	    """Submit execution task with correct camelCase field names for API"""
-	    
-	    # ✅ FIXED: Convert snake_case Python params to camelCase API params
-	    request_body = {
-	        'name': kwargs.get('name', 'Distributed Task'),
-	        'taskType': kwargs.get('taskType') or kwargs.get('task_type', 'script_execution'),
-	        'runtime': kwargs.get('runtime', 'python'),
-	        'workers': kwargs.get('workers', 1),
-	        
-	        # Convert snake_case to camelCase
-	        'cpuPerWorker': kwargs.get('cpuPerWorker') or kwargs.get('cpu_per_worker', 2),
-	        'ramPerWorker': kwargs.get('ramPerWorker') or kwargs.get('ram_per_worker', 2048),
-	        'gpuRequired': kwargs.get('gpuRequired') or kwargs.get('gpu_required') or kwargs.get('gpu', False),
-	        'requiresCuda': kwargs.get('requiresCuda') or kwargs.get('requires_cuda') or kwargs.get('cuda', False),
-	        'storageRequired': kwargs.get('storageRequired') or kwargs.get('storage_required', 10240),
-	        'timeout': kwargs.get('timeout', 3600),
-	        'priority': kwargs.get('priority', 5),
-	    }
-	    
-	    # Add optional fields (check both snake_case and camelCase)
-	    if kwargs.get('codeUrl') or kwargs.get('code_url'):
-	        request_body['codeUrl'] = kwargs.get('codeUrl') or kwargs.get('code_url')
-	    
-	    if 'command' in kwargs:
-	        request_body['command'] = kwargs['command']
-	    
-	    if kwargs.get('dockerImage') or kwargs.get('docker_image'):
-	        request_body['dockerImage'] = kwargs.get('dockerImage') or kwargs.get('docker_image')
-	    
-	    if kwargs.get('dockerCommand') or kwargs.get('docker_command'):
-	        request_body['dockerCommand'] = kwargs.get('dockerCommand') or kwargs.get('docker_command')
-	    
-	    if kwargs.get('inputFiles') or kwargs.get('input_files'):
-	        request_body['inputFiles'] = kwargs.get('inputFiles') or kwargs.get('input_files', [])
-	    
-	    if kwargs.get('outputPaths') or kwargs.get('output_paths') or kwargs.get('output_files'):
-	        request_body['outputPaths'] = (kwargs.get('outputPaths') or 
-	                                       kwargs.get('output_paths') or 
-	                                       kwargs.get('output_files', []))
-	    
-	    if kwargs.get('environment') or kwargs.get('env'):
-	        request_body['environment'] = kwargs.get('environment') or kwargs.get('env', {})
-	    
-	    if 'volumes' in kwargs:
-	        request_body['volumes'] = kwargs['volumes']
-	    
-	    if 'ports' in kwargs:
-	        request_body['ports'] = kwargs['ports']
-	    
-	    # Remove None values
-	    request_body = {k: v for k, v in request_body.items() if v is not None}
-	    
-	    try:
-	        response = self.session.post(
-	            f"{self.base_url}/api/tasks/execute",
-	            json=request_body
-	        )
-	        response.raise_for_status()
-	        
-	        data = response.json()
-	        return Task(id=data['id'], status=data.get('status', 'pending'))
-	    
-	    except requests.exceptions.HTTPError as e:
-	        # Print the actual error response for debugging
-	        try:
-	            error_body = e.response.json()
-	            print(f"❌ API Error: {error_body}")
-	        except:
-	            print(f"❌ API Error: {e.response.text}")
-	        raise
+    def _submit_task(self, **kwargs) -> Task:
+        """Submit execution task - expects camelCase field names"""
+        
+        # Build request body (all camelCase for API)
+        request_body = {
+            'name': kwargs.get('name', 'Distributed Task'),
+            'taskType': kwargs.get('taskType', 'script_execution'),
+            'runtime': kwargs.get('runtime', 'python'),
+            'workers': kwargs.get('workers', 1),
+            'cpuPerWorker': kwargs.get('cpuPerWorker', 2),
+            'ramPerWorker': kwargs.get('ramPerWorker', 2048),
+            'gpuRequired': kwargs.get('gpuRequired', False),
+            'requiresCuda': kwargs.get('requiresCuda', False),
+            'storageRequired': kwargs.get('storageRequired', 10240),
+            'timeout': kwargs.get('timeout', 3600),
+            'priority': kwargs.get('priority', 5),
+        }
+        
+        # Add optional fields if present
+        if 'codeUrl' in kwargs:
+            request_body['codeUrl'] = kwargs['codeUrl']
+        
+        if 'command' in kwargs:
+            request_body['command'] = kwargs['command']
+        
+        if 'dockerImage' in kwargs:
+            request_body['dockerImage'] = kwargs['dockerImage']
+        
+        if 'dockerCommand' in kwargs:
+            request_body['dockerCommand'] = kwargs['dockerCommand']
+        
+        if 'inputFiles' in kwargs:
+            request_body['inputFiles'] = kwargs['inputFiles']
+        
+        if 'outputPaths' in kwargs:
+            request_body['outputPaths'] = kwargs['outputPaths']
+        
+        if 'environment' in kwargs:
+            request_body['environment'] = kwargs['environment']
+        
+        if 'volumes' in kwargs:
+            request_body['volumes'] = kwargs['volumes']
+        
+        if 'ports' in kwargs:
+            request_body['ports'] = kwargs['ports']
+        
+        # Remove None values
+        request_body = {k: v for k, v in request_body.items() if v is not None}
+        
+        try:
+            response = self.session.post(
+                f"{self.base_url}/api/tasks/execute",
+                json=request_body
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            return Task(id=data['id'], status=data.get('status', 'pending'))
+        
+        except requests.exceptions.HTTPError as e:
+            # Print the actual error response for debugging
+            try:
+                error_body = e.response.json()
+                print(f"❌ API Error: {error_body}")
+            except:
+                print(f"❌ API Error: {e.response.text}")
+            raise
     
     def _wait_and_get_result(self, task_id: str) -> Any:
         """Poll until complete and return result"""
