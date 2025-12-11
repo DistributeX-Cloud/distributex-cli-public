@@ -701,11 +701,7 @@ console.log(stats.activeWorkers);
 ### Quick Setup (One Command)
 
 ```bash
-# Linux/Mac
-curl -sSL https://distributex.cloud/install.sh | bash
-
-# Windows (PowerShell)
-irm https://distributex.cloud/install.ps1 | iex
+https://distributex.cloud/docs
 ```
 
 The installer will:
@@ -748,35 +744,6 @@ Monitor your contributions at [https://distributex.cloud/dashboard](https://dist
 - **Resource Limits**: Strict CPU/RAM/storage limits enforced
 - **No Data Retention**: Worker results are deleted after retrieval
 - **Encrypted Communication**: All API calls use HTTPS
-
----
-
-## 💰 Pricing
-
-### For Developers
-
-Pay only for what you use:
-- **CPU**: $0.01 per core-hour
-- **RAM**: $0.005 per GB-hour
-- **GPU**: $0.50 per GPU-hour
-- **Free Tier**: 100 tasks/month, 10 CPU hours
-
-### For Contributors
-
-Earn rewards for sharing resources:
-- **CPU**: Earn based on cores shared
-- **GPU**: Higher rewards for GPU sharing
-- **Uptime Bonuses**: Extra rewards for consistent availability
-
----
-
-## 📖 Documentation
-
-- **Full Documentation**: [https://distributex.cloud/docs](https://distributex.cloud/docs)
-- **API Reference**: [https://distributex.cloud/api](https://distributex.cloud/api)
-- **Examples**: [https://github.com/distributex/examples](https://github.com/distributex/examples)
-- **Discord Community**: [https://discord.gg/distributex](https://discord.gg/distributex)
-
 ---
 
 ## 🐛 Troubleshooting
@@ -837,8 +804,6 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 Built with love by the DistributeX team and our amazing community of contributors.
 
-**Ready to get started?** → [Sign up now](https://distributex.cloud/signup)
+**Ready to get started?** → [Sign up now](https://distributex.cloud)
 
 ---
-
-**Questions?** → [support@distributex.cloud](mailto:support@distributex.cloud) | [Discord](https://discord.gg/distributex)
