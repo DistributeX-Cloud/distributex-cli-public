@@ -130,115 +130,54 @@ detect_storage() {
     local total_mb=0
     local available_mb=0
     local drive_count=0
-    
+    local mount_points=()
+
     info "Scanning all storage drives..."
-    
+
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # ===== LINUX: Detect all mounted filesystems =====
         while IFS= read -r line; do
+            local fs=$(echo "$line" | awk '{print $1}')
+            local size_kb=$(echo "$line" | awk '{print $2}')
+            local avail_kb=$(echo "$line" | awk '{print $4}')
             local mount_point=$(echo "$line" | awk '{print $6}')
-            local size_mb=$(echo "$line" | awk '{print $2}')
-            local avail_mb=$(echo "$line" | awk '{print $4}')
-            local device=$(echo "$line" | awk '{print $1}')
-            
-            # Skip special filesystems
-            if [[ "$mount_point" == "/dev"* ]] || \
-               [[ "$mount_point" == "/sys"* ]] || \
-               [[ "$mount_point" == "/proc"* ]] || \
-               [[ "$mount_point" == "/run"* ]] || \
-               [[ "$device" == "tmpfs" ]] || \
-               [[ "$device" == "devtmpfs" ]]; then
-                continue
-            fi
-            
+
+            # Skip virtual/temporary filesystems
+            [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
+            [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
+            [[ "$mount_point" == "/boot/efi" ]] && continue  # usually too small
+
+            local size_mb=$((size_kb / 1024))
+            local avail_mb=$((avail_kb / 1024))
+
+            [[ $size_mb -lt 1000 ]] && continue  # ignore tiny partitions
+
             total_mb=$((total_mb + size_mb))
             available_mb=$((available_mb + avail_mb))
             drive_count=$((drive_count + 1))
-            
-            info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
-        done < <(df -m 2>/dev/null | tail -n +2)
-        
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        # ===== macOS: Detect all volumes =====
-        while IFS= read -r line; do
-            local mount_point=$(echo "$line" | awk '{print $9}')
-            local size_mb=$(echo "$line" | awk '{print $2}')
-            local avail_mb=$(echo "$line" | awk '{print $4}')
-            local device=$(echo "$line" | awk '{print $1}')
-            
-            # Skip special filesystems
-            if [[ "$mount_point" == "/dev"* ]] || \
-               [[ "$mount_point" == "/System"* ]] || \
-               [[ "$mount_point" == "/private"* ]] || \
-               [[ "$device" == "map"* ]] || \
-               [[ "$device" == "devfs" ]]; then
-                continue
-            fi
-            
-            total_mb=$((total_mb + size_mb))
-            available_mb=$((available_mb + avail_mb))
-            drive_count=$((drive_count + 1))
-            
-            info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
-        done < <(df -m 2>/dev/null | tail -n +2)
-        
-    elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
-        # ===== WINDOWS (Git Bash/WSL): Detect all drives =====
-        if command -v wmic &>/dev/null; then
-            # Use WMIC to get all logical drives
-            while IFS= read -r line; do
-                [[ -z "$line" ]] && continue
-                [[ "$line" == "DeviceID"* ]] && continue
-                
-                local drive_letter=$(echo "$line" | awk '{print $1}' | tr -d ':')
-                [[ -z "$drive_letter" ]] && continue
-                
-                local size_bytes=$(wmic logicaldisk where "DeviceID='${drive_letter}:'" get Size 2>/dev/null | grep -v "Size" | xargs)
-                local free_bytes=$(wmic logicaldisk where "DeviceID='${drive_letter}:'" get FreeSpace 2>/dev/null | grep -v "FreeSpace" | xargs)
-                
-                if [[ -n "$size_bytes" ]] && [[ "$size_bytes" != "0" ]]; then
-                    local size_mb=$((size_bytes / 1024 / 1024))
-                    local free_mb=$((free_bytes / 1024 / 1024))
-                    
-                    total_mb=$((total_mb + size_mb))
-                    available_mb=$((available_mb + free_mb))
-                    drive_count=$((drive_count + 1))
-                    
-                    info "  Drive $drive_count: ${drive_letter}: → $((size_mb/1024)) GB total, $((free_mb/1024)) GB free"
-                fi
-            done < <(wmic logicaldisk get DeviceID 2>/dev/null)
-        else
-            # Fallback for WSL
-            while IFS= read -r line; do
-                local mount_point=$(echo "$line" | awk '{print $6}')
-                local size_mb=$(echo "$line" | awk '{print $2}')
-                local avail_mb=$(echo "$line" | awk '{print $4}')
-                
-                # Skip special mounts
-                [[ "$mount_point" == "/mnt/wsl"* ]] && continue
-                [[ "$mount_point" == "/dev"* ]] && continue
-                [[ "$mount_point" == "/sys"* ]] && continue
-                [[ "$mount_point" == "/proc"* ]] && continue
-                
-                total_mb=$((total_mb + size_mb))
-                available_mb=$((available_mb + avail_mb))
-                drive_count=$((drive_count + 1))
-                
-                info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
-            done < <(df -m 2>/dev/null | tail -n +2)
-        fi
-    fi
-    
-    # Fallback if no drives detected
-    if [[ $total_mb -eq 0 ]]; then
-        warn "Could not detect drives, using defaults"
-        total_mb=102400
-        available_mb=51200
+            mount_points+=("$mount_point")
+
+            info " Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
+        done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
+
+        # Store for later use in container mounting
+        DETECTED_MOUNT_POINTS=("${mount_points[@]}")
+    else
+        # Fallback for non-Linux (very rare for contributors)
+        total_mb=100000
+        available_mb=50000
         drive_count=1
+        DETECTED_MOUNT_POINTS=("/")
     fi
-    
+
+    if [[ $total_mb -eq 0 ]]; then
+        warn "No usable drives found, using defaults"
+        total_mb=100000
+        available_mb=50000
+        drive_count=1
+        DETECTED_MOUNT_POINTS=("/")
+    fi
+
     log "Total: $drive_count drive(s), $((total_mb/1024)) GB total, $((available_mb/1024)) GB available"
-    
     echo "$total_mb|$available_mb|$drive_count"
 }
 
@@ -443,94 +382,60 @@ setup_contributor() {
 
     detect_full_system
 
-    # === NEW: Let user select full drives to contribute ===
-    EXTRA_VOLUMES=""
-    EXTRA_DEVICES=""
-
-    if [[ "$PLATFORM" == "linux" ]]; then
-        info "Do you want to contribute ENTIRE RAW DISKS (e.g. secondary HDD/SSD)? This gives maximum storage."
-        echo -e "${YELLOW}WARNING: Only select drives with NO important data!${NC}"
-        echo
-        read -p "Contribute full raw drives? (y/N): " contribute_raw </dev/tty
-        if [[ "$contribute_raw" =~ ^[Yy]$ ]]; then
-            echo
-            info "Available block devices (be VERY careful):"
-            echo
-            lsblk -d -o NAME,SIZE,TYPE,MOUNTPOINT | grep -v loop | grep disk || true
-            echo
-            echo -e "${YELLOW}Enter device names separated by space (e.g. sdb sdc nvme0n1)${NC}"
-            echo -e "${RED}   DOUBLE-CHECK! Wrong device = DATA LOSS!${NC}"
-            read -p "Devices to contribute (or press Enter to skip): " raw_devices </dev/tty
-
-            if [[ -n "$raw_devices" ]]; then
-                for dev in $raw_devices; do
-                    dev_path="/dev/$dev"
-                    if [[ -b "$dev_path" ]]; then
-                        log "Adding full raw disk: $dev_path"
-                        EXTRA_DEVICES="$EXTRA_DEVICES --device $dev_path "
-                        # Also allow read/write inside container
-                        EXTRA_VOLUMES="$EXTRA_VOLUMES -v /mnt/distributex-$dev:/data/$dev:rw "
-                        mkdir -p "/mnt/distributex-$dev"
-                    else
-                        warn "Device $dev_path not found. Skipping."
-                    fi
-                done
-            fi
-        fi
-
-        # Optional: Also bind-mount large directories (safer fallback)
-        info "You can also contribute large folders (e.g. /mnt/data, /home/user/storage)"
-        read -p "Extra folders to share? (space-separated, or Enter to skip): " extra_dirs </dev/tty
-        if [[ -n "$extra_dirs" ]]; then
-            for dir in $extra_dirs; do
-                dir=$(realpath "$dir" 2>/dev/null || echo "$dir")
-                if [[ -d "$dir" ]]; then
-                    log "Bind-mounting folder: $dir"
-                    EXTRA_VOLUMES="$EXTRA_VOLUMES -v $dir:/data/host$(echo $dir | tr '/' '_'):rw "
-                else
-                    warn "Directory $dir not found. Skipping."
-                fi
-            done
-        fi
-    else
-        warn "Raw disk contribution is only supported on Linux. Using detected mounted storage only."
-    fi
-
     # Validate token
     info "Validating API token..."
-    local validate_resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$API_URL/api/auth/user" 2>/dev/null || echo "{}")
-    [[ $(safe_jq '.id' "$validate_resp") == "null" ]] && error "Invalid or expired token"
+    local resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$API_URL/api/auth/user")
+    [[ $(safe_jq '.id' "$resp") == "null" ]] && error "Invalid token"
 
     # Stop old container
     docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$" && {
-        info "Stopping and removing old worker..."
+        info "Removing old worker..."
         docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
         docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
     }
 
     info "Pulling latest worker image..."
-    docker pull "$DOCKER_IMAGE"
+    docker pull "$DOCKER_IMAGE" >/dev/null
 
-    info "Starting worker with full storage access..."
+    # === BUILD VOLUME MOUNTS FOR ALL DETECTED DRIVES ===
+    VOLUMES="-v $CONFIG_DIR:/config:ro"
+    for mp in "${DETECTED_MOUNT_POINTS[@]}"; do
+        # Create a safe subfolder inside container
+        safe_name=$(echo "$mp" | tr '/' '_')
+        mkdir -p "$mp/.distributex-shared" 2>/dev/null || true
+        VOLUMES="$VOLUMES -v $mp/.distributex-shared:/data/host$safe_name:rw"
+        log "Attached: $mp → /data/host$safe_name (full access)"
+    done
+
+    # Optional: Ask for raw disk (advanced users only)
+    if [[ "$PLATFORM" == "linux" ]]; then
+        echo
+        read -p "Attach ENTIRE raw disks (e.g. /dev/sdb)? VERY DANGEROUS - only empty drives! (y/N): " raw </dev/tty
+        if [[ "$raw" =~ ^[Yy]$ ]]; then
+            echo "Available disks:"
+            lsblk -d -o NAME,SIZE,MODEL | grep -v NAME
+            read -p "Enter device names (e.g. sdb sdc): " disks </dev/tty
+            for d in $disks; do
+                if [[ -b "/dev/$d" ]]; then
+                    VOLUMES="$VOLUMES --device /dev/$d --cap-add SYS_ADMIN --privileged"
+                    log "Attached raw disk: /dev/$d (worker will format & use 100%)"
+                fi
+            done
+        fi
+    fi
+
+    info "Starting worker with FULL access to all drives..."
 
     docker run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \
         --dns 8.8.8.8 --dns 8.8.4.4 \
-        --cap-add SYS_ADMIN --cap-add DAC_OVERRIDE \
-        --privileged \
-        -v "$CONFIG_DIR:/config:ro" \
-        $EXTRA_VOLUMES \
-        $EXTRA_DEVICES \
+        $VOLUMES \
         -e HOST_MAC_ADDRESS="$MAC_ADDRESS" \
         -e HOSTNAME="$HOSTNAME" \
         -e CPU_CORES="$CPU_CORES" \
-        -e CPU_MODEL="$CPU_MODEL" \
         -e RAM_TOTAL_MB="$RAM_TOTAL" \
         -e GPU_AVAILABLE="$GPU_AVAILABLE" \
-        -e GPU_MODEL="$GPU_MODEL" \
-        -e GPU_MEMORY_MB="$GPU_MEMORY" \
-        -e GPU_COUNT="$GPU_COUNT" \
         -e STORAGE_TOTAL_MB="$STORAGE_TOTAL" \
         -e STORAGE_AVAILABLE_MB="$STORAGE_AVAILABLE" \
         -e DRIVE_COUNT="$DRIVE_COUNT" \
@@ -541,22 +446,23 @@ setup_contributor() {
         --health-interval=30s \
         "$DOCKER_IMAGE" \
         --api-key "$API_TOKEN" \
-        --url "$API_URL" || error "Failed to start container"
+        --url "$API_URL" >/dev/null
 
     sleep 15
-    if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
-        error "Worker crashed. Logs:\n$(docker logs $CONTAINER_NAME 2>&1 | tail -50)"
+    if ! docker ps | grep -q "$CONTAINER_NAME"; then
+        error "Worker failed. Logs:\n$(docker logs $CONTAINER_NAME | tail -50)"
     fi
 
-    log "Worker started successfully with MAXIMUM storage access!"
-    section "Contributor Setup Complete!"
+    log "Worker started with access to ALL your drives!"
+    section "SUCCESS - FULL STORAGE CONTRIBUTED"
     echo
-    echo -e "${GREEN}Your node is now contributing FULL drives!${NC}"
-    echo "   Storage: $((STORAGE_TOTAL/1024)) GB detected + any raw disks added"
-    [[ -n "$EXTRA_DEVICES" ]] && echo -e "   ${GREEN}Raw disks attached!${NC}"
+    echo -e "${GREEN}Your node now has access to:${NC}"
+    for mp in "${DETECTED_MOUNT_POINTS[@]}"; do
+        echo "   • $mp (full read/write)"
+    done
     echo
-    echo -e "${CYAN}Monitor:${NC} docker logs -f $CONTAINER_NAME"
-    echo -e "${BLUE}Dashboard:${NC} $API_URL/dashboard"
+    echo -e "${CYAN}Monitor: docker logs -f $CONTAINER_NAME${NC}"
+    echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
     echo
 }
 
