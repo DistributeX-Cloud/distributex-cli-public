@@ -781,12 +781,6 @@ print(status.status, status.error)
 
 ---
 
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details
-
----
-
 ## 🙏 Acknowledgments
 
 Built with love by the DistributeX team and our amazing community of contributors.
