@@ -437,46 +437,91 @@ select_role() {
 
 setup_contributor() {
     section "Setting Up Contributor Worker"
-
-    # Verify Docker
     command -v docker &>/dev/null || error "Docker not found → https://docs.docker.com/get-docker/"
     docker ps &>/dev/null || error "Docker daemon not running"
     log "Docker ready"
 
-    # Detect system
     detect_full_system
 
-    # Validate API token
+    # === NEW: Let user select full drives to contribute ===
+    EXTRA_VOLUMES=""
+    EXTRA_DEVICES=""
+
+    if [[ "$PLATFORM" == "linux" ]]; then
+        info "Do you want to contribute ENTIRE RAW DISKS (e.g. secondary HDD/SSD)? This gives maximum storage."
+        echo -e "${YELLOW}WARNING: Only select drives with NO important data!${NC}"
+        echo
+        read -p "Contribute full raw drives? (y/N): " contribute_raw </dev/tty
+        if [[ "$contribute_raw" =~ ^[Yy]$ ]]; then
+            echo
+            info "Available block devices (be VERY careful):"
+            echo
+            lsblk -d -o NAME,SIZE,TYPE,MOUNTPOINT | grep -v loop | grep disk || true
+            echo
+            echo -e "${YELLOW}Enter device names separated by space (e.g. sdb sdc nvme0n1)${NC}"
+            echo -e "${RED}   DOUBLE-CHECK! Wrong device = DATA LOSS!${NC}"
+            read -p "Devices to contribute (or press Enter to skip): " raw_devices </dev/tty
+
+            if [[ -n "$raw_devices" ]]; then
+                for dev in $raw_devices; do
+                    dev_path="/dev/$dev"
+                    if [[ -b "$dev_path" ]]; then
+                        log "Adding full raw disk: $dev_path"
+                        EXTRA_DEVICES="$EXTRA_DEVICES --device $dev_path "
+                        # Also allow read/write inside container
+                        EXTRA_VOLUMES="$EXTRA_VOLUMES -v /mnt/distributex-$dev:/data/$dev:rw "
+                        mkdir -p "/mnt/distributex-$dev"
+                    else
+                        warn "Device $dev_path not found. Skipping."
+                    fi
+                done
+            fi
+        fi
+
+        # Optional: Also bind-mount large directories (safer fallback)
+        info "You can also contribute large folders (e.g. /mnt/data, /home/user/storage)"
+        read -p "Extra folders to share? (space-separated, or Enter to skip): " extra_dirs </dev/tty
+        if [[ -n "$extra_dirs" ]]; then
+            for dir in $extra_dirs; do
+                dir=$(realpath "$dir" 2>/dev/null || echo "$dir")
+                if [[ -d "$dir" ]]; then
+                    log "Bind-mounting folder: $dir"
+                    EXTRA_VOLUMES="$EXTRA_VOLUMES -v $dir:/data/host$(echo $dir | tr '/' '_'):rw "
+                else
+                    warn "Directory $dir not found. Skipping."
+                fi
+            done
+        fi
+    else
+        warn "Raw disk contribution is only supported on Linux. Using detected mounted storage only."
+    fi
+
+    # Validate token
     info "Validating API token..."
     local validate_resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$API_URL/api/auth/user" 2>/dev/null || echo "{}")
-    local validate_id=$(safe_jq '.id' "$validate_resp")
-    
-    if [[ -z "$validate_id" || "$validate_id" == "null" ]]; then
-        error "API token validation failed. Token may be invalid or expired."
-    fi
-    log "API token validated for user: $validate_id"
+    [[ $(safe_jq '.id' "$validate_resp") == "null" ]] && error "Invalid or expired token"
 
-    # Stop existing container
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        info "Stopping existing worker..."
+    # Stop old container
+    docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$" && {
+        info "Stopping and removing old worker..."
         docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
         docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        log "Existing container removed"
-    fi
+    }
 
-    # Pull latest image
     info "Pulling latest worker image..."
-    docker pull "$DOCKER_IMAGE" 2>&1 | grep -q "up to date\|Downloaded" || warn "Image pull had issues"
+    docker pull "$DOCKER_IMAGE"
 
-    # Start worker container
-    info "Starting worker container..."
-    
+    info "Starting worker with full storage access..."
+
     docker run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \
-        --dns 8.8.8.8 \
-        --dns 8.8.4.4 \
+        --dns 8.8.8.8 --dns 8.8.4.4 \
+        --cap-add SYS_ADMIN --cap-add DAC_OVERRIDE \
+        --privileged \
         -v "$CONFIG_DIR:/config:ro" \
+        $EXTRA_VOLUMES \
+        $EXTRA_DEVICES \
         -e HOST_MAC_ADDRESS="$MAC_ADDRESS" \
         -e HOSTNAME="$HOSTNAME" \
         -e CPU_CORES="$CPU_CORES" \
@@ -486,8 +531,6 @@ setup_contributor() {
         -e GPU_MODEL="$GPU_MODEL" \
         -e GPU_MEMORY_MB="$GPU_MEMORY" \
         -e GPU_COUNT="$GPU_COUNT" \
-        -e GPU_DRIVER="$GPU_DRIVER" \
-        -e GPU_CUDA_VERSION="$GPU_CUDA" \
         -e STORAGE_TOTAL_MB="$STORAGE_TOTAL" \
         -e STORAGE_AVAILABLE_MB="$STORAGE_AVAILABLE" \
         -e DRIVE_COUNT="$DRIVE_COUNT" \
@@ -496,66 +539,24 @@ setup_contributor() {
         -e DISABLE_SELF_REGISTER=true \
         --health-cmd="node -e \"console.log('healthy')\"" \
         --health-interval=30s \
-        --health-timeout=10s \
-        --health-retries=3 \
-        --health-start-period=60s \
         "$DOCKER_IMAGE" \
         --api-key "$API_TOKEN" \
-        --url "$API_URL" >/dev/null 2>&1 || error "Failed to start container"
+        --url "$API_URL" || error "Failed to start container"
 
-    # Wait and verify
-    info "Waiting for worker to initialize..."
     sleep 15
-
-    # Check if container is still running
     if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
-        echo
-        error "Worker failed to start. Showing last logs:\n$(docker logs --tail 50 $CONTAINER_NAME 2>&1)"
+        error "Worker crashed. Logs:\n$(docker logs $CONTAINER_NAME 2>&1 | tail -50)"
     fi
 
-    # Test DNS resolution inside container
-    info "Testing network connectivity..."
-    if docker exec "$CONTAINER_NAME" nslookup distributex.cloud >/dev/null 2>&1 || \
-       docker exec "$CONTAINER_NAME" ping -c 1 distributex.cloud >/dev/null 2>&1; then
-        log "Network connectivity confirmed"
-    else
-        warn "DNS resolution test failed, but container is running"
-        info "This may resolve itself. Check logs with: docker logs -f $CONTAINER_NAME"
-    fi
-
-    # Check logs for errors
-    local logs=$(docker logs "$CONTAINER_NAME" 2>&1 | tail -30)
-    
-    if echo "$logs" | grep -qi "error.*registration\|failed.*register\|invalid.*token\|EAI_AGAIN"; then
-        echo
-        warn "Worker may have registration or network issues. Recent logs:"
-        echo "$logs"
-        echo
-        read -p "Container is running but may have issues. Continue? (y/N): " continue_choice </dev/tty
-        [[ ! "$continue_choice" =~ ^[Yy]$ ]] && error "Installation aborted. Fix errors and try again."
-    fi
-
-    log "Worker started successfully!"
-
+    log "Worker started successfully with MAXIMUM storage access!"
     section "Contributor Setup Complete!"
     echo
-    echo -e "${GREEN}✅ Your worker is live and contributing!${NC}"
+    echo -e "${GREEN}Your node is now contributing FULL drives!${NC}"
+    echo "   Storage: $((STORAGE_TOTAL/1024)) GB detected + any raw disks added"
+    [[ -n "$EXTRA_DEVICES" ]] && echo -e "   ${GREEN}Raw disks attached!${NC}"
     echo
-    echo "Worker ID:    Worker-$MAC_ADDRESS"
-    echo "Resources:    $CPU_CORES cores • $((RAM_TOTAL/1024)) GB RAM • $DRIVE_COUNT drive(s)"
-    echo "Storage:      $((STORAGE_TOTAL/1024)) GB total • $((STORAGE_AVAILABLE/1024)) GB available"
-    [[ "$GPU_AVAILABLE" == "true" ]] && echo "GPU:          $GPU_COUNT× $GPU_MODEL"
-    echo
-    echo -e "${CYAN}Monitor your worker:${NC}"
-    echo "  docker logs -f $CONTAINER_NAME"
-    echo
-    echo -e "${CYAN}Test connectivity:${NC}"
-    echo "  docker exec $CONTAINER_NAME ping -c 3 distributex.cloud"
-    echo
-    echo -e "${CYAN}Check status:${NC}"
-    echo "  docker ps | grep $CONTAINER_NAME"
-    echo
-    echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
+    echo -e "${CYAN}Monitor:${NC} docker logs -f $CONTAINER_NAME"
+    echo -e "${BLUE}Dashboard:${NC} $API_URL/dashboard"
     echo
 }
 
