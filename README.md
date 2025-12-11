@@ -701,8 +701,9 @@ console.log(stats.activeWorkers);
 ### Quick Setup (One Command)
 
 ```bash
-https://distributex.cloud/docs
+curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 ```
+Also check the guide on https://distributex.cloud/docs for a more straight forward guide for device type. 
 
 The installer will:
 1. Detect your system resources (CPU, RAM, GPU)
@@ -777,20 +778,6 @@ def my_function():
 status = dx.get_task(task_id)
 print(status.status, status.error)
 ```
-
----
-
-## 🚀 Roadmap
-
-- [x] Python SDK
-- [x] JavaScript SDK
-- [x] Multi-worker parallel execution
-- [x] GPU support
-- [ ] Go SDK
-- [ ] Rust SDK
-- [ ] Spot instances (lower cost)
-- [ ] Private worker pools
-- [ ] Custom Docker images
 
 ---
 
