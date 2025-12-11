@@ -107,8 +107,6 @@ dx.run(myFunction);
 
 # 🐍 Python — Full Math Engine Example
 
-(Your approved example, preserved exactly)
-
 ```python
 from distributex import DistributeX
 
@@ -199,8 +197,6 @@ print(result)
 ---
 
 # 🔧 JavaScript — Equivalent Basic Example
-
-(From the working version you approved)
 
 ```javascript
 import { DistributeX } from "distributex-cloud";
