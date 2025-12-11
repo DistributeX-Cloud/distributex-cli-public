@@ -1,10 +1,3 @@
-#!/bin/bash
-# DistributeX Universal Installer v8.2 - FIXED DNS RESOLUTION
-# Key fixes:
-# 1. Removed --network host (causes DNS issues)
-# 2. Added proper DNS configuration
-# 3. Better error handling
-
 set -e
 
 # CONFIG
@@ -24,9 +17,6 @@ error() { echo -e "${RED}[✗]${NC} $1" >&2; exit 1; }
 section() { echo -e "\n${BOLD}${BLUE}=== $1 ===${NC}\n"; }
 safe_jq() { echo "$2" | jq -r "$1" 2>/dev/null || echo ""; }
 
-# ============================================================================
-# BANNER
-# ============================================================================
 show_banner() {
     clear
     echo -e "${CYAN}"
@@ -40,19 +30,18 @@ show_banner() {
  ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝
  
 
-          ─────────────────── Universal Installer v8.1 ───────────────────
-              Smart Role Detection → Contributor or Developer
+          ─────────────────── Universal Installer v9.0 ───────────────────
+                              Get ready to contribute
+                        Contribute to provide for developers
           ────────────────────────────────────────────────────────────────
 EOF
     echo -e "${BOLD}${CYAN}          Welcome! Let's get your node or dev environment ready in seconds.\n${NC}"
 }
 
-# ============================================================================
-# SYSTEM DETECTION FUNCTIONS
-# ============================================================================
 get_mac_address() {
     local mac=""
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
+        # Linux and Windows/WSL
         mac=$(ip link show 2>/dev/null | awk '/link\/ether/ {gsub(/:/,""); print tolower($2); exit}')
         if [[ -z "$mac" ]]; then
             for iface in /sys/class/net/*; do
@@ -64,7 +53,12 @@ get_mac_address() {
                 fi
             done
         fi
+        # Windows fallback
+        if [[ -z "$mac" ]] && command -v ipconfig &>/dev/null; then
+            mac=$(ipconfig /all | grep -i "Physical Address" | head -1 | awk '{print $NF}' | tr -d ':-' | tr '[:upper:]' '[:lower:]')
+        fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
         for iface in en0 en1 en2; do
             mac=$(ifconfig $iface 2>/dev/null | awk '/ether/ {gsub(/:/,""); print tolower($2)}')
             [[ -n "$mac" ]] && [[ "$mac" != "000000000000" ]] && break
@@ -80,9 +74,13 @@ get_mac_address() {
 detect_cpu() {
     local cores=0
     local model="Unknown CPU"
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
         cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
-        model=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo | xargs || echo "Unknown CPU")
+        model=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | xargs || echo "Unknown CPU")
+        # Windows fallback
+        if [[ -z "$model" || "$model" == "Unknown CPU" ]] && command -v wmic &>/dev/null; then
+            model=$(wmic cpu get name 2>/dev/null | grep -v "Name" | head -1 | xargs || echo "Unknown CPU")
+        fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         cores=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
         model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
@@ -92,9 +90,14 @@ detect_cpu() {
 
 detect_ram() {
     local total_mb=0 available_mb=0
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        total_mb=$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo)
-        available_mb=$(awk '/MemAvailable/ {printf "%.0f", $2/1024}' /proc/meminfo || echo "$total_mb")
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
+        total_mb=$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo 8192)
+        available_mb=$(awk '/MemAvailable/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo "$total_mb")
+        # Windows fallback
+        if [[ $total_mb -eq 0 ]] && command -v wmic &>/dev/null; then
+            total_mb=$(wmic computersystem get totalphysicalmemory 2>/dev/null | grep -v "TotalPhysicalMemory" | awk '{printf "%.0f", $1/1024/1024}')
+            available_mb=$((total_mb * 7 / 10))
+        fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         total_mb=$(( $(sysctl -n hw.memsize) / 1024 / 1024 ))
         available_mb=$((total_mb * 7 / 10))
@@ -109,7 +112,7 @@ detect_gpu() {
         local out=$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "")
         if [[ -n "$out" ]]; then
             has="true"
-            count=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits | wc -l | xargs)
+            count=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | wc -l | xargs)
             model=$(echo "$out" | cut -d',' -f1 | xargs)
             memory=$(echo "$out" | cut -d',' -f2 | xargs)
             driver=$(echo "$out" | cut -d',' -f3 | xargs)
@@ -124,14 +127,119 @@ detect_gpu() {
 }
 
 detect_storage() {
-    local total_mb=0 available_mb=0
-    if df -m / &>/dev/null; then
-        read total_mb available_mb <<< $(df -m / | awk 'NR==2 {print $2" "$4}')
-    else
+    local total_mb=0
+    local available_mb=0
+    local drive_count=0
+    
+    info "Scanning all storage drives..."
+    
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # ===== LINUX: Detect all mounted filesystems =====
+        while IFS= read -r line; do
+            local mount_point=$(echo "$line" | awk '{print $6}')
+            local size_mb=$(echo "$line" | awk '{print $2}')
+            local avail_mb=$(echo "$line" | awk '{print $4}')
+            local device=$(echo "$line" | awk '{print $1}')
+            
+            # Skip special filesystems
+            if [[ "$mount_point" == "/dev"* ]] || \
+               [[ "$mount_point" == "/sys"* ]] || \
+               [[ "$mount_point" == "/proc"* ]] || \
+               [[ "$mount_point" == "/run"* ]] || \
+               [[ "$device" == "tmpfs" ]] || \
+               [[ "$device" == "devtmpfs" ]]; then
+                continue
+            fi
+            
+            total_mb=$((total_mb + size_mb))
+            available_mb=$((available_mb + avail_mb))
+            drive_count=$((drive_count + 1))
+            
+            info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
+        done < <(df -m 2>/dev/null | tail -n +2)
+        
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        # ===== macOS: Detect all volumes =====
+        while IFS= read -r line; do
+            local mount_point=$(echo "$line" | awk '{print $9}')
+            local size_mb=$(echo "$line" | awk '{print $2}')
+            local avail_mb=$(echo "$line" | awk '{print $4}')
+            local device=$(echo "$line" | awk '{print $1}')
+            
+            # Skip special filesystems
+            if [[ "$mount_point" == "/dev"* ]] || \
+               [[ "$mount_point" == "/System"* ]] || \
+               [[ "$mount_point" == "/private"* ]] || \
+               [[ "$device" == "map"* ]] || \
+               [[ "$device" == "devfs" ]]; then
+                continue
+            fi
+            
+            total_mb=$((total_mb + size_mb))
+            available_mb=$((available_mb + avail_mb))
+            drive_count=$((drive_count + 1))
+            
+            info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
+        done < <(df -m 2>/dev/null | tail -n +2)
+        
+    elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
+        # ===== WINDOWS (Git Bash/WSL): Detect all drives =====
+        if command -v wmic &>/dev/null; then
+            # Use WMIC to get all logical drives
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                [[ "$line" == "DeviceID"* ]] && continue
+                
+                local drive_letter=$(echo "$line" | awk '{print $1}' | tr -d ':')
+                [[ -z "$drive_letter" ]] && continue
+                
+                local size_bytes=$(wmic logicaldisk where "DeviceID='${drive_letter}:'" get Size 2>/dev/null | grep -v "Size" | xargs)
+                local free_bytes=$(wmic logicaldisk where "DeviceID='${drive_letter}:'" get FreeSpace 2>/dev/null | grep -v "FreeSpace" | xargs)
+                
+                if [[ -n "$size_bytes" ]] && [[ "$size_bytes" != "0" ]]; then
+                    local size_mb=$((size_bytes / 1024 / 1024))
+                    local free_mb=$((free_bytes / 1024 / 1024))
+                    
+                    total_mb=$((total_mb + size_mb))
+                    available_mb=$((available_mb + free_mb))
+                    drive_count=$((drive_count + 1))
+                    
+                    info "  Drive $drive_count: ${drive_letter}: → $((size_mb/1024)) GB total, $((free_mb/1024)) GB free"
+                fi
+            done < <(wmic logicaldisk get DeviceID 2>/dev/null)
+        else
+            # Fallback for WSL
+            while IFS= read -r line; do
+                local mount_point=$(echo "$line" | awk '{print $6}')
+                local size_mb=$(echo "$line" | awk '{print $2}')
+                local avail_mb=$(echo "$line" | awk '{print $4}')
+                
+                # Skip special mounts
+                [[ "$mount_point" == "/mnt/wsl"* ]] && continue
+                [[ "$mount_point" == "/dev"* ]] && continue
+                [[ "$mount_point" == "/sys"* ]] && continue
+                [[ "$mount_point" == "/proc"* ]] && continue
+                
+                total_mb=$((total_mb + size_mb))
+                available_mb=$((available_mb + avail_mb))
+                drive_count=$((drive_count + 1))
+                
+                info "  Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
+            done < <(df -m 2>/dev/null | tail -n +2)
+        fi
+    fi
+    
+    # Fallback if no drives detected
+    if [[ $total_mb -eq 0 ]]; then
+        warn "Could not detect drives, using defaults"
         total_mb=102400
         available_mb=51200
+        drive_count=1
     fi
-    echo "$total_mb|$available_mb"
+    
+    log "Total: $drive_count drive(s), $((total_mb/1024)) GB total, $((available_mb/1024)) GB available"
+    
+    echo "$total_mb|$available_mb|$drive_count"
 }
 
 detect_platform() {
@@ -149,6 +257,7 @@ detect_architecture() {
         x86_64)     echo "x64" ;;
         aarch64|arm64) echo "arm64" ;;
         armv7l)     echo "armv7" ;;
+        AMD64)      echo "x64" ;;  # Windows
         *)          echo "$arch" ;;
     esac
 }
@@ -185,14 +294,17 @@ detect_full_system() {
         info "No supported GPU detected"
     fi
 
+    # ===== MULTI-DRIVE DETECTION (NEW!) =====
     local storage=$(detect_storage)
     STORAGE_TOTAL=$(echo "$storage" | cut -d'|' -f1)
     STORAGE_AVAILABLE=$(echo "$storage" | cut -d'|' -f2)
-    log "Storage: $((STORAGE_TOTAL/1024)) GB total ($((STORAGE_AVAILABLE/1024)) GB free)"
+    DRIVE_COUNT=$(echo "$storage" | cut -d'|' -f3)
+    
+    log "Storage: $((STORAGE_TOTAL/1024)) GB total across $DRIVE_COUNT drive(s)"
 
     PLATFORM=$(detect_platform)
     ARCH=$(detect_architecture)
-    HOSTNAME=$(hostname || echo "unknown")
+    HOSTNAME=$(hostname 2>/dev/null || echo "unknown")
 
     log "Platform: $PLATFORM / $ARCH"
     log "Hostname: $HOSTNAME"
@@ -200,9 +312,6 @@ detect_full_system() {
     echo
 }
 
-# ============================================================================
-# AUTHENTICATION
-# ============================================================================
 authenticate_user() {
     section "Authentication"
     mkdir -p "$CONFIG_DIR"
@@ -288,9 +397,6 @@ signup_user() {
     log "Account created and logged in: $USER_EMAIL"
 }
 
-# ============================================================================
-# ROLE SELECTION
-# ============================================================================
 select_role() {
     section "Select Your Role"
 
@@ -329,9 +435,6 @@ select_role() {
     log "Role set to: $USER_ROLE"
 }
 
-# ============================================================================
-# CONTRIBUTOR SETUP - FIXED FOR STABILITY
-# ============================================================================
 setup_contributor() {
     section "Setting Up Contributor Worker"
 
@@ -365,7 +468,7 @@ setup_contributor() {
     info "Pulling latest worker image..."
     docker pull "$DOCKER_IMAGE" 2>&1 | grep -q "up to date\|Downloaded" || warn "Image pull had issues"
 
-    # ✅ FIX: Remove --network host, use bridge with proper DNS
+    # Start worker container
     info "Starting worker container..."
     
     docker run -d \
@@ -385,7 +488,9 @@ setup_contributor() {
         -e GPU_COUNT="$GPU_COUNT" \
         -e GPU_DRIVER="$GPU_DRIVER" \
         -e GPU_CUDA_VERSION="$GPU_CUDA" \
+        -e STORAGE_TOTAL_MB="$STORAGE_TOTAL" \
         -e STORAGE_AVAILABLE_MB="$STORAGE_AVAILABLE" \
+        -e DRIVE_COUNT="$DRIVE_COUNT" \
         -e PLATFORM="$PLATFORM" \
         -e ARCH="$ARCH" \
         -e DISABLE_SELF_REGISTER=true \
@@ -437,7 +542,8 @@ setup_contributor() {
     echo -e "${GREEN}✅ Your worker is live and contributing!${NC}"
     echo
     echo "Worker ID:    Worker-$MAC_ADDRESS"
-    echo "Resources:    $CPU_CORES cores • $((RAM_TOTAL/1024)) GB RAM"
+    echo "Resources:    $CPU_CORES cores • $((RAM_TOTAL/1024)) GB RAM • $DRIVE_COUNT drive(s)"
+    echo "Storage:      $((STORAGE_TOTAL/1024)) GB total • $((STORAGE_AVAILABLE/1024)) GB available"
     [[ "$GPU_AVAILABLE" == "true" ]] && echo "GPU:          $GPU_COUNT× $GPU_MODEL"
     echo
     echo -e "${CYAN}Monitor your worker:${NC}"
@@ -453,9 +559,6 @@ setup_contributor() {
     echo
 }
 
-# ============================================================================
-# DEVELOPER SETUP
-# ============================================================================
 setup_developer() {
     section "Setting Up Developer Access"
 
@@ -476,73 +579,85 @@ setup_developer() {
         return 0
     fi
 
-    has_key=$(echo "$body" | jq -r '.hasKey // false')
-
+        has_key=$(echo "$body" | jq -r '.hasKey // false')
     if [[ "$has_key" == "true" ]]; then
         prefix=$(echo "$body" | jq -r '.prefix // "xxxx"')
         suffix=$(echo "$body" | jq -r '.suffix // "xxxx"')
-
         info "Existing API key detected:"
-        echo "   • ${prefix}********${suffix}"
+        echo " • ${prefix}********${suffix}"
         echo
         warn "Installer will NOT generate a new key."
-        echo "Visit your dashboard to view your full key:"
-        echo "   $API_URL/api-dashboard"
+        echo "Visit your dashboard to view/manage your full key:"
+        echo " $API_URL/api-dashboard"
         echo
         section "Developer Setup Complete (existing key)"
         return 0
     fi
-
     warn "No API key found."
     echo
     echo "Please generate one in your developer dashboard:"
-    echo "   $API_URL/api-dashboard"
+    echo " $API_URL/api-dashboard"
     echo
-    echo "Then save it locally:"
-    echo "   echo \"your-api-key\" > $CONFIG_DIR/api-key"
-    echo "   chmod 600 $CONFIG_DIR/api-key"
+    echo "Then save it locally (optional):"
+    echo " echo \"your-full-api-key-here\" > $CONFIG_DIR/api-key"
+    echo " chmod 600 $CONFIG_DIR/api-key"
     echo
-    section "Developer Setup Pending"
+    section "Developer Setup Complete — Generate Key in Dashboard"
     return 0
 }
 
-# ============================================================================
-# REQUIREMENTS CHECK
-# ============================================================================
 check_requirements() {
     section "Checking Requirements"
-    for cmd in curl jq; do
-        command -v $cmd &>/dev/null && continue
-        info "Installing $cmd..."
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y $cmd -qq
-        elif command -v brew &>/dev/null; then
-            brew install $cmd
-        else
-            error "$cmd is required but could not be installed automatically"
+    local missing=""
+    for cmd in curl jq docker; do
+        if ! command -v $cmd &>/dev/null; then
+            missing="$missing $cmd"
         fi
     done
+
+    if [[ -n "$missing" ]]; then
+        warn "Missing dependencies:$missing"
+        info "Please install them manually:"
+        echo
+        echo " • curl & jq: usually pre-installed or via package manager"
+        echo " • Docker: https://docs.docker.com/get-docker/"
+        echo
+        read -p "Press Enter when ready, or Ctrl+C to abort..." </dev/tty
+        # Re-check
+        for cmd in curl jq docker; do
+            command -v $cmd &>/dev/null || error "$cmd is required but still not found"
+        done
+    fi
     log "All requirements satisfied"
 }
 
-# ============================================================================
-# MAIN
-# ============================================================================
 main() {
     show_banner
     check_requirements
     authenticate_user
     select_role
 
-    case "$USER_ROLE" in
-        contributor) setup_contributor ;;
-        developer)   setup_developer   ;;
-        *)           error "Unknown role: $USER_ROLE" ;;
-    esac
+    if [[ "$USER_ROLE" == "contributor" ]]; then
+        setup_contributor
+    elif [[ "$USER_ROLE" == "developer" ]]; then
+        setup_developer
+    else
+        error "Unknown role: $USER_ROLE"
+    fi
 
-    echo -e "${BOLD}${GREEN}Installation complete! 🎉${NC}\n"
+    echo
+    echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${GREEN}║          DistributeX Universal Installer v9.0           ║${NC}"
+    echo -e "${BOLD}${GREEN}║                    Installation Complete!               ║${NC}"
+    echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo
+    echo -e "   Dashboard → ${BLUE}$API_URL/dashboard${NC}"
+    [[ "$USER_ROLE" == "developer" ]] && echo -e "   API Keys   → ${BLUE}$API_URL/api-dashboard${NC}"
+    echo
+    echo -e "   Support: ${CYAN}https://discord.gg/distributex${NC}"
+    echo
 }
 
-trap 'error "Installation failed at line $LINENO"' ERR
-main
+trap 'error "Installation interrupted at line $LINENO"' ERR
+main "$@"
 exit 0
