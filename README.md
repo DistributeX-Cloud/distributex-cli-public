@@ -199,11 +199,9 @@ print(result)
 # 🔧 JavaScript — Equivalent Basic Example
 
 ```javascript
-import { DistributeX } from "distributex-cloud";
+const DistributeX = require("distributex-cloud");
 
-const dx = new DistributeX({
-  apiKey: "your_api_key"
-});
+const dx = new DistributeX("YOUR_API_KEY");
 
 const worker = (script) => {
   return {
