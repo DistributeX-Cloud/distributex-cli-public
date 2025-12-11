@@ -130,52 +130,42 @@ detect_storage() {
     local total_mb=0
     local available_mb=0
     local drive_count=0
-    local mount_points=()
+    DETECTED_MOUNT_POINTS=()   # <-- This line was missing!
 
     info "Scanning all storage drives..."
 
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         while IFS= read -r line; do
-            local fs=$(echo "$line" | awk '{print $1}')
-            local size_kb=$(echo "$line" | awk '{print $2}')
-            local avail_kb=$(echo "$line" | awk '{print $4}')
-            local mount_point=$(echo "$line" | awk '{print $6}')
+            set -- $line
+            local fs="$1"
+            local size_kb="$2"
+            local avail_kb="$4"
+            local mount_point="${@: -1}"   # Last field = mount point
 
-            # Skip virtual/temporary filesystems
+            # Skip junk
             [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
             [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
-            [[ "$mount_point" == "/boot/efi" ]] && continue  # usually too small
+            [[ "$mount_point" == "/boot/efi" ]] && continue
 
             local size_mb=$((size_kb / 1024))
             local avail_mb=$((avail_kb / 1024))
-
-            [[ $size_mb -lt 1000 ]] && continue  # ignore tiny partitions
+            (( size_mb < 1000 )) && continue
 
             total_mb=$((total_mb + size_mb))
             available_mb=$((available_mb + avail_mb))
             drive_count=$((drive_count + 1))
-            mount_points+=("$mount_point")
+            DETECTED_MOUNT_POINTS+=("$mount_point")
 
             info " Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
-
-        # Store for later use in container mounting
-        DETECTED_MOUNT_POINTS=("${mount_points[@]}")
     else
-        # Fallback for non-Linux (very rare for contributors)
         total_mb=100000
         available_mb=50000
         drive_count=1
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    if [[ $total_mb -eq 0 ]]; then
-        warn "No usable drives found, using defaults"
-        total_mb=100000
-        available_mb=50000
-        drive_count=1
-        DETECTED_MOUNT_POINTS=("/")
-    fi
+    [[ $total_mb -eq 0 ]] && total_mb=100000 available_mb=50000 drive_count=1 DETECTED_MOUNT_POINTS=("/")
 
     log "Total: $drive_count drive(s), $((total_mb/1024)) GB total, $((available_mb/1024)) GB available"
     echo "$total_mb|$available_mb|$drive_count"
@@ -379,8 +369,9 @@ setup_contributor() {
     command -v docker &>/dev/null || error "Docker not found → https://docs.docker.com/get-docker/"
     docker ps &>/dev/null || error "Docker daemon not running"
     log "Docker ready"
-
     detect_full_system
+
+    DETECTED_MOUNT_POINTS=("${DETECTED_MOUNT_POINTS[@]:-}")  # Ensure array exists even if empty
 
     # Validate token
     info "Validating API token..."
