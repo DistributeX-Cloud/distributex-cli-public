@@ -134,36 +134,57 @@ detect_storage() {
     local drive_count=0
     DETECTED_MOUNT_POINTS=()
 
+    # Send info messages to stderr to avoid capturing them
     echo -e "${CYAN}[i]${NC} Scanning all storage drives..." >&2
 
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        df -k --output=source,size,avail,target 2>/dev/null | tail -n +2 | \
-        awk 'NF>=4 {print $1, $2, $3, $4}' | while read -r fs size_kb avail_kb mount_point; do
+        while IFS= read -r line; do
+            set -- $line
+            local fs="$1"
+            local size_kb="$2"
+            local avail_kb="$4"
+            local mount_point="${@: -1}"
 
-            # Skip invalid numeric fields
-            [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
-            [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=0
-
-            # Skip virtual filesystems
-            [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs)$ ]] && continue
+            [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
             [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
             [[ "$mount_point" == "/boot/efi" ]] && continue
 
-            local size_mb=$((size_kb / 1024))
-            local avail_mb=$((avail_kb / 1024))
+            # Safe numeric defaults
+            size_kb=${size_kb:-0}
+            avail_kb=${avail_kb:-0}
 
-            [[ $size_mb -lt 1000 ]] && continue  # Skip small drives
+            # Safe division
+            local size_mb=0
+            local avail_mb=0
+            if [[ $size_kb -gt 0 ]]; then
+                size_mb=$((size_kb / 1024))
+            fi
+            if [[ $avail_kb -gt 0 ]]; then
+                avail_mb=$((avail_kb / 1024))
+            fi
+            
+            # Skip small drives
+            if [[ $size_mb -lt 1000 ]]; then
+                continue
+            fi
 
             total_mb=$((total_mb + size_mb))
             available_mb=$((available_mb + avail_mb))
             drive_count=$((drive_count + 1))
             DETECTED_MOUNT_POINTS+=("$mount_point")
 
-            local size_gb=$((size_mb / 1024))
-            local avail_gb=$((avail_mb / 1024))
-
+            local size_gb=0
+            local avail_gb=0
+            if [[ $size_mb -gt 0 ]]; then
+                size_gb=$((size_mb / 1024))
+            fi
+            if [[ $avail_mb -gt 0 ]]; then
+                avail_gb=$((avail_mb / 1024))
+            fi
+            
+            # Send to stderr
             echo -e "${CYAN}[i]${NC}  Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free" >&2
-        done
+        done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
         total_mb=100000
         available_mb=50000
@@ -171,7 +192,7 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    # Fallback
+    # Fallback if nothing detected
     if [[ $total_mb -eq 0 ]]; then
         total_mb=100000
         available_mb=50000
@@ -179,11 +200,19 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    local total_gb=$((total_mb / 1024))
-    local avail_gb=$((available_mb / 1024))
-
+    local total_gb=0
+    local avail_gb=0
+    if [[ $total_mb -gt 0 ]]; then
+        total_gb=$((total_mb / 1024))
+    fi
+    if [[ $available_mb -gt 0 ]]; then
+        avail_gb=$((available_mb / 1024))
+    fi
+    
+    # Send to stderr
     echo -e "${GREEN}[✓]${NC} Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available" >&2
-
+    
+    # Only output the pipe-separated values to stdout
     echo "$total_mb|$available_mb|$drive_count"
 }
 
@@ -426,9 +455,20 @@ setup_contributor() {
     echo
     info "Mounting detected storage drives..."
     
+    # Debug: show what we detected
+    info "Found ${#DETECTED_MOUNT_POINTS[@]} mount point(s) to attach"
+    
+    if [[ ${#DETECTED_MOUNT_POINTS[@]} -eq 0 ]]; then
+        warn "No mount points detected! Using fallback."
+        DETECTED_MOUNT_POINTS=("/")
+    fi
+    
     for mp in "${DETECTED_MOUNT_POINTS[@]}"; do
         # Skip if empty
-        [[ -z "$mp" ]] && continue
+        if [[ -z "$mp" ]]; then
+            warn "Skipping empty mount point"
+            continue
+        fi
         
         # Create a safe container path name (replace / with _)
         local safe_name=$(echo "$mp" | tr '/' '_' | sed 's/^_//')
@@ -436,12 +476,24 @@ setup_contributor() {
         
         # Create shared directory on host
         local host_dir="$mp/.distributex-shared"
+        info "Creating: $host_dir"
+        
         if mkdir -p "$host_dir" 2>/dev/null; then
             # Mount successfully created
             VOLUMES="$VOLUMES -v $host_dir:/data/host_${safe_name}:rw"
             log "Mounted: $mp → /data/host_${safe_name} (read/write access)"
         else
             warn "Could not create directory in $mp (may need sudo)"
+            # Try with sudo if available
+            if command -v sudo &>/dev/null; then
+                info "Attempting with sudo..."
+                if sudo mkdir -p "$host_dir" 2>/dev/null && sudo chown $USER:$USER "$host_dir" 2>/dev/null; then
+                    VOLUMES="$VOLUMES -v $host_dir:/data/host_${safe_name}:rw"
+                    log "Mounted: $mp → /data/host_${safe_name} (with sudo)"
+                else
+                    warn "Failed even with sudo, skipping $mp"
+                fi
+            fi
         fi
     done
 
