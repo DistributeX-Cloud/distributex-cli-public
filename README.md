@@ -9,13 +9,16 @@ Turn any heavy computation into a distributed task that runs across multiple mac
 ## 📖 Table of Contents
 
 - [Quick Start](#-quick-start)
-- [Python Guide](#-python-guide)
-- [JavaScript Guide](#-javascript-guide)
+- [Python SDK Guide](#-python-sdk-guide)
+- [JavaScript SDK Guide](#-javascript-sdk-guide)
+- [How DistributeX Works](#-how-distributex-works)
+- [Writing DistributeX Scripts](#-writing-distributex-scripts)
 - [Multi-Worker Parallel Execution](#-multi-worker-parallel-execution)
 - [Advanced Features](#-advanced-features)
-- [Examples](#-real-world-examples)
+- [Real-World Examples](#-real-world-examples)
 - [API Reference](#-api-reference)
-- [Contributing Resources](#-become-a-contributor)
+- [Become a Contributor](#-become-a-contributor)
+- [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -24,7 +27,6 @@ Turn any heavy computation into a distributed task that runs across multiple mac
 ### For Developers (Use the Network)
 
 **1. Install SDK**
-
 ```bash
 # Python
 pip install distributex-cloud
@@ -38,7 +40,6 @@ npm install distributex-cloud
 Visit [https://distributex.cloud/api-dashboard](https://distributex.cloud/api-dashboard) and generate your API key.
 
 **3. Run Your First Task**
-
 ```python
 # Python
 from distributex import DistributeX
@@ -51,12 +52,11 @@ def calculate_sum(n):
 result = dx.run(calculate_sum, args=(1000000,))
 print(result)  # Runs on the network automatically!
 ```
-
 ```javascript
 // JavaScript
-const { DistributeX } = require('distributex-cloud');
+const DistributeX = require('distributex-cloud');
 
-const dx = new DistributeX({ apiKey: 'dx_your_key_here' });
+const dx = new DistributeX('dx_your_key_here');
 
 const calculateSum = (n) => {
     let total = 0;
@@ -70,10 +70,16 @@ dx.run(calculateSum, { args: [1000000] })
 
 ---
 
-## 🐍 Python Guide
+## 🐍 Python SDK Guide
+
+### Installation
+```bash
+pip install distributex-cloud
+```
 
 ### Basic Function Execution
 
+The Python SDK automatically serializes your function, detects dependencies, and executes it on remote workers.
 ```python
 from distributex import DistributeX
 
@@ -90,11 +96,12 @@ result = dx.run(process_data, args=([1, 2, 3, 4, 5],))
 print(result)  # Output: 55
 ```
 
-### With External Libraries (Auto-Installed!)
+### Auto-Detected Dependencies
 
+The SDK automatically detects imported packages and installs them on the worker:
 ```python
 def analyze_data(data_size):
-    # These libraries are automatically installed on the worker!
+    # These libraries are automatically detected and installed!
     import numpy as np
     import pandas as pd
     
@@ -108,18 +115,23 @@ def analyze_data(data_size):
         'shape': df.shape
     }
 
-# Libraries are auto-detected and installed
+# NumPy and Pandas are auto-detected from imports
 result = dx.run(analyze_data, args=(1000,))
 print(result)
 ```
 
+**How it works:**
+1. SDK extracts function source code using `inspect.getsource()`
+2. AST parser detects all `import` and `from` statements
+3. Filters out standard library modules (os, sys, json, etc.)
+4. Installs required packages on worker before execution
+
 ### Using Classes Inside Functions
 
-**✅ CORRECT** — Classes must be **inside** the function:
-
+**✅ CORRECT** — Define classes **inside** the function:
 ```python
 def process_with_class(x, y):
-    
+    # Define class INSIDE the function
     class Calculator:
         def __init__(self, a, b):
             self.a = a
@@ -135,8 +147,7 @@ result = dx.run(process_with_class, args=(3, 4))
 print(result)  # Output: 25
 ```
 
-**❌ INCORRECT** — Classes outside won't work:
-
+**❌ INCORRECT** — Classes outside won't be serialized:
 ```python
 # ❌ This will fail!
 class Calculator:
@@ -148,8 +159,20 @@ def process_with_class(x, y):
     return Calculator(x, y).compute()  # Worker doesn't have this class!
 ```
 
-### Arguments Syntax
+### Function Execution Flow
+```python
+# 1. Function is serialized to standalone script
+# 2. Script includes: function code + arguments + dependency installer
+# 3. Script is base64 encoded and sent via API
+# 4. Worker receives task with embedded script
+# 5. Worker decodes and saves script as .py file
+# 6. Worker installs dependencies (if any)
+# 7. Worker executes: python script.py
+# 8. Worker captures result and sends back to API
+# 9. SDK polls task status and returns result
+```
 
+### Arguments Syntax
 ```python
 # Multiple arguments
 dx.run(my_function, args=(arg1, arg2, arg3))
@@ -166,14 +189,18 @@ dx.run(my_function, args=(10, 20), kwargs={'flag': True})
 
 ---
 
-## 🟦 JavaScript Guide
+## 🟦 JavaScript SDK Guide
+
+### Installation
+```bash
+npm install distributex-cloud
+```
 
 ### Basic Function Execution
-
 ```javascript
-const { DistributeX } = require('distributex-cloud');
+const DistributeX = require('distributex-cloud');
 
-const dx = new DistributeX({ apiKey: 'dx_your_key' });
+const dx = new DistributeX('dx_your_key');
 
 // ✅ Simple function
 const processData = (items) => {
@@ -185,7 +212,6 @@ dx.run(processData, { args: [[1, 2, 3, 4, 5]] })
 ```
 
 ### With NPM Packages (Auto-Installed!)
-
 ```javascript
 const analyzeData = (dataSize) => {
     // These will be auto-installed on the worker
@@ -206,8 +232,21 @@ dx.run(analyzeData, { args: [1000] })
     .then(result => console.log(result));
 ```
 
-### Arguments Syntax
+### Function Execution Flow
+```javascript
+// 1. SDK calls _createExecutableScript(func, args)
+// 2. Function.toString() converts function to string
+// 3. Script wraps function with args and result capture
+// 4. Script is base64 encoded
+// 5. Sent to API via POST /api/tasks/execute
+// 6. Worker receives task with executionScript field
+// 7. Worker decodes and saves as script.js
+// 8. Worker executes: node script.js
+// 9. Result saved to result.json
+// 10. SDK polls and returns result
+```
 
+### Arguments Syntax
 ```javascript
 // Multiple arguments
 dx.run(myFunction, { args: [arg1, arg2, arg3] });
@@ -221,84 +260,347 @@ dx.run(myFunction);
 
 ---
 
+## 🔧 How DistributeX Works
+
+### System Architecture
+```
+┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
+│             │     │                  │     │             │
+│  Developer  │────▶│   DistributeX    │◀────│   Worker    │
+│   (SDK)     │     │   Cloud API      │     │   Agent     │
+│             │     │                  │     │             │
+└─────────────┘     └──────────────────┘     └─────────────┘
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │   Database   │
+                    │  (Neon PG)   │
+                    └──────────────┘
+```
+
+### Task Lifecycle
+
+1. **Task Submission** — Developer calls `dx.run()` which serializes the function, encodes it to base64, and sends it via `POST /api/tasks/execute`
+
+2. **Task Storage** — API stores task in database with status='pending' and embedded script in `execution_config` JSON field
+
+3. **Task Distribution** — Worker polls `GET /api/workers/{id}/tasks/next` every 10 seconds looking for matching tasks based on resource requirements
+
+4. **Task Assignment** — When match found, task status changes to 'active', worker downloads script or uses embedded version
+
+5. **Execution** — Worker decodes base64 script, saves to file, installs dependencies, executes script, captures output
+
+6. **Result Reporting** — Worker calls `PUT /api/tasks/{id}/complete` with output, task status changes to 'completed'
+
+7. **Result Retrieval** — SDK polls task status, when completed calls `GET /api/tasks/{id}/result` to download result
+
+### Component Details
+
+#### SDK (Developer Side)
+
+**Python SDK** (`python/distributex/client.py`):
+- `DistributeX.run()` — Main entry point
+- `FunctionSerializer.create_executable_script()` — Converts function to standalone script
+- `ImportDetector.detect_imports()` — Uses AST to find all imported packages
+- Creates script with: imports, function body, args, execution wrapper, result capture
+- Base64 encodes entire script and sends via API
+
+**JavaScript SDK** (`javascript/distributex/index.js`):
+- `DistributeX.run()` — Main entry point
+- `_createExecutableScript()` — Wraps function with args and result handling
+- Uses `Function.toString()` to serialize function code
+- Creates standalone Node.js script with require() support
+- Base64 encodes and sends via API
+
+#### API (Cloud Infrastructure)
+
+**Task Execution** (`functions/api/tasks/execute.ts`):
+- Accepts both `snake_case` (Python) and `camelCase` (JavaScript) parameters
+- Validates authentication via JWT or API key
+- Stores task in database with embedded `executionScript`
+- Attempts immediate worker assignment if resources available
+- Returns task ID and queue position
+
+**Worker Task Polling** (`functions/api/workers/[id]/tasks/next.ts`):
+- Worker requests next task matching its capabilities
+- Filters by CPU, RAM, GPU, storage requirements
+- Returns task with embedded script or download URL
+- Updates task status to 'active' and worker status to 'busy'
+
+#### Worker Agent
+
+**Worker Agent** (`worker-agent.js`):
+- Registers with API providing system capabilities
+- Sends heartbeat every 60 seconds to stay 'online'
+- Polls for tasks every 10 seconds
+- Downloads and extracts code (supports embedded scripts, URLs, tar.gz, zip)
+- Detects runtime from file extension or task config
+- Installs dependencies automatically
+- Executes script and captures stdout/stderr
+- Reports completion or failure back to API
+
+**Task Executor** (`worker-agent.js` TaskExecutor class):
+- `execute()` — Main task execution logic
+- `downloadAndExtract()` — Handles embedded scripts, URLs, archives
+- `execPython()`, `execNode()`, `execBash()` — Runtime-specific execution
+- `execDocker()` — Docker container execution support
+- Captures output in real-time and streams to API
+
+---
+
+## 📝 Writing DistributeX Scripts
+
+### Python Script Guidelines
+
+#### ✅ DO: Keep Everything Self-Contained
+```python
+def my_distributed_function(data):
+    # Import INSIDE the function
+    import numpy as np
+    import pandas as pd
+    
+    # Define helper functions INSIDE
+    def helper(x):
+        return x * 2
+    
+    # Define classes INSIDE
+    class DataProcessor:
+        def __init__(self, values):
+            self.values = values
+        
+        def process(self):
+            return [helper(v) for v in self.values]
+    
+    # Your logic here
+    processor = DataProcessor(data)
+    result = processor.process()
+    
+    # Return JSON-serializable data
+    return {
+        'processed': result,
+        'count': len(result)
+    }
+
+# Execute
+dx.run(my_distributed_function, args=([1, 2, 3],))
+```
+
+#### ❌ DON'T: Use External Dependencies
+```python
+# ❌ Global imports won't be available on worker
+import numpy as np
+
+# ❌ External classes won't be serialized
+class MyClass:
+    pass
+
+# ❌ External functions won't be available
+def external_helper():
+    pass
+
+def my_function():
+    return external_helper()  # Will fail!
+```
+
+### JavaScript Script Guidelines
+
+#### ✅ DO: Use Self-Contained Functions
+```javascript
+const myDistributedFunction = (data) => {
+    // Require INSIDE the function
+    const _ = require('lodash');
+    
+    // Define helpers INSIDE
+    const helper = (x) => x * 2;
+    
+    // Your logic
+    const processed = data.map(helper);
+    
+    // Return serializable data
+    return {
+        processed: processed,
+        count: processed.length
+    };
+};
+
+dx.run(myDistributedFunction, { args: [[1, 2, 3]] });
+```
+
+#### ❌ DON'T: Reference External Scope
+```javascript
+// ❌ External variables won't be available
+const externalData = [1, 2, 3];
+
+// ❌ External functions won't be serialized
+const externalHelper = () => {};
+
+const myFunction = () => {
+    return externalHelper(externalData);  // Will fail!
+};
+```
+
+### Script Execution Environment
+
+When your script executes on a worker:
+
+**Available:**
+- Standard library (Python: os, sys, json; Node: fs, path, crypto)
+- Auto-installed packages (detected from imports)
+- Function arguments (passed via JSON)
+- Environment variables (if provided)
+
+**Not Available:**
+- Parent scope variables or functions
+- External class definitions
+- Global state from your local machine
+- Local file system (unless uploaded as input files)
+
+### Return Value Guidelines
+
+**What you can return:**
+- Strings, numbers, booleans
+- Lists/arrays
+- Dictionaries/objects
+- JSON-serializable data structures
+
+**What to avoid:**
+- File objects or handles
+- Network connections
+- Complex objects with circular references
+- Binary data (use base64 encoding if needed)
+
+### Resource Requirements
+
+Specify resource needs based on your script:
+```python
+dx.run(
+    my_function,
+    args=(data,),
+    cpu_per_worker=4,      # CPU cores needed
+    ram_per_worker=8192,   # RAM in MB (8GB)
+    gpu=True,              # Requires GPU
+    cuda=True,             # Requires CUDA support
+    timeout=7200           # Max 2 hours
+)
+```
+
+**Resource Caps** (enforced by API):
+- Max workers: 10
+- Max CPU per worker: 16 cores
+- Max RAM per worker: 32GB
+- Max timeout: 24 hours
+- Max priority: 10
+
+---
+
 ## ⚡ Multi-Worker Parallel Execution
 
 **Heavy tasks automatically use multiple workers to run faster!**
 
-### Python — Parallel Data Processing
+### How Parallelization Works
 
+When you specify `workers > 1`, the system:
+
+1. **Replicates Task** — Same script/function sent to multiple workers
+2. **Parallel Execution** — Each worker executes independently
+3. **Individual Results** — Each worker returns its result
+4. **No Automatic Merging** — Results come back as individual task completions
+
+**Note:** Current implementation runs identical copies on each worker. For data partitioning, you need to manually split your data and submit separate tasks.
+
+### Python Example
 ```python
 from distributex import DistributeX
 
 dx = DistributeX(api_key="dx_your_key")
 
-def process_large_dataset(data):
+def process_large_dataset(chunk_id, total_chunks):
     import numpy as np
     
-    # Process a chunk of data
+    # Each worker processes its chunk
+    chunk_size = 1000000 // total_chunks
+    start = chunk_id * chunk_size
+    end = start + chunk_size
+    
+    # Heavy computation on this chunk
     result = []
-    for item in data:
-        # Heavy computation
-        processed = np.sin(item) * np.cos(item) * np.sqrt(item)
+    for i in range(start, end):
+        processed = np.sin(i) * np.cos(i)
         result.append(processed)
     
-    return result
+    return {
+        'chunk_id': chunk_id,
+        'processed_count': len(result),
+        'sum': sum(result)
+    }
 
-# This will automatically split across 4 workers!
-large_data = list(range(1000000))
-result = dx.run(
-    process_large_dataset, 
-    args=(large_data,),
-    workers=4,              # ⚡ Use 4 workers simultaneously
-    cpu_per_worker=4,       # Each worker gets 4 CPU cores
-    ram_per_worker=8192     # Each worker gets 8GB RAM
-)
+# Submit multiple tasks (one per chunk)
+tasks = []
+num_workers = 4
 
-print(f"Processed {len(result)} items using 4 workers!")
+for i in range(num_workers):
+    task = dx.run(
+        process_large_dataset,
+        args=(i, num_workers),
+        cpu_per_worker=4,
+        wait=False  # Don't wait, submit all tasks
+    )
+    tasks.append(task)
+
+# Wait for all tasks and collect results
+results = []
+for task in tasks:
+    result = dx.get_result(task.id)
+    results.append(result)
+
+# Merge results
+total_sum = sum(r['sum'] for r in results)
+print(f"Processed {sum(r['processed_count'] for r in results)} items")
+print(f"Total sum: {total_sum}")
 ```
 
-### JavaScript — Parallel Processing
-
+### JavaScript Example
 ```javascript
-const { DistributeX } = require('distributex-cloud');
+const DistributeX = require('distributex-cloud');
+const dx = new DistributeX('dx_your_key');
 
-const dx = new DistributeX({ apiKey: 'dx_your_key' });
-
-const processChunk = (data) => {
-    // Heavy computation on a data chunk
-    return data.map(item => {
-        return Math.sin(item) * Math.cos(item) * Math.sqrt(item);
-    });
+const processChunk = (chunkId, totalChunks) => {
+    const chunkSize = Math.floor(1000000 / totalChunks);
+    const start = chunkId * chunkSize;
+    const end = start + chunkSize;
+    
+    let sum = 0;
+    for (let i = start; i < end; i++) {
+        sum += Math.sin(i) * Math.cos(i);
+    }
+    
+    return {
+        chunkId: chunkId,
+        processedCount: chunkSize,
+        sum: sum
+    };
 };
 
-// Automatically splits across 4 workers
-const largeData = Array.from({ length: 1000000 }, (_, i) => i);
+// Submit multiple tasks
+const numWorkers = 4;
+const promises = [];
 
-dx.run(processChunk, {
-    args: [largeData],
-    workers: 4,              // ⚡ 4 workers simultaneously
-    cpuPerWorker: 4,         // 4 CPU cores per worker
-    ramPerWorker: 8192       // 8GB RAM per worker
-}).then(result => {
-    console.log(`Processed ${result.length} items using 4 workers!`);
+for (let i = 0; i < numWorkers; i++) {
+    const promise = dx.run(processChunk, {
+        args: [i, numWorkers],
+        cpuPerWorker: 4
+    });
+    promises.push(promise);
+}
+
+// Wait for all results
+Promise.all(promises).then(results => {
+    const totalSum = results.reduce((sum, r) => sum + r.sum, 0);
+    const totalCount = results.reduce((sum, r) => sum + r.processedCount, 0);
+    
+    console.log(`Processed ${totalCount} items using ${numWorkers} workers`);
+    console.log(`Total sum: ${totalSum}`);
 });
-```
-
-### How It Works
-
-When you specify `workers > 1`:
-
-1. **Automatic Splitting**: Your data is automatically divided into chunks
-2. **Parallel Execution**: Each chunk runs on a different worker machine simultaneously
-3. **Result Merging**: Results are automatically combined in the correct order
-4. **Faster Processing**: 4 workers = ~4x faster (depending on task)
-
-```python
-# Single worker (slower)
-result = dx.run(my_function, args=(data,), workers=1)
-
-# Multi-worker (faster!)
-result = dx.run(my_function, args=(data,), workers=4)
 ```
 
 ---
@@ -306,20 +608,22 @@ result = dx.run(my_function, args=(data,), workers=4)
 ## 🎨 Advanced Features
 
 ### GPU Acceleration
-
 ```python
 def train_model(epochs):
     import tensorflow as tf
     
     # Your GPU-accelerated code
-    model = tf.keras.Sequential([...])
-    model.compile(...)
-    model.fit(...)
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy')
+    # ... training code ...
     
-    return model.evaluate()
+    return {'accuracy': 0.95}
 
 result = dx.run(
-    train_model, 
+    train_model,
     args=(100,),
     gpu=True,              # Require GPU
     cuda=True,             # Require CUDA support
@@ -327,32 +631,7 @@ result = dx.run(
 )
 ```
 
-### Resource Allocation
-
-```python
-result = dx.run(
-    my_function,
-    args=(data,),
-    
-    # Parallelization
-    workers=4,                  # Number of workers
-    
-    # Resources per worker
-    cpu_per_worker=8,           # CPU cores
-    ram_per_worker=16384,       # RAM in MB (16GB)
-    
-    # GPU requirements
-    gpu=True,                   # Need GPU
-    cuda=True,                  # Need CUDA
-    
-    # Timing
-    timeout=7200,               # Max 2 hours
-    priority=8                  # Higher priority (1-10)
-)
-```
-
 ### Async Execution (Fire and Forget)
-
 ```python
 # Submit without waiting
 task = dx.run(
@@ -372,8 +651,36 @@ if status.status == 'completed':
     result = dx.get_result(task.id)
 ```
 
-### Network Statistics
+### Real-Time Output Streaming
 
+The Python SDK v2.0+ supports live output streaming:
+```python
+def long_running_task():
+    import time
+    
+    print("Starting computation...")
+    for i in range(10):
+        time.sleep(1)
+        print(f"Progress: {i+1}/10")  # Streamed to developer terminal!
+    
+    print("Done!")
+    return "Success"
+
+# Live output appears in your terminal as the worker executes
+result = dx.run(
+    long_running_task,
+    wait=True,
+    stream_output=True  # Enable real-time streaming
+)
+```
+
+**How it works:**
+1. Worker captures stdout/stderr
+2. Worker sends batches to `POST /api/tasks/{id}/output`
+3. SDK polls `GET /api/tasks/{id}/output?since={lastId}`
+4. Output appears in developer's terminal in real-time
+
+### Network Statistics
 ```python
 stats = dx.network_stats()
 
@@ -387,7 +694,6 @@ print(f"Available GPUs: {stats['totalGpus']}")
 ## 💡 Real-World Examples
 
 ### 1. Image Processing Pipeline
-
 ```python
 from distributex import DistributeX
 
@@ -416,25 +722,24 @@ def process_images(image_urls):
     
     return results
 
-# Process 1000 images across 10 workers
+# Process 1000 images
 image_urls = [...]  # Your image URLs
 result = dx.run(
     process_images,
     args=(image_urls,),
-    workers=10,
+    workers=1,  # Submit as single task
     ram_per_worker=4096
 )
 ```
 
 ### 2. Machine Learning Training
-
 ```python
-def train_neural_network(data, labels):
+def train_neural_network(training_data, labels):
     import tensorflow as tf
     import numpy as np
     
     # Convert data
-    X = np.array(data)
+    X = np.array(training_data)
     y = np.array(labels)
     
     # Build model
@@ -470,8 +775,7 @@ result = dx.run(
 )
 ```
 
-### 3. Financial Data Analysis
-
+### 3. Data Analysis at Scale
 ```python
 def analyze_market_data(stock_symbols):
     import pandas as pd
@@ -481,63 +785,25 @@ def analyze_market_data(stock_symbols):
     
     for symbol in stock_symbols:
         # Simulate fetching data
+        # In reality, you'd use yfinance or another API
         data = fetch_stock_data(symbol)
         
         # Calculate metrics
         df = pd.DataFrame(data)
         results[symbol] = {
-            'mean': df['price'].mean(),
-            'std': df['price'].std(),
+            'mean': float(df['price'].mean()),
+            'std': float(df['price'].std()),
             'trend': 'up' if df['price'].iloc[-1] > df['price'].iloc[0] else 'down'
         }
     
     return results
 
-# Analyze 100 stocks across 5 workers
-stocks = ['AAPL', 'GOOGL', 'MSFT', ...]  # 100 symbols
+# Analyze stocks
+stocks = ['AAPL', 'GOOGL', 'MSFT']  # Your stock symbols
 result = dx.run(
     analyze_market_data,
     args=(stocks,),
-    workers=5,
     cpu_per_worker=4
-)
-```
-
-### 4. Text Processing at Scale
-
-```python
-def process_documents(documents):
-    import re
-    from collections import Counter
-    
-    results = []
-    
-    for doc in documents:
-        # Clean text
-        text = doc['content'].lower()
-        text = re.sub(r'[^\w\s]', '', text)
-        
-        # Analyze
-        words = text.split()
-        word_count = Counter(words)
-        
-        results.append({
-            'id': doc['id'],
-            'word_count': len(words),
-            'unique_words': len(word_count),
-            'top_words': word_count.most_common(10)
-        })
-    
-    return results
-
-# Process 10,000 documents across 8 workers
-documents = [...]  # Your documents
-result = dx.run(
-    process_documents,
-    args=(documents,),
-    workers=8,
-    cpu_per_worker=4,
-    ram_per_worker=8192
 )
 ```
 
@@ -553,8 +819,7 @@ Initialize the client.
 
 **Parameters:**
 - `api_key` (str): Your API key from dashboard
-- `base_url` (str, optional): API endpoint (default: production)
-
+- `base_url` (str, optional): API endpoint (default: `https://distributex.cloud`)
 ```python
 dx = DistributeX(api_key="dx_your_key")
 ```
@@ -569,26 +834,29 @@ Execute a function on the network.
 - `func` (callable): Function to execute
 - `args` (tuple): Positional arguments
 - `kwargs` (dict): Keyword arguments
-- `workers` (int): Number of workers for parallel execution (default: 1)
-- `cpu_per_worker` (int): CPU cores per worker (default: 2)
-- `ram_per_worker` (int): RAM in MB per worker (default: 2048)
+- `workers` (int): Number of workers for parallel execution (default: 1, max: 10)
+- `cpu_per_worker` (int): CPU cores per worker (default: 2, max: 16)
+- `ram_per_worker` (int): RAM in MB per worker (default: 2048, max: 32768)
 - `gpu` (bool): Require GPU (default: False)
 - `cuda` (bool): Require CUDA (default: False)
-- `timeout` (int): Max seconds (default: 3600)
+- `storage` (int): Storage in GB (default: 10)
+- `timeout` (int): Max seconds (default: 3600, max: 86400)
 - `priority` (int): Priority 1-10 (default: 5)
 - `wait` (bool): Wait for completion (default: True)
+- `stream_output` (bool): Enable real-time output streaming (default: True)
+- `packages` (list): Manual package list (overrides auto-detection)
 
 **Returns:**
 - Result of function if `wait=True`
-- Task object if `wait=False`
-
+- Task object with `id` and `status` if `wait=False`
 ```python
 result = dx.run(
     my_function,
     args=(arg1, arg2),
-    workers=4,
+    workers=1,
     cpu_per_worker=8,
-    gpu=True
+    gpu=True,
+    stream_output=True
 )
 ```
 
@@ -598,11 +866,11 @@ result = dx.run(
 
 Get task status.
 
-**Returns:** Task object with `status`, `progress`, `error`
-
+**Returns:** Task object with `id`, `status`, `progress`, `error`
 ```python
 status = dx.get_task('task-123')
 print(status.status)  # 'pending', 'active', 'completed', 'failed'
+print(status.progress)  # Progress percentage (0-100)
 ```
 
 ---
@@ -611,11 +879,15 @@ print(status.status)  # 'pending', 'active', 'completed', 'failed'
 
 Download task result.
 
-**Returns:** Task result data
-
+**Returns:** Task result data (automatically unwrapped from API response)
 ```python
 result = dx.get_result('task-123')
 ```
+
+**Result Format:**
+- If stored in database: Returns the actual result value (unwrapped)
+- If stored in file storage: Redirects to download URL
+- Automatically extracts `result` or `output` field from JSON responses
 
 ---
 
@@ -624,25 +896,24 @@ result = dx.get_result('task-123')
 Get network statistics.
 
 **Returns:** Dictionary with worker/resource stats
-
 ```python
 stats = dx.network_stats()
 print(stats['activeWorkers'])
+print(stats['totalCpuCores'])
+print(stats['availableCpuCores'])
 ```
 
 ---
 
 ### JavaScript SDK
 
-#### `new DistributeX({ apiKey, baseUrl })`
+#### `new DistributeX(apiKey, baseUrl)`
 
 Initialize the client.
-
 ```javascript
-const dx = new DistributeX({ 
-    apiKey: 'dx_your_key',
-    baseUrl: 'https://distributex.cloud'  // optional
-});
+const dx = new DistributeX('dx_your_key');
+// Or with custom URL
+const dx = new DistributeX('dx_your_key', 'https://distributex.cloud');
 ```
 
 ---
@@ -653,32 +924,32 @@ Execute a function on the network.
 
 **Options:**
 - `args` (array): Function arguments
-- `workers` (number): Number of workers (default: 1)
-- `cpuPerWorker` (number): CPU cores per worker (default: 2)
-- `ramPerWorker` (number): RAM in MB per worker (default: 2048)
+- `workers` (number): Number of workers (default: 1, max: 10)
+- `cpuPerWorker` (number): CPU cores per worker (default: 2, max: 16)
+- `ramPerWorker` (number): RAM in MB per worker (default: 2048, max: 32768)
 - `gpu` (boolean): Require GPU (default: false)
 - `cuda` (boolean): Require CUDA (default: false)
-- `timeout` (number): Max seconds (default: 3600)
+- `timeout` (number): Max seconds (default: 3600, max: 86400)
 - `wait` (boolean): Wait for completion (default: true)
-
 ```javascript
 const result = await dx.run(myFunction, {
     args: [arg1, arg2],
-    workers: 4,
     cpuPerWorker: 8,
     gpu: true
 });
 ```
+
+**Note:** JavaScript SDK accepts both `camelCase` (shown above) and `snake_case` (Python style) for compatibility.
 
 ---
 
 #### `dx.getTask(taskId)`
 
 Get task status.
-
 ```javascript
 const status = await dx.getTask('task-123');
 console.log(status.status);
+console.log(status.progressPercent);
 ```
 
 ---
@@ -686,10 +957,10 @@ console.log(status.status);
 #### `dx.networkStats()`
 
 Get network statistics.
-
 ```javascript
 const stats = await dx.networkStats();
 console.log(stats.activeWorkers);
+console.log(stats.totalCpuCores);
 ```
 
 ---
@@ -699,28 +970,27 @@ console.log(stats.activeWorkers);
 **Share your computer's resources and earn rewards!**
 
 ### Quick Setup (One Command)
-
 ```bash
 curl -sSL https://raw.githubusercontent.com/DistributeX-Cloud/distributex-cli-public/refs/heads/main/public/install.sh | bash
 ```
-Also check the guide on https://distributex.cloud/docs for a more straight forward guide for device type. 
 
 The installer will:
 1. Detect your system resources (CPU, RAM, GPU)
 2. Install Docker worker container
 3. Connect to the network
-4. Start earning for shared resources
+4. Start accepting tasks
 
 ### What Gets Shared?
 
 You control what percentage of your resources to share:
-- **CPU**: 90% by default
-- **RAM**: 80% by default
+- **CPU**: 90% by default (configurable)
+- **RAM**: 80% by default (configurable)
 - **GPU**: 70% by default (if available)
-- **Storage**: 50% by default
+- **Storage**: 50% by default (configurable)
+
+These percentages are set during registration and can be adjusted.
 
 ### Monitor Your Worker
-
 ```bash
 # Check status
 docker ps | grep distributex-worker
