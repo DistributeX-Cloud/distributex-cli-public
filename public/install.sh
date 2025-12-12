@@ -182,8 +182,7 @@ detect_storage() {
                 avail_gb=$((avail_mb / 1024))
             fi
             
-            # Send to stderr - escape mount point properly
-            local safe_mp="${mount_point//\//\\/}"
+            # Send to stderr
             echo -e "${CYAN}[i]${NC}  Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free" >&2
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
