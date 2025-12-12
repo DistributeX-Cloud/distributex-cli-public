@@ -134,7 +134,8 @@ detect_storage() {
     local drive_count=0
     DETECTED_MOUNT_POINTS=()
 
-    info "Scanning all storage drives..."
+    # Send info messages to stderr to avoid capturing them
+    echo -e "${CYAN}[i]${NC} Scanning all storage drives..." >&2
 
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         while IFS= read -r line; do
@@ -181,7 +182,8 @@ detect_storage() {
                 avail_gb=$((avail_mb / 1024))
             fi
             
-            info " Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free"
+            # Send to stderr
+            echo -e "${CYAN}[i]${NC}  Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free" >&2
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
         total_mb=100000
@@ -207,7 +209,10 @@ detect_storage() {
         avail_gb=$((available_mb / 1024))
     fi
     
-    log "Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available"
+    # Send to stderr
+    echo -e "${GREEN}[✓]${NC} Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available" >&2
+    
+    # Only output the pipe-separated values to stdout
     echo "$total_mb|$available_mb|$drive_count"
 }
 
@@ -272,10 +277,16 @@ detect_full_system() {
         info "No supported GPU detected"
     fi
 
+    # Capture storage detection output (functions outputs to stdout, logs to stderr)
     local storage=$(detect_storage)
     STORAGE_TOTAL=$(echo "$storage" | cut -d'|' -f1)
     STORAGE_AVAILABLE=$(echo "$storage" | cut -d'|' -f2)
     DRIVE_COUNT=$(echo "$storage" | cut -d'|' -f3)
+    
+    # Validate numeric values
+    [[ -z "$STORAGE_TOTAL" || ! "$STORAGE_TOTAL" =~ ^[0-9]+$ ]] && STORAGE_TOTAL=0
+    [[ -z "$STORAGE_AVAILABLE" || ! "$STORAGE_AVAILABLE" =~ ^[0-9]+$ ]] && STORAGE_AVAILABLE=0
+    [[ -z "$DRIVE_COUNT" || ! "$DRIVE_COUNT" =~ ^[0-9]+$ ]] && DRIVE_COUNT=0
     
     local storage_total_gb=0
     if [[ $STORAGE_TOTAL -gt 0 ]]; then
