@@ -134,57 +134,36 @@ detect_storage() {
     local drive_count=0
     DETECTED_MOUNT_POINTS=()
 
-    # Send info messages to stderr to avoid capturing them
     echo -e "${CYAN}[i]${NC} Scanning all storage drives..." >&2
 
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        while IFS= read -r line; do
-            set -- $line
-            local fs="$1"
-            local size_kb="$2"
-            local avail_kb="$4"
-            local mount_point="${@: -1}"
+        df -k --output=source,size,avail,target 2>/dev/null | tail -n +2 | \
+        awk 'NF>=4 {print $1, $2, $3, $4}' | while read -r fs size_kb avail_kb mount_point; do
 
-            [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
+            # Skip invalid numeric fields
+            [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+            [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=0
+
+            # Skip virtual filesystems
+            [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs)$ ]] && continue
             [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
             [[ "$mount_point" == "/boot/efi" ]] && continue
 
-            # Safe numeric defaults
-            size_kb=${size_kb:-0}
-            avail_kb=${avail_kb:-0}
+            local size_mb=$((size_kb / 1024))
+            local avail_mb=$((avail_kb / 1024))
 
-            # Safe division
-            local size_mb=0
-            local avail_mb=0
-            if [[ $size_kb -gt 0 ]]; then
-                size_mb=$((size_kb / 1024))
-            fi
-            if [[ $avail_kb -gt 0 ]]; then
-                avail_mb=$((avail_kb / 1024))
-            fi
-            
-            # Skip small drives
-            if [[ $size_mb -lt 1000 ]]; then
-                continue
-            fi
+            [[ $size_mb -lt 1000 ]] && continue  # Skip small drives
 
             total_mb=$((total_mb + size_mb))
             available_mb=$((available_mb + avail_mb))
             drive_count=$((drive_count + 1))
             DETECTED_MOUNT_POINTS+=("$mount_point")
 
-            local size_gb=0
-            local avail_gb=0
-            if [[ $size_mb -gt 0 ]]; then
-                size_gb=$((size_mb / 1024))
-            fi
-            if [[ $avail_mb -gt 0 ]]; then
-                avail_gb=$((avail_mb / 1024))
-            fi
-            
-            # Send to stderr
+            local size_gb=$((size_mb / 1024))
+            local avail_gb=$((avail_mb / 1024))
+
             echo -e "${CYAN}[i]${NC}  Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free" >&2
-        done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
+        done
     else
         total_mb=100000
         available_mb=50000
@@ -192,7 +171,7 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    # Fallback if nothing detected
+    # Fallback
     if [[ $total_mb -eq 0 ]]; then
         total_mb=100000
         available_mb=50000
@@ -200,19 +179,11 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    local total_gb=0
-    local avail_gb=0
-    if [[ $total_mb -gt 0 ]]; then
-        total_gb=$((total_mb / 1024))
-    fi
-    if [[ $available_mb -gt 0 ]]; then
-        avail_gb=$((available_mb / 1024))
-    fi
-    
-    # Send to stderr
+    local total_gb=$((total_mb / 1024))
+    local avail_gb=$((available_mb / 1024))
+
     echo -e "${GREEN}[✓]${NC} Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available" >&2
-    
-    # Only output the pipe-separated values to stdout
+
     echo "$total_mb|$available_mb|$drive_count"
 }
 
