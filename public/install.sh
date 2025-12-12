@@ -1,3 +1,4 @@
+#!/bin/bash
 set -e
 
 # CONFIG
@@ -30,7 +31,7 @@ show_banner() {
  ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝
  
 
-          ─────────────────── Universal Installer v9.0 ───────────────────
+          ─────────────────── Universal Installer v9.1 ───────────────────
                               Get ready to contribute
                         Contribute to provide for developers
           ────────────────────────────────────────────────────────────────
@@ -96,13 +97,14 @@ detect_ram() {
         # Windows fallback
         if [[ $total_mb -eq 0 ]] && command -v wmic &>/dev/null; then
             total_mb=$(wmic computersystem get totalphysicalmemory 2>/dev/null | grep -v "TotalPhysicalMemory" | awk '{printf "%.0f", $1/1024/1024}')
-            available_mb=$((total_mb * 7 / 10))
+            available_mb=$(echo "$total_mb * 0.7" | bc -l 2>/dev/null | awk '{printf "%.0f", $1}' || echo "$((total_mb * 7 / 10))")
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
-        total_mb=$(( $(sysctl -n hw.memsize) / 1024 / 1024 ))
-        available_mb=$((total_mb * 7 / 10))
+        total_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8589934592) / 1024 / 1024 ))
+        available_mb=$(echo "$total_mb * 0.7" | bc -l 2>/dev/null | awk '{printf "%.0f", $1}' || echo "$((total_mb * 7 / 10))")
     fi
     [[ $total_mb -eq 0 ]] && total_mb=8192
+    [[ $available_mb -eq 0 ]] && available_mb=$(echo "$total_mb * 0.7" | bc -l 2>/dev/null | awk '{printf "%.0f", $1}' || echo "$((total_mb * 7 / 10))")
     echo "$total_mb|$available_mb"
 }
 
@@ -130,7 +132,7 @@ detect_storage() {
     local total_mb=0
     local available_mb=0
     local drive_count=0
-    DETECTED_MOUNT_POINTS=()   # Initialize array
+    DETECTED_MOUNT_POINTS=()
 
     info "Scanning all storage drives..."
 
@@ -150,17 +152,35 @@ detect_storage() {
             size_kb=${size_kb:-0}
             avail_kb=${avail_kb:-0}
 
-            local size_mb=$((size_kb / 1024))
-            local avail_mb=$((avail_kb / 1024))
-            (( size_mb < 1000 )) && continue
+            # Safe division
+            local size_mb=0
+            local avail_mb=0
+            if [[ $size_kb -gt 0 ]]; then
+                size_mb=$((size_kb / 1024))
+            fi
+            if [[ $avail_kb -gt 0 ]]; then
+                avail_mb=$((avail_kb / 1024))
+            fi
+            
+            # Skip small drives
+            if [[ $size_mb -lt 1000 ]]; then
+                continue
+            fi
 
             total_mb=$((total_mb + size_mb))
             available_mb=$((available_mb + avail_mb))
             drive_count=$((drive_count + 1))
             DETECTED_MOUNT_POINTS+=("$mount_point")
 
-            local size_gb=$(( size_mb > 0 ? size_mb/1024 : 0 ))
-            local avail_gb=$(( avail_mb > 0 ? avail_mb/1024 : 0 ))
+            local size_gb=0
+            local avail_gb=0
+            if [[ $size_mb -gt 0 ]]; then
+                size_gb=$((size_mb / 1024))
+            fi
+            if [[ $avail_mb -gt 0 ]]; then
+                avail_gb=$((avail_mb / 1024))
+            fi
+            
             info " Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free"
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
@@ -178,8 +198,15 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    local total_gb=$(( total_mb/1024 ))
-    local avail_gb=$(( available_mb/1024 ))
+    local total_gb=0
+    local avail_gb=0
+    if [[ $total_mb -gt 0 ]]; then
+        total_gb=$((total_mb / 1024))
+    fi
+    if [[ $available_mb -gt 0 ]]; then
+        avail_gb=$((available_mb / 1024))
+    fi
+    
     log "Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available"
     echo "$total_mb|$available_mb|$drive_count"
 }
@@ -199,7 +226,7 @@ detect_architecture() {
         x86_64)     echo "x64" ;;
         aarch64|arm64) echo "arm64" ;;
         armv7l)     echo "armv7" ;;
-        AMD64)      echo "x64" ;;  # Windows
+        AMD64)      echo "x64" ;;
         *)          echo "$arch" ;;
     esac
 }
@@ -218,7 +245,16 @@ detect_full_system() {
     local ram=$(detect_ram)
     RAM_TOTAL=$(echo "$ram" | cut -d'|' -f1)
     RAM_AVAILABLE=$(echo "$ram" | cut -d'|' -f2)
-    log "RAM: $((RAM_TOTAL/1024)) GB total ($((RAM_AVAILABLE/1024)) GB available)"
+    
+    local ram_total_gb=0
+    local ram_avail_gb=0
+    if [[ $RAM_TOTAL -gt 0 ]]; then
+        ram_total_gb=$((RAM_TOTAL / 1024))
+    fi
+    if [[ $RAM_AVAILABLE -gt 0 ]]; then
+        ram_avail_gb=$((RAM_AVAILABLE / 1024))
+    fi
+    log "RAM: ${ram_total_gb} GB total (${ram_avail_gb} GB available)"
 
     local gpu=$(detect_gpu)
     GPU_AVAILABLE=$(echo "$gpu" | cut -d'|' -f1)
@@ -236,13 +272,16 @@ detect_full_system() {
         info "No supported GPU detected"
     fi
 
-    # ===== MULTI-DRIVE DETECTION =====
     local storage=$(detect_storage)
     STORAGE_TOTAL=$(echo "$storage" | cut -d'|' -f1)
     STORAGE_AVAILABLE=$(echo "$storage" | cut -d'|' -f2)
     DRIVE_COUNT=$(echo "$storage" | cut -d'|' -f3)
     
-    log "Storage: $((STORAGE_TOTAL/1024)) GB total across $DRIVE_COUNT drive(s)"
+    local storage_total_gb=0
+    if [[ $STORAGE_TOTAL -gt 0 ]]; then
+        storage_total_gb=$((STORAGE_TOTAL / 1024))
+    fi
+    log "Storage: ${storage_total_gb} GB total across $DRIVE_COUNT drive(s)"
 
     PLATFORM=$(detect_platform)
     ARCH=$(detect_architecture)
@@ -384,14 +423,12 @@ setup_contributor() {
     log "Docker ready"
     detect_full_system
 
-    DETECTED_MOUNT_POINTS=("${DETECTED_MOUNT_POINTS[@]:-}")  # Ensure array exists even if empty
+    DETECTED_MOUNT_POINTS=("${DETECTED_MOUNT_POINTS[@]:-}")
 
-    # Validate token
     info "Validating API token..."
     local resp=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$API_URL/api/auth/user")
     [[ $(safe_jq '.id' "$resp") == "null" ]] && error "Invalid token"
 
-    # Stop old container
     docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$" && {
         info "Removing old worker..."
         docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -401,17 +438,14 @@ setup_contributor() {
     info "Pulling latest worker image..."
     docker pull "$DOCKER_IMAGE" >/dev/null
 
-    # === BUILD VOLUME MOUNTS FOR ALL DETECTED DRIVES ===
     VOLUMES="-v $CONFIG_DIR:/config:ro"
     for mp in "${DETECTED_MOUNT_POINTS[@]}"; do
-        # Create a safe subfolder inside container
         safe_name=$(echo "$mp" | tr '/' '_')
         mkdir -p "$mp/.distributex-shared" 2>/dev/null || true
         VOLUMES="$VOLUMES -v $mp/.distributex-shared:/data/host$safe_name:rw"
         log "Attached: $mp → /data/host$safe_name (full access)"
     done
 
-    # Optional: Ask for raw disk (advanced users only)
     if [[ "$PLATFORM" == "linux" ]]; then
         echo
         read -p "Attach ENTIRE raw disks (e.g. /dev/sdb)? VERY DANGEROUS - only empty drives! (y/N): " raw </dev/tty
@@ -490,7 +524,7 @@ setup_developer() {
         return 0
     fi
 
-        has_key=$(echo "$body" | jq -r '.hasKey // false')
+    has_key=$(echo "$body" | jq -r '.hasKey // false')
     if [[ "$has_key" == "true" ]]; then
         prefix=$(echo "$body" | jq -r '.prefix // "xxxx"')
         suffix=$(echo "$body" | jq -r '.suffix // "xxxx"')
@@ -504,6 +538,7 @@ setup_developer() {
         section "Developer Setup Complete (existing key)"
         return 0
     fi
+    
     warn "No API key found."
     echo
     echo "Please generate one in your developer dashboard:"
@@ -534,7 +569,6 @@ check_requirements() {
         echo " • Docker: https://docs.docker.com/get-docker/"
         echo
         read -p "Press Enter when ready, or Ctrl+C to abort..." </dev/tty
-        # Re-check
         for cmd in curl jq docker; do
             command -v $cmd &>/dev/null || error "$cmd is required but still not found"
         done
@@ -558,7 +592,7 @@ main() {
 
     echo
     echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${GREEN}║          DistributeX Universal Installer v9.0           ║${NC}"
+    echo -e "${BOLD}${GREEN}║          DistributeX Universal Installer v9.1           ║${NC}"
     echo -e "${BOLD}${GREEN}║                    Installation Complete!               ║${NC}"
     echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
     echo
