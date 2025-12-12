@@ -130,7 +130,7 @@ detect_storage() {
     local total_mb=0
     local available_mb=0
     local drive_count=0
-    DETECTED_MOUNT_POINTS=()   # <-- This line was missing!
+    DETECTED_MOUNT_POINTS=()   # Initialize array
 
     info "Scanning all storage drives..."
 
@@ -142,10 +142,14 @@ detect_storage() {
             local avail_kb="$4"
             local mount_point="${@: -1}"   # Last field = mount point
 
-            # Skip junk
+            # Skip junk filesystems
             [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
             [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
             [[ "$mount_point" == "/boot/efi" ]] && continue
+
+            # Ensure numeric values
+            size_kb=${size_kb:-0}
+            avail_kb=${avail_kb:-0}
 
             local size_mb=$((size_kb / 1024))
             local avail_mb=$((avail_kb / 1024))
@@ -159,13 +163,20 @@ detect_storage() {
             info " Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
+        # Default for non-Linux systems
         total_mb=100000
         available_mb=50000
         drive_count=1
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    [[ $total_mb -eq 0 ]] && total_mb=100000 available_mb=50000 drive_count=1 DETECTED_MOUNT_POINTS=("/")
+    # Fix if no drives were detected
+    if [[ $total_mb -eq 0 ]]; then
+        total_mb=100000
+        available_mb=50000
+        drive_count=1
+        DETECTED_MOUNT_POINTS=("/")
+    fi
 
     log "Total: $drive_count drive(s), $((total_mb/1024)) GB total, $((available_mb/1024)) GB available"
     echo "$total_mb|$available_mb|$drive_count"
@@ -223,7 +234,7 @@ detect_full_system() {
         info "No supported GPU detected"
     fi
 
-    # ===== MULTI-DRIVE DETECTION (NEW!) =====
+    # ===== MULTI-DRIVE DETECTION =====
     local storage=$(detect_storage)
     STORAGE_TOTAL=$(echo "$storage" | cut -d'|' -f1)
     STORAGE_AVAILABLE=$(echo "$storage" | cut -d'|' -f2)
