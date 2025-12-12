@@ -140,14 +140,13 @@ detect_storage() {
             local fs="$1"
             local size_kb="$2"
             local avail_kb="$4"
-            local mount_point="${@: -1}"   # Last field = mount point
+            local mount_point="${@: -1}"
 
-            # Skip junk filesystems
             [[ "$fs" =~ ^(tmpfs|devtmpfs|udev|overlay|squashfs|efivarfs) ]] && continue
             [[ "$mount_point" =~ ^/proc|^/sys|^/dev|^/run|^/snap ]] && continue
             [[ "$mount_point" == "/boot/efi" ]] && continue
 
-            # Ensure numeric values
+            # Safe numeric defaults
             size_kb=${size_kb:-0}
             avail_kb=${avail_kb:-0}
 
@@ -160,17 +159,18 @@ detect_storage() {
             drive_count=$((drive_count + 1))
             DETECTED_MOUNT_POINTS+=("$mount_point")
 
-            info " Drive $drive_count: $mount_point → $((size_mb/1024)) GB total, $((avail_mb/1024)) GB free"
+            local size_gb=$(( size_mb > 0 ? size_mb/1024 : 0 ))
+            local avail_gb=$(( avail_mb > 0 ? avail_mb/1024 : 0 ))
+            info " Drive $drive_count: $mount_point → ${size_gb} GB total, ${avail_gb} GB free"
         done < <(df -k --output=source,size,avail,target 2>/dev/null | tail -n +2)
     else
-        # Default for non-Linux systems
         total_mb=100000
         available_mb=50000
         drive_count=1
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    # Fix if no drives were detected
+    # Fallback if nothing detected
     if [[ $total_mb -eq 0 ]]; then
         total_mb=100000
         available_mb=50000
@@ -178,7 +178,9 @@ detect_storage() {
         DETECTED_MOUNT_POINTS=("/")
     fi
 
-    log "Total: $drive_count drive(s), $((total_mb/1024)) GB total, $((available_mb/1024)) GB available"
+    local total_gb=$(( total_mb/1024 ))
+    local avail_gb=$(( available_mb/1024 ))
+    log "Total: $drive_count drive(s), ${total_gb} GB total, ${avail_gb} GB available"
     echo "$total_mb|$available_mb|$drive_count"
 }
 
