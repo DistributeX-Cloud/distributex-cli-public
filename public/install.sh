@@ -610,7 +610,7 @@ main() {
     echo -e "   Dashboard → ${BLUE}$API_URL/dashboard${NC}"
     [[ "$USER_ROLE" == "developer" ]] && echo -e "   API Keys   → ${BLUE}$API_URL/api-dashboard${NC}"
     echo
-    echo -e "   Support: ${CYAN}https://discord.gg/distributex${NC}"
+    echo -e "
     echo
 }
 
