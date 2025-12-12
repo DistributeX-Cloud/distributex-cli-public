@@ -288,6 +288,13 @@ detect_full_system() {
     [[ -z "$STORAGE_AVAILABLE" || ! "$STORAGE_AVAILABLE" =~ ^[0-9]+$ ]] && STORAGE_AVAILABLE=0
     [[ -z "$DRIVE_COUNT" || ! "$DRIVE_COUNT" =~ ^[0-9]+$ ]] && DRIVE_COUNT=0
     
+    # CRITICAL: Ensure DETECTED_MOUNT_POINTS has at least one entry
+    if [[ ${#DETECTED_MOUNT_POINTS[@]} -eq 0 ]]; then
+        warn "No mount points detected, using root filesystem"
+        DETECTED_MOUNT_POINTS=("/")
+        DRIVE_COUNT=1
+    fi
+    
     local storage_total_gb=0
     if [[ $STORAGE_TOTAL -gt 0 ]]; then
         storage_total_gb=$((STORAGE_TOTAL / 1024))
