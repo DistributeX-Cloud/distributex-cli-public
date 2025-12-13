@@ -20,7 +20,7 @@ This guide shows you how to write scripts that run **100% on remote workers** �
 
 ## 🎯 Quick Start
 
-### Step 1: Install SDK
+### Install SDK
 
 ```bash
 # Python
@@ -30,76 +30,17 @@ pip install distributex-cloud
 npm install distributex-cloud
 ```
 
-### Step 2: Get Your API Key
+### Get API Key
 
-**IMPORTANT:** You need a valid API key before running any code!
+Visit [https://distributex.cloud/api-dashboard](https://distributex.cloud/api-dashboard)
 
-#### For New Users:
-
-1. **Sign up** at [https://distributex.cloud](https://distributex.cloud)
-2. **Select "Developer" role** when prompted during signup
-   - ⚠️ If you select "Contributor" by mistake, you can switch roles later
-3. **Go to API Dashboard** after signup: [https://distributex.cloud/api-dashboard](https://distributex.cloud/api-dashboard)
-4. **Your API key is automatically generated** - copy it immediately!
-5. **Save it securely** - it looks like: `dx_abc123def456...` (48 characters)
-
-#### For Existing Users:
-
-1. **Log in** at [https://distributex.cloud](https://distributex.cloud)
-2. **Check your role** in the top-right menu
-3. **Switch to Developer** if needed:
-   - Click your profile → Settings
-   - Change role from "Contributor" to "Developer"
-4. **Visit API Dashboard**: [https://distributex.cloud/api-dashboard](https://distributex.cloud/api-dashboard)
-5. **View or generate your API key**
-
-#### Saving Your API Key (Best Practices):
-
-**Option 1: Environment Variable (Recommended)**
-```bash
-# Linux/Mac
-export DISTRIBUTEX_API_KEY="dx_your_actual_key"
-
-# Windows
-set DISTRIBUTEX_API_KEY=dx_your_actual_key
-```
-
-Then in your code:
-```python
-# Python automatically reads from environment
-dx = DistributeX()  # No need to pass api_key!
-```
-
-**Option 2: Direct in Code (For Testing)**
-```python
-# Only for testing! Don't commit this to Git!
-dx = DistributeX(api_key="dx_your_actual_key_here")
-```
-
-**Option 3: Config File**
-```bash
-# Create config file
-mkdir -p ~/.distributex
-echo "dx_your_actual_key" > ~/.distributex/api-key
-chmod 600 ~/.distributex/api-key
-```
-
-```python
-# Read from config
-with open(os.path.expanduser('~/.distributex/api-key')) as f:
-    api_key = f.read().strip()
-
-dx = DistributeX(api_key=api_key)
-```
-
-### Step 3: Test Your Setup
+### Your First Script
 
 **Python:**
 ```python
 from distributex import DistributeX
 
-# Replace with YOUR actual API key from the dashboard
-dx = DistributeX(api_key="dx_your_actual_key_here")
+dx = DistributeX(api_key="dx_your_key")
 
 def hello_world():
     return "Hello from the cloud!"
@@ -107,12 +48,6 @@ def hello_world():
 result = dx.run(hello_world)
 print(result)  # "Hello from the cloud!"
 ```
-
-**If you get "Invalid API key" error:**
-- ✅ Make sure you copied the FULL key (starts with `dx_`)
-- ✅ Check you selected "Developer" role in your account
-- ✅ Verify the key wasn't revoked in the dashboard
-- ✅ Generate a new key if needed
 
 **JavaScript:**
 ```javascript
@@ -733,57 +668,6 @@ dx.run(aggregateAPIs, { args: [apis] });
 ---
 
 ## 🐛 Troubleshooting
-
-### Problem: "Invalid API key" or 401 Unauthorized
-
-**Error:**
-```
-RuntimeError: Failed to submit task: 401 Client Error: Unauthorized
-{"error":"Invalid API key","message":"API key is invalid, expired, or revoked..."}
-```
-
-**Solutions:**
-
-1. **Check your API key format:**
-   ```python
-   # ✅ CORRECT - Starts with dx_ and is 48 characters
-   dx = DistributeX(api_key="dx_abc123def456...")
-   
-   # ❌ WRONG - Missing dx_ prefix or truncated
-   dx = DistributeX(api_key="abc123...")
-   ```
-
-2. **Verify you have Developer role:**
-   - Go to [https://distributex.cloud](https://distributex.cloud)
-   - Check your role in the top-right menu
-   - If it says "Contributor", switch to "Developer" role
-   - Go to API Dashboard to get your key
-
-3. **Generate a new key:**
-   - Visit [https://distributex.cloud/api-dashboard](https://distributex.cloud/api-dashboard)
-   - Click "Generate New API Key"
-   - Copy the FULL key immediately (you only see it once!)
-   - Update your code with the new key
-
-4. **Check key isn't revoked:**
-   - Go to API Dashboard
-   - Make sure your key shows as "Active"
-   - If revoked, generate a new one
-
-**Test your key:**
-```python
-from distributex import DistributeX
-
-# Test connection
-try:
-    dx = DistributeX(api_key="dx_your_key_here")
-    stats = dx.network_stats()
-    print("✅ API key valid! Connected successfully")
-    print(f"Active workers: {stats['activeWorkers']}")
-except Exception as e:
-    print(f"❌ Error: {e}")
-    print("Fix: Get a valid API key from https://distributex.cloud/api-dashboard")
-```
 
 ### Problem: "Module not found"
 
