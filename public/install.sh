@@ -78,10 +78,18 @@ detect_all_drives() {
                 local device=$(echo "$line" | awk '{print $1}')
                 local fstype=$(echo "$line" | awk '{print $5}')
                 
+                # Skip system and virtual mounts
                 if [[ "$mountpoint" =~ ^/(proc|sys|dev|run|snap) ]]; then
                     continue
                 fi
                 
+                # Skip root filesystem (can't mount / in Docker)
+                if [[ "$mountpoint" == "/" ]]; then
+                    info "Skipping root filesystem (not allowed in Docker)"
+                    continue
+                fi
+                
+                # Skip tmpfs and devtmpfs
                 if [[ "$fstype" =~ ^(tmpfs|devtmpfs|squashfs)$ ]]; then
                     continue
                 fi
@@ -92,6 +100,21 @@ detect_all_drives() {
                 fi
             done < <(df -h -t ext4 -t ext3 -t xfs -t btrfs -t ntfs -t vfat 2>/dev/null | tail -n +2)
             
+            # Always add user home directory
+            if [[ -d "$HOME" && "$HOME" != "/" ]]; then
+                DRIVES+=("$HOME:$HOME:rw")
+                log "Found: User home ($HOME)"
+            fi
+            
+            # Add common data directories if they exist
+            for data_dir in /mnt /media /opt /srv /var/lib /usr/local; do
+                if [[ -d "$data_dir" && -r "$data_dir" ]]; then
+                    DRIVES+=("$data_dir:$data_dir:rw")
+                    log "Found: $data_dir"
+                fi
+            done
+            
+            # USB/External drives
             if [[ -d "/media/$USER" ]]; then
                 for mount in /media/$USER/*; do
                     if [[ -d "$mount" ]]; then
@@ -101,6 +124,7 @@ detect_all_drives() {
                 done
             fi
             
+            # Alternative mount locations
             for alt_mount in /mnt/* /run/media/$USER/*; do
                 if [[ -d "$alt_mount" && ! "$alt_mount" =~ wsl ]]; then
                     DRIVES+=("$alt_mount:$alt_mount:rw")
@@ -112,6 +136,7 @@ detect_all_drives() {
         wsl)
             info "Scanning WSL + Windows drives..."
             
+            # Windows drives mounted in WSL (/mnt/c, /mnt/d, etc.)
             for drive in /mnt/*; do
                 if [[ -d "$drive" && -r "$drive" ]]; then
                     DRIVES+=("$drive:$drive:rw")
@@ -119,9 +144,7 @@ detect_all_drives() {
                 fi
             done
             
-            DRIVES+=("/:/:rw")
-            log "Found: WSL root (/)"
-            
+            # User home
             DRIVES+=("$HOME:$HOME:rw")
             log "Found: User home ($HOME)"
             ;;
@@ -129,12 +152,11 @@ detect_all_drives() {
         macos)
             info "Scanning macOS volumes..."
             
-            DRIVES+=("/:/:rw")
-            log "Found: System root (/)"
-            
+            # User home
             DRIVES+=("$HOME:$HOME:rw")
             log "Found: User home ($HOME)"
             
+            # All /Volumes (external drives, network shares, etc.)
             if [[ -d "/Volumes" ]]; then
                 for vol in /Volumes/*; do
                     if [[ -d "$vol" && "$vol" != "/Volumes/Macintosh HD" ]]; then
@@ -148,6 +170,7 @@ detect_all_drives() {
         windows)
             info "Scanning Windows drives (Git Bash)..."
             
+            # Detect all drive letters
             for drive_letter in {A..Z}; do
                 for prefix in "" "/mnt/" "/$drive_letter/"; do
                     local drive_path="${prefix}${drive_letter,,}"
@@ -161,6 +184,7 @@ detect_all_drives() {
                 done
             done
             
+            # User home
             if [[ -n "$HOME" && -d "$HOME" ]]; then
                 DRIVES+=("$HOME:/home/user:rw")
                 log "Found: User home ($HOME)"
@@ -168,12 +192,14 @@ detect_all_drives() {
             ;;
     esac
     
+    # Ensure at least home directory is mounted
     if [[ ${#DRIVES[@]} -eq 0 ]]; then
         warn "No drives detected automatically"
         info "Adding user home directory as fallback"
         DRIVES+=("$HOME:$HOME:rw")
     fi
     
+    # Remove duplicates
     local -a UNIQUE_DRIVES=()
     for drive in "${DRIVES[@]}"; do
         local exists=false
