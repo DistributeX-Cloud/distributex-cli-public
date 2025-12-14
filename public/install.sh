@@ -524,11 +524,16 @@ setup_contributor() {
     local DOCKER_ARGS=(
         "run"
         "-d"
-        "--name" "$CONTAINER_NAME"
-        "--restart" "unless-stopped"
-        "--dns" "8.8.8.8"
-        "--dns" "8.8.4.4"
-        "-v" "$CONFIG_DIR:/config:ro"
+        "--name"
+        "$CONTAINER_NAME"
+        "--restart"
+        "unless-stopped"
+        "--dns"
+        "8.8.8.8"
+        "--dns"
+        "8.8.4.4"
+        "-v"
+        "$CONFIG_DIR:/config:ro"
     )
     
     # Add volume mounts
@@ -536,32 +541,50 @@ setup_contributor() {
         local host=$(echo "$drive" | cut -d':' -f1)
         local container=$(echo "$drive" | cut -d':' -f2)
         local mode=$(echo "$drive" | cut -d':' -f3)
-        DOCKER_ARGS+=("-v" "$host:$container:$mode")
+        DOCKER_ARGS+=("-v")
+        DOCKER_ARGS+=("$host:$container:$mode")
     done
     
     # Add environment variables
-    DOCKER_ARGS+=(
-        "-e" "HOST_MAC_ADDRESS=$MAC_ADDRESS"
-        "-e" "HOSTNAME=$HOSTNAME"
-        "-e" "CPU_CORES=$CPU_CORES"
-        "-e" "CPU_MODEL=$CPU_MODEL"
-        "-e" "RAM_TOTAL_MB=$RAM_TOTAL"
-        "-e" "GPU_AVAILABLE=$GPU_AVAILABLE"
-        "-e" "GPU_MODEL=$GPU_MODEL"
-        "-e" "GPU_MEMORY_MB=$GPU_MEMORY"
-        "-e" "GPU_COUNT=$GPU_COUNT"
-        "-e" "STORAGE_AVAILABLE_MB=$STORAGE_AVAILABLE"
-        "-e" "PLATFORM=$PLATFORM"
-        "-e" "ARCH=$ARCH"
-        "--health-cmd" "node -e 'console.log(\"healthy\")'"
-        "--health-interval" "30s"
-        "--health-timeout" "10s"
-        "--health-retries" "3"
-        "--health-start-period" "60s"
-        "$DOCKER_IMAGE"
-        "--api-key" "$API_TOKEN"
-        "--url" "$API_URL"
-    )
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("HOST_MAC_ADDRESS=$MAC_ADDRESS")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("HOSTNAME=$HOSTNAME")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("CPU_CORES=$CPU_CORES")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("CPU_MODEL=$CPU_MODEL")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("RAM_TOTAL_MB=$RAM_TOTAL")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("GPU_AVAILABLE=$GPU_AVAILABLE")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("GPU_MODEL=$GPU_MODEL")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("GPU_MEMORY_MB=$GPU_MEMORY")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("GPU_COUNT=$GPU_COUNT")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("STORAGE_AVAILABLE_MB=$STORAGE_AVAILABLE")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("PLATFORM=$PLATFORM")
+    DOCKER_ARGS+=("-e")
+    DOCKER_ARGS+=("ARCH=$ARCH")
+    DOCKER_ARGS+=("--health-cmd")
+    DOCKER_ARGS+=("node -e 'console.log(\"healthy\")'")
+    DOCKER_ARGS+=("--health-interval")
+    DOCKER_ARGS+=("30s")
+    DOCKER_ARGS+=("--health-timeout")
+    DOCKER_ARGS+=("10s")
+    DOCKER_ARGS+=("--health-retries")
+    DOCKER_ARGS+=("3")
+    DOCKER_ARGS+=("--health-start-period")
+    DOCKER_ARGS+=("60s")
+    DOCKER_ARGS+=("$DOCKER_IMAGE")
+    DOCKER_ARGS+=("--api-key")
+    DOCKER_ARGS+=("$API_TOKEN")
+    DOCKER_ARGS+=("--url")
+    DOCKER_ARGS+=("$API_URL")
     
     # Execute docker command with error capture
     echo "Executing docker command..."
@@ -571,10 +594,10 @@ setup_contributor() {
         echo "Error output:"
         echo "$DOCKER_OUTPUT"
         echo
-        echo "Full command that was attempted:"
-        printf '%s ' "${DOCKER_ARGS[@]}"
+        echo "Command attempted:"
+        echo "docker ${DOCKER_ARGS[*]}"
         echo
-        error "Failed to start container"
+        error "Failed to start container. Check the error above."
     fi
     
     CONTAINER_ID="$DOCKER_OUTPUT"
