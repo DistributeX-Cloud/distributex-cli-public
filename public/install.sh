@@ -563,13 +563,22 @@ setup_contributor() {
         "--url" "$API_URL"
     )
     
-    # Execute docker command
-    if ! docker "${DOCKER_ARGS[@]}" >/dev/null 2>&1; then
+    # Execute docker command with error capture
+    echo "Executing docker command..."
+    if ! DOCKER_OUTPUT=$(docker "${DOCKER_ARGS[@]}" 2>&1); then
         echo
-        echo "Docker command failed. Showing logs:"
-        docker logs "$CONTAINER_NAME" 2>&1 | tail -20 || true
+        echo "❌ Docker command failed!"
+        echo "Error output:"
+        echo "$DOCKER_OUTPUT"
+        echo
+        echo "Full command that was attempted:"
+        printf '%s ' "${DOCKER_ARGS[@]}"
+        echo
         error "Failed to start container"
     fi
+    
+    CONTAINER_ID="$DOCKER_OUTPUT"
+    log "Container started: ${CONTAINER_ID:0:12}"
     
     info "Initializing worker..."
     sleep 15
