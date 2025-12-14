@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # DistributeX UNIVERSAL Installer v10.1 - FIXED
 # ============================================================================
@@ -105,7 +105,115 @@ detect_all_drives() {
                     DRIVES+=("$mountpoint:$mountpoint:rw")
                     log "Found drive: $mountpoint ($device - $fstype)"
                 fi
-            done < <(lsblk -nrpo NAME,MOUNTPOINT,FSTYPE | grep -v '^
+            done < <(lsblk -nrpo NAME,MOUNTPOINT,FSTYPE | grep -v '^$')
+            
+            # Add mounted USB/external drives under /media and /mnt
+            if [[ -d "/media/$USER" ]]; then
+                for mount in /media/$USER/*; do
+                    if [[ -d "$mount" && "$(findmnt -n -o SOURCE "$mount" 2>/dev/null)" =~ ^/dev/(sd|hd|mmcblk) ]]; then
+                        DRIVES+=("$mount:$mount:rw")
+                        log "Found USB/external: $mount"
+                    fi
+                done
+            fi
+            
+            # Check /mnt for mounted drives
+            for mount in /mnt/*; do
+                if [[ -d "$mount" && "$(findmnt -n -o SOURCE "$mount" 2>/dev/null)" =~ ^/dev/(sd|hd|nvme|mmcblk) ]]; then
+                    DRIVES+=("$mount:$mount:rw")
+                    log "Found mounted drive: $mount"
+                fi
+            done
+            
+            # Always add user home as fallback
+            if [[ -d "$HOME" ]]; then
+                DRIVES+=("$HOME:$HOME:rw")
+                log "Found: User home ($HOME)"
+            fi
+            ;;
+            
+        wsl)
+            info "Scanning WSL + Windows drives..."
+            
+            # Windows drives mounted in WSL (/mnt/c, /mnt/d, etc.)
+            for drive in /mnt/*; do
+                if [[ -d "$drive" && -r "$drive" ]]; then
+                    DRIVES+=("$drive:$drive:rw")
+                    log "Found Windows drive: $drive"
+                fi
+            done
+            
+            DRIVES+=("$HOME:$HOME:rw")
+            log "Found: User home ($HOME)"
+            ;;
+            
+        macos)
+            info "Scanning macOS volumes..."
+            
+            DRIVES+=("$HOME:$HOME:rw")
+            log "Found: User home ($HOME)"
+            
+            if [[ -d "/Volumes" ]]; then
+                for vol in /Volumes/*; do
+                    if [[ -d "$vol" && "$vol" != "/Volumes/Macintosh HD" ]]; then
+                        DRIVES+=("$vol:$vol:rw")
+                        log "Found volume: $vol"
+                    fi
+                done
+            fi
+            ;;
+            
+        windows)
+            info "Scanning Windows drives (Git Bash)..."
+            
+            for drive_letter in {C..Z}; do
+                for prefix in "" "/mnt/" "/$drive_letter/"; do
+                    local drive_path="${prefix}${drive_letter,,}"
+                    
+                    if [[ -d "$drive_path" ]]; then
+                        local docker_path="/mnt/${drive_letter,,}"
+                        DRIVES+=("$drive_path:$docker_path:rw")
+                        log "Found drive: ${drive_letter}: → $docker_path"
+                        break
+                    fi
+                done
+            done
+            
+            if [[ -n "$HOME" && -d "$HOME" ]]; then
+                DRIVES+=("$HOME:/home/user:rw")
+                log "Found: User home ($HOME)"
+            fi
+            ;;
+    esac
+    
+    if [[ ${#DRIVES[@]} -eq 0 ]]; then
+        warn "No drives detected automatically"
+        info "Adding user home directory as fallback"
+        DRIVES+=("$HOME:$HOME:rw")
+    fi
+    
+    # Remove duplicates
+    local -a UNIQUE_DRIVES=()
+    for drive in "${DRIVES[@]}"; do
+        local exists=false
+        for unique in "${UNIQUE_DRIVES[@]}"; do
+            if [[ "$drive" == "$unique" ]]; then
+                exists=true
+                break
+            fi
+        done
+        if ! $exists; then
+            UNIQUE_DRIVES+=("$drive")
+        fi
+    done
+    
+    DRIVES=("${UNIQUE_DRIVES[@]}")
+    export DETECTED_DRIVES=("${DRIVES[@]}")
+    
+    echo
+    log "Total drives detected: ${#DRIVES[@]}"
+    echo
+}
 
 # ============================================================================
 # SYSTEM CAPABILITIES DETECTION
