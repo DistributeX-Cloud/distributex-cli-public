@@ -1,13 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# DistributeX UNIVERSAL Installer v10.0 - FINAL PRODUCTION VERSION
-# ============================================================================
-# ✅ Works on: Windows (Native + WSL), Linux, macOS
-# ✅ Detects and mounts ALL drives automatically
-# ✅ TRUE 24/7 operation with automatic restart
-# ✅ Full network integration
-# ✅ Docker Desktop + Docker Engine support
-# ✅ One script for everything
+# DistributeX UNIVERSAL Installer v10.1 - FIXED
 # ============================================================================
 
 set -e
@@ -39,7 +32,6 @@ safe_jq() { echo "$2" | jq -r "$1" 2>/dev/null || echo ""; }
 detect_os() {
     section "Detecting Operating System"
     
-    # Detect OS type
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         if grep -qi microsoft /proc/version 2>/dev/null || 
            grep -qi wsl /proc/version 2>/dev/null ||
@@ -81,18 +73,15 @@ detect_all_drives() {
         linux)
             info "Scanning native Linux filesystems..."
             
-            # System drives
             while IFS= read -r line; do
                 local mountpoint=$(echo "$line" | awk '{print $6}')
                 local device=$(echo "$line" | awk '{print $1}')
                 local fstype=$(echo "$line" | awk '{print $5}')
                 
-                # Skip virtual/system mounts
                 if [[ "$mountpoint" =~ ^/(proc|sys|dev|run|snap) ]]; then
                     continue
                 fi
                 
-                # Skip tmpfs and devtmpfs
                 if [[ "$fstype" =~ ^(tmpfs|devtmpfs|squashfs)$ ]]; then
                     continue
                 fi
@@ -103,7 +92,6 @@ detect_all_drives() {
                 fi
             done < <(df -h -t ext4 -t ext3 -t xfs -t btrfs -t ntfs -t vfat 2>/dev/null | tail -n +2)
             
-            # USB/External drives
             if [[ -d "/media/$USER" ]]; then
                 for mount in /media/$USER/*; do
                     if [[ -d "$mount" ]]; then
@@ -113,7 +101,6 @@ detect_all_drives() {
                 done
             fi
             
-            # Alternative mount locations
             for alt_mount in /mnt/* /run/media/$USER/*; do
                 if [[ -d "$alt_mount" && ! "$alt_mount" =~ wsl ]]; then
                     DRIVES+=("$alt_mount:$alt_mount:rw")
@@ -125,7 +112,6 @@ detect_all_drives() {
         wsl)
             info "Scanning WSL + Windows drives..."
             
-            # Windows drives mounted in WSL (/mnt/c, /mnt/d, etc.)
             for drive in /mnt/*; do
                 if [[ -d "$drive" && -r "$drive" ]]; then
                     DRIVES+=("$drive:$drive:rw")
@@ -133,11 +119,9 @@ detect_all_drives() {
                 fi
             done
             
-            # WSL filesystem root
             DRIVES+=("/:/:rw")
             log "Found: WSL root (/)"
             
-            # User home
             DRIVES+=("$HOME:$HOME:rw")
             log "Found: User home ($HOME)"
             ;;
@@ -145,57 +129,30 @@ detect_all_drives() {
         macos)
             info "Scanning macOS volumes..."
             
-            # System root
             DRIVES+=("/:/:rw")
             log "Found: System root (/)"
             
-            # User home
             DRIVES+=("$HOME:$HOME:rw")
             log "Found: User home ($HOME)"
             
-            # All /Volumes (external drives, network shares, etc.)
             if [[ -d "/Volumes" ]]; then
                 for vol in /Volumes/*; do
-                    # Skip system volume if already mounted as /
                     if [[ -d "$vol" && "$vol" != "/Volumes/Macintosh HD" ]]; then
                         DRIVES+=("$vol:$vol:rw")
                         log "Found volume: $vol"
                     fi
                 done
             fi
-            
-            # External drives via diskutil (additional detection)
-            if command -v diskutil &>/dev/null; then
-                while IFS= read -r mountpoint; do
-                    if [[ -n "$mountpoint" && -d "$mountpoint" ]]; then
-                        # Check if not already in list
-                        local exists=false
-                        for drive in "${DRIVES[@]}"; do
-                            if [[ "$drive" == "$mountpoint:"* ]]; then
-                                exists=true
-                                break
-                            fi
-                        done
-                        if ! $exists; then
-                            DRIVES+=("$mountpoint:$mountpoint:rw")
-                            log "Found external disk: $mountpoint"
-                        fi
-                    fi
-                done < <(diskutil list | grep "external" | awk '{print $NF}' || true)
-            fi
             ;;
             
         windows)
             info "Scanning Windows drives (Git Bash)..."
             
-            # Detect all drive letters
             for drive_letter in {A..Z}; do
-                # Check various possible mount points
                 for prefix in "" "/mnt/" "/$drive_letter/"; do
                     local drive_path="${prefix}${drive_letter,,}"
                     
                     if [[ -d "$drive_path" ]]; then
-                        # Convert to Docker-compatible format
                         local docker_path="/mnt/${drive_letter,,}"
                         DRIVES+=("$drive_path:$docker_path:rw")
                         log "Found: ${drive_letter}: → $docker_path"
@@ -204,7 +161,6 @@ detect_all_drives() {
                 done
             done
             
-            # User home
             if [[ -n "$HOME" && -d "$HOME" ]]; then
                 DRIVES+=("$HOME:/home/user:rw")
                 log "Found: User home ($HOME)"
@@ -212,14 +168,12 @@ detect_all_drives() {
             ;;
     esac
     
-    # Ensure at least home directory is mounted
     if [[ ${#DRIVES[@]} -eq 0 ]]; then
         warn "No drives detected automatically"
         info "Adding user home directory as fallback"
         DRIVES+=("$HOME:$HOME:rw")
     fi
     
-    # Remove duplicates
     local -a UNIQUE_DRIVES=()
     for drive in "${DRIVES[@]}"; do
         local exists=false
@@ -235,8 +189,6 @@ detect_all_drives() {
     done
     
     DRIVES=("${UNIQUE_DRIVES[@]}")
-    
-    # Export for use in Docker
     export DETECTED_DRIVES=("${DRIVES[@]}")
     
     echo
@@ -528,12 +480,11 @@ signup_user() {
 }
 
 # ============================================================================
-# DOCKER WORKER SETUP - UNIVERSAL 24/7
+# DOCKER WORKER SETUP - FIXED
 # ============================================================================
 setup_contributor() {
     section "Setting Up 24/7 Worker"
     
-    # Verify Docker
     if ! command -v docker &>/dev/null; then
         error "Docker not found. Install from: https://docs.docker.com/get-docker/"
     fi
@@ -544,11 +495,9 @@ setup_contributor() {
     
     log "Docker is ready"
     
-    # Detect system
     detect_full_system
     detect_all_drives
     
-    # Validate token
     info "Validating credentials..."
     local validate=$(curl -s -H "Authorization: Bearer $API_TOKEN" "$API_URL/api/auth/user" 2>/dev/null || echo "{}")
     local user_id=$(safe_jq '.id' "$validate")
@@ -558,7 +507,6 @@ setup_contributor() {
     fi
     log "Credentials validated"
     
-    # Remove existing container
     if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         info "Stopping existing worker..."
         docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -566,61 +514,66 @@ setup_contributor() {
         log "Removed existing container"
     fi
     
-    # Pull latest image
     info "Pulling latest worker image..."
     docker pull "$DOCKER_IMAGE" 2>&1 | grep -q "up to date\|Downloaded" || true
     log "Image ready"
     
-    # Build volume arguments
-    local VOLUME_ARGS=""
+    info "Starting worker with ${#DETECTED_DRIVES[@]} mounted drive(s)..."
+    
+    # Build docker run command with proper array handling
+    local DOCKER_ARGS=(
+        "run"
+        "-d"
+        "--name" "$CONTAINER_NAME"
+        "--restart" "unless-stopped"
+        "--dns" "8.8.8.8"
+        "--dns" "8.8.4.4"
+        "-v" "$CONFIG_DIR:/config:ro"
+    )
+    
+    # Add volume mounts
     for drive in "${DETECTED_DRIVES[@]}"; do
         local host=$(echo "$drive" | cut -d':' -f1)
         local container=$(echo "$drive" | cut -d':' -f2)
         local mode=$(echo "$drive" | cut -d':' -f3)
-        VOLUME_ARGS="$VOLUME_ARGS -v \"$host:$container:$mode\""
+        DOCKER_ARGS+=("-v" "$host:$container:$mode")
     done
     
-    info "Starting worker with ${#DETECTED_DRIVES[@]} mounted drive(s)..."
+    # Add environment variables
+    DOCKER_ARGS+=(
+        "-e" "HOST_MAC_ADDRESS=$MAC_ADDRESS"
+        "-e" "HOSTNAME=$HOSTNAME"
+        "-e" "CPU_CORES=$CPU_CORES"
+        "-e" "CPU_MODEL=$CPU_MODEL"
+        "-e" "RAM_TOTAL_MB=$RAM_TOTAL"
+        "-e" "GPU_AVAILABLE=$GPU_AVAILABLE"
+        "-e" "GPU_MODEL=$GPU_MODEL"
+        "-e" "GPU_MEMORY_MB=$GPU_MEMORY"
+        "-e" "GPU_COUNT=$GPU_COUNT"
+        "-e" "STORAGE_AVAILABLE_MB=$STORAGE_AVAILABLE"
+        "-e" "PLATFORM=$PLATFORM"
+        "-e" "ARCH=$ARCH"
+        "--health-cmd" "node -e 'console.log(\"healthy\")'"
+        "--health-interval" "30s"
+        "--health-timeout" "10s"
+        "--health-retries" "3"
+        "--health-start-period" "60s"
+        "$DOCKER_IMAGE"
+        "--api-key" "$API_TOKEN"
+        "--url" "$API_URL"
+    )
     
-    # ✅ CRITICAL: Build command properly for cross-platform
-    local DOCKER_CMD="docker run -d \
-        --name \"$CONTAINER_NAME\" \
-        --restart unless-stopped \
-        --dns 8.8.8.8 \
-        --dns 8.8.4.4 \
-        -v \"$CONFIG_DIR:/config:ro\" \
-        $VOLUME_ARGS \
-        -e HOST_MAC_ADDRESS=\"$MAC_ADDRESS\" \
-        -e HOSTNAME=\"$HOSTNAME\" \
-        -e CPU_CORES=\"$CPU_CORES\" \
-        -e CPU_MODEL=\"$CPU_MODEL\" \
-        -e RAM_TOTAL_MB=\"$RAM_TOTAL\" \
-        -e GPU_AVAILABLE=\"$GPU_AVAILABLE\" \
-        -e GPU_MODEL=\"$GPU_MODEL\" \
-        -e GPU_MEMORY_MB=\"$GPU_MEMORY\" \
-        -e GPU_COUNT=\"$GPU_COUNT\" \
-        -e STORAGE_AVAILABLE_MB=\"$STORAGE_AVAILABLE\" \
-        -e PLATFORM=\"$PLATFORM\" \
-        -e ARCH=\"$ARCH\" \
-        --health-cmd=\"node -e 'console.log(\\\"healthy\\\")'\" \
-        --health-interval=30s \
-        --health-timeout=10s \
-        --health-retries=3 \
-        --health-start-period=60s \
-        \"$DOCKER_IMAGE\" \
-        --api-key \"$API_TOKEN\" \
-        --url \"$API_URL\""
-    
-    # Execute (eval handles quotes properly)
-    if ! eval $DOCKER_CMD >/dev/null 2>&1; then
-        error "Failed to start container. Check Docker logs."
+    # Execute docker command
+    if ! docker "${DOCKER_ARGS[@]}" >/dev/null 2>&1; then
+        echo
+        echo "Docker command failed. Showing logs:"
+        docker logs "$CONTAINER_NAME" 2>&1 | tail -20 || true
+        error "Failed to start container"
     fi
     
-    # Wait for startup
     info "Initializing worker..."
     sleep 15
     
-    # Verify running
     if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
         echo
         error "Worker failed to start:\n$(docker logs --tail 30 $CONTAINER_NAME 2>&1)"
@@ -628,7 +581,6 @@ setup_contributor() {
     
     log "Worker started successfully!"
     
-    # Final summary
     section "✅ Installation Complete - Worker is LIVE 24/7!"
     echo
     echo -e "${GREEN}${BOLD}🎉 Your worker is now part of the DistributeX network!${NC}"
@@ -648,19 +600,11 @@ setup_contributor() {
         echo "  $host → $container"
     done
     echo
-    echo -e "${CYAN}Worker Features:${NC}"
-    echo "  ✓ Automatic restart on crashes"
-    echo "  ✓ Automatic restart on system reboot"
-    echo "  ✓ Full access to all detected drives"
-    echo "  ✓ Network-wide resource pooling"
-    echo "  ✓ Runs forever until manually stopped"
-    echo
     echo -e "${CYAN}Management Commands:${NC}"
     echo "  View logs:       docker logs -f $CONTAINER_NAME"
     echo "  Check status:    docker ps | grep $CONTAINER_NAME"
     echo "  Restart:         docker restart $CONTAINER_NAME"
     echo "  Stop:            docker stop $CONTAINER_NAME"
-    echo "  Remove:          docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME"
     echo
     echo -e "${BLUE}Dashboard: $API_URL/dashboard${NC}"
     echo
@@ -750,7 +694,7 @@ show_banner() {
  ██████╔╝██║███████║   ██║   ██║  ██║██║██████╔╝╚██████╔╝   ██║   ███████╗██╔╝ ██╗
  ╚═════╝ ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-          ───────────── Universal Installer v10.0 ─────────────────
+          ───────────── Universal Installer v10.1 ─────────────────
               Windows • Linux • macOS • WSL • TRUE 24/7
           ─────────────────────────────────────────────────────────
 EOF
@@ -781,7 +725,4 @@ main() {
 trap 'error "Installation failed at line $LINENO"' ERR
 
 # ============================================================================
-# ENTRY POINT
-# ============================================================================
-main "$@"
-exit 0
+# ENTRY
